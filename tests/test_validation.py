@@ -155,7 +155,7 @@ def test_compose_blocked_service_keys_raise_400(blocked_key):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("blocked_mode", ["host", "container:other"])
+@pytest.mark.parametrize("blocked_mode", ["host", "container:other", "service:sidecar"])
 def test_compose_blocked_network_mode_raises_400(blocked_mode):
     content = _compose(
         f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    network_mode: {blocked_mode}\n"
@@ -218,3 +218,27 @@ def test_compose_image_from_unapproved_registry_raises_400():
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.unit
+def test_redact_env_masks_sensitive_keys():
+    from skiff.app import _redact_env
+    env = [
+        "DATABASE_URL=postgres://user:pass@host/db",
+        "API_KEY=secret123",
+        "PASSWORD=hunter2",
+        "PORT=8080",
+        "MY_SECRET=abc",
+        "AWS_SECRET_ACCESS_KEY=AKIA...",
+        "LOG_LEVEL=info",
+    ]
+    result = _redact_env(env)
+    # Sensitive values must be redacted
+    assert "DATABASE_URL=[REDACTED]" not in result  # DATABASE_URL has no sensitive keyword
+    assert any(e == "API_KEY=[REDACTED]" for e in result)
+    assert any(e == "PASSWORD=[REDACTED]" for e in result)
+    assert any(e == "MY_SECRET=[REDACTED]" for e in result)
+    assert any(e == "AWS_SECRET_ACCESS_KEY=[REDACTED]" for e in result)
+    # Non-sensitive values must be preserved
+    assert "PORT=8080" in result
+    assert "LOG_LEVEL=info" in result

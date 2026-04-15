@@ -1,0 +1,1704 @@
+"use strict";
+const API = '/api';
+let currentPage = 'containers';
+let refreshTimer = null;
+let dockerOk = false;
+let _lastContainers = null;
+let _refreshInFlight = false;
+let _dockerVmHost = '';
+const MAX_LOG_LINES = 10000;
+
+function esc(s) {
+  var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML;
+}
+
+var _inFlight = new Set();
+function guardedAction(key, fn) {
+  if (_inFlight.has(key)) { toast('Action already in progress', 'info'); return Promise.resolve(); }
+  _inFlight.add(key);
+  return Promise.resolve().then(fn).finally(function() { _inFlight.delete(key); });
+}
+
+var _activeIntervals = [];
+function managedInterval(fn, ms) {
+  var id = setInterval(fn, ms);
+  _activeIntervals.push(id);
+  return id;
+}
+function clearAllIntervals() {
+  _activeIntervals.forEach(function(id) { clearInterval(id); });
+  _activeIntervals = [];
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+// Pause auto-refresh when tab is hidden, resume when visible
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'hidden') {
+    clearAllIntervals();
+  } else if (getToken() && currentPage) {
+    var pages = { containers: loadContainers, images: loadImages, volumes: loadVolumes, networks: loadNetworks, compose: showCompose, system: loadSystem };
+    if (pages[currentPage]) pages[currentPage]();
+  }
+});
+
+function closeDetailWS() {
+  var main = document.getElementById('main');
+  if (main && main._ws) {
+    try { main._ws.close(1000, 'navigating away'); } catch(e) {}
+    main._ws = null;
+  }
+}
+
+// ── Auth ──
+// Session timeout: 15-min idle + 8-hour absolute (per governance policy)
+var SESSION_IDLE_MS = 15 * 60 * 1000;
+var SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1000;
+var _idleTimer = null;
+
+function getToken() { return sessionStorage.getItem('api_token') || ''; }
+function setToken(t) {
+  sessionStorage.setItem('api_token', t);
+  sessionStorage.setItem('session_start', String(Date.now()));
+  resetIdleTimer();
+}
+
+function sessionCleanup() {
+  // Close any open WebSocket, clear refresh timer, remove modals
+  clearInterval(refreshTimer);
+  var main = document.getElementById('main');
+  if (main && main._ws) { try { main._ws.close(); } catch(e) {} main._ws = null; }
+  document.querySelectorAll('.modal-bg').forEach(function(m) { m.remove(); });
+  _refreshInFlight = false;
+}
+
+function checkSessionExpiry() {
+  var start = parseInt(sessionStorage.getItem('session_start') || '0', 10);
+  if (start && (Date.now() - start) > SESSION_ABSOLUTE_MS) {
+    sessionStorage.clear();
+    sessionCleanup();
+    toast('Session expired (8-hour limit)', 'error');
+    showLogin();
+    return true;
+  }
+  return false;
+}
+
+function resetIdleTimer() {
+  clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(function() {
+    if (getToken()) {
+      sessionStorage.clear();
+      sessionCleanup();
+      toast('Session expired (idle timeout)', 'error');
+      showLogin();
+    }
+  }, SESSION_IDLE_MS);
+}
+
+// Reset idle timer on user activity
+['click','keydown','mousemove','scroll','touchstart'].forEach(function(evt) {
+  document.addEventListener(evt, function() { if (getToken()) resetIdleTimer(); }, { passive: true });
+});
+
+function wsUrl(path) {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return proto + '//' + location.host + path;
+}
+
+function wsAuthOnOpen(ws) {
+  // Send auth token as first message instead of URL query param (avoids token in proxy logs)
+  var t = getToken();
+  if (t) ws.send('AUTH ' + t);
+}
+
+// ── Toast notifications ──
+function toast(msg, type) {
+  type = type || 'info';
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 4000);
+}
+
+// ── Login ──
+function showLogin() {
+  var main = document.getElementById('main');
+  main.innerHTML = '';
+  var wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:70vh;';
+  // Brand
+  var brand = document.createElement('div'); brand.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:32px';
+  brand.innerHTML = '<svg width="40" height="40" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>';
+  var brandName = document.createElement('span'); brandName.textContent = 'SKIFF Container Manager'; brandName.style.cssText = 'font-size:22px;font-weight:700;color:var(--text)';
+  brand.appendChild(brandName);
+  wrap.appendChild(brand);
+  var box = document.createElement('div'); box.style.cssText = 'width:340px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.07)';
+  var h3 = document.createElement('h3'); h3.textContent = 'Sign in'; h3.style.cssText = 'margin-bottom:4px;font-size:18px'; box.appendChild(h3);
+  var sub = document.createElement('p'); sub.innerHTML = 'Enter your API token to continue.<br><span style="font-size:11px">Your token is the value of <code>API_TOKEN</code> in your <code>.env</code> file.</span>'; sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:20px'; box.appendChild(sub);
+  var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'; box.appendChild(lbl);
+  var inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'Paste your API token';
+  inp.style.cssText = 'width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--card);color:var(--text)';
+  box.appendChild(inp);
+  var btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Sign in'; btn.style.cssText = 'margin-top:16px;width:100%;padding:10px;font-size:14px';
+  btn.onclick = function() { if (!inp.value.trim()) { inp.style.borderColor='var(--red)'; return; } setToken(inp.value.trim()); showPage('containers'); };
+  inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') btn.click(); });
+  inp.addEventListener('input', function() { inp.style.borderColor=''; });
+  box.appendChild(btn);
+  wrap.appendChild(box);
+  main.appendChild(wrap);
+  inp.focus();
+}
+
+// ── Fetch wrapper ──
+async function apiFetch(url, opts) {
+  if (checkSessionExpiry()) throw new Error('Session expired');
+  opts = opts || {};
+  const headers = { 'X-Requested-With': 'ContainerManager' };
+  var t = getToken();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  if (opts.headers) Object.assign(headers, opts.headers);
+  const res = await fetch(url, Object.assign({}, opts, { headers: headers }));
+  if (res.status === 503) { setDockerStatus(false, 'Container engine unreachable'); throw new Error('Container engine unreachable'); }
+  if (res.status === 401) { sessionStorage.removeItem('api_token'); toast('Authentication failed — check your API token', 'error'); showLogin(); throw new Error('Authentication required'); }
+  if (res.status === 429) { throw new Error('Rate limited — please wait a moment and try again'); }
+  if (!res.ok) { const err = await res.json().catch(function() { return { detail: res.statusText }; }); throw new Error(err.detail || 'Request failed'); }
+  setDockerStatus(true);
+  return res.json();
+}
+
+// ── Docker status ──
+function setDockerStatus(ok, msg) {
+  dockerOk = ok;
+  var el = document.getElementById('sidebar-status');
+  var banner = document.getElementById('status-banner');
+  if (ok) {
+    el.innerHTML = '<span class="dot ok"></span> <span>Connected</span>';
+    banner.className = 'status-banner'; banner.style.display = 'none';
+  } else {
+    el.innerHTML = '<span class="dot down"></span> <span>Disconnected</span>';
+    banner.className = 'status-banner error';
+    var _dockerHost = (typeof _appConfig !== 'undefined' && _appConfig && _appConfig.docker_host) || '';
+    var _bannerMsg = '<strong>Container engine unreachable.</strong> ';
+    if (_dockerHost && !_dockerHost.startsWith('unix:///var/run/docker')) {
+      _bannerMsg += 'Open an SSH tunnel to your Docker host, then reload:<br><code style="font-size:12px;user-select:all">ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host</code>';
+    } else {
+      _bannerMsg += 'Make sure Docker Desktop (or dockerd) is running, then reload the page.';
+    }
+    banner.innerHTML = _bannerMsg;
+    banner.style.display = 'block';
+  }
+}
+
+// ── Navigation ──
+function showPage(page) {
+  clearAllIntervals();
+  closeDetailWS();
+  currentPage = page;
+  var main = document.getElementById('main');
+  document.querySelectorAll('.sidebar a').forEach(function(a) { a.classList.remove('active'); });
+  document.querySelectorAll('.sidebar a').forEach(function(a) {
+    if (a.textContent.trim().toLowerCase() === page) a.classList.add('active');
+  });
+  _refreshInFlight = false;
+  _lastContainers = null;
+  var pages = { containers: loadContainers, images: loadImages, volumes: loadVolumes, networks: loadNetworks, compose: showCompose, system: loadSystem };
+  (pages[page] || loadContainers)();
+}
+
+function makeBtn(label, onclick, cls) {
+  var btn = document.createElement('button');
+  btn.className = cls || 'btn';
+  btn.textContent = label;
+  btn.onclick = onclick;
+  return btn;
+}
+
+function makeActionBtn(label, action, cls, pendingLabel) {
+  var btn = makeBtn(label, async function() {
+    btn.disabled = true; btn.classList.add('loading');
+    if (pendingLabel) btn.textContent = pendingLabel;
+    try { await action(); } catch(e) { toast(e.message, 'error'); }
+    btn.disabled = false; btn.classList.remove('loading');
+    btn.textContent = label;
+  }, cls);
+  return btn;
+}
+
+function formatPorts(ports) {
+  if (!ports || Object.keys(ports).length === 0) return null;
+  return Object.entries(ports).map(function(entry) { return entry[1] ? entry[1][0].HostPort + ':' + entry[0] : entry[0]; });
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  var s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+// ── Containers ──
+async function loadContainers() {
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
+  var main = document.getElementById('main');
+  if (!_lastContainers) main.innerHTML = '<div class="refreshing">Loading containers...</div>';
+  try {
+    var containers = await apiFetch(API + '/containers');
+    _lastContainers = containers;
+    _refreshInFlight = false;
+    if (currentPage !== 'containers') return;
+    renderContainers(containers);
+    clearInterval(refreshTimer);
+    refreshTimer = managedInterval(loadContainers, 5000);
+  } catch (e) {
+    _refreshInFlight = false;
+    if (!_lastContainers) {
+      main.innerHTML = '';
+      var errDiv = document.createElement('div');
+      errDiv.className = 'empty-state';
+      errDiv.innerHTML = '<h3>Cannot reach Docker engine</h3>' +
+        '<p style="margin-top:8px;max-width:480px">The app cannot connect to the Docker daemon. Open an SSH tunnel to your Docker host, then reload the page.</p>';
+      // Tunnel builder form
+      var form = document.createElement('div');
+      form.style.cssText = 'margin-top:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:480px;text-align:left';
+      form.innerHTML = '<p style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.04em">Build your tunnel command</p>' +
+        '<label style="font-size:13px">User</label>' +
+        '<input id="tunnel-user" placeholder="e.g. dev" style="margin-bottom:8px">' +
+        '<label style="font-size:13px">Host</label>' +
+        '<input id="tunnel-host" placeholder="e.g. 192.168.1.10 or myserver.local" style="margin-bottom:12px">';
+      // Set values via DOM property (not innerHTML) to prevent XSS
+      form.querySelector('#tunnel-user').value = sessionStorage.getItem('tunnelUser') || '';
+      form.querySelector('#tunnel-host').value = sessionStorage.getItem('tunnelHost') || '';
+      var cmdPre = document.createElement('pre');
+      cmdPre.id = 'tunnel-cmd';
+      cmdPre.style.cssText = 'background:var(--sidebar-bg);color:#e2e8f0;border-radius:6px;padding:12px;font-size:12px;white-space:pre-wrap;word-break:break-all;cursor:pointer;margin-bottom:8px';
+      cmdPre.title = 'Click to copy';
+      form.appendChild(cmdPre);
+      var copyNote = document.createElement('p');
+      copyNote.style.cssText = 'font-size:11px;color:var(--muted)';
+      copyNote.textContent = 'Click the command to copy it, then run it in your terminal. After the tunnel is open, reload this page.';
+      form.appendChild(copyNote);
+      errDiv.appendChild(form);
+      function updateCmd() {
+        var u = document.getElementById('tunnel-user').value.trim() || 'user';
+        var h = document.getElementById('tunnel-host').value.trim() || 'docker-host';
+        sessionStorage.setItem('tunnelUser', u); sessionStorage.setItem('tunnelHost', h);
+        cmdPre.textContent = 'ssh -fNL /tmp/docker.sock:/var/run/docker.sock ' + u + '@' + h;
+      }
+      updateCmd();
+      form.querySelector('#tunnel-user').addEventListener('input', updateCmd);
+      form.querySelector('#tunnel-host').addEventListener('input', updateCmd);
+      cmdPre.addEventListener('click', function() {
+        navigator.clipboard.writeText(cmdPre.textContent).then(function() {
+          cmdPre.style.outline = '2px solid var(--green,#22c55e)';
+          setTimeout(function() { cmdPre.style.outline = ''; }, 1200);
+        });
+      });
+      main.appendChild(errDiv);
+    }
+    clearInterval(refreshTimer);
+    refreshTimer = managedInterval(loadContainers, 5000);
+  }
+}
+
+var _containerSearch = '';
+var _containerSort = 'name';
+var _containerSortDir = 1;
+function sortContainers(arr, key, dir) {
+  return arr.slice().sort(function(a, b) {
+    var va = key === 'created' ? new Date(a.created).getTime() : (a[key] || '').toString().toLowerCase();
+    var vb = key === 'created' ? new Date(b.created).getTime() : (b[key] || '').toString().toLowerCase();
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
+}
+function renderContainers(containers) {
+  var main = document.getElementById('main');
+  main.innerHTML = '';
+
+  var header = document.createElement('div');
+  header.className = 'page-header';
+  var h2 = document.createElement('h2');
+  h2.textContent = 'Containers (' + containers.length + ')';
+  var actions = document.createElement('div');
+  actions.className = 'header-actions';
+  var search = document.createElement('input');
+  search.className = 'search-bar';
+  search.placeholder = 'Search containers...';
+  search.value = _containerSearch;
+  search.oninput = function() { _containerSearch = search.value; renderContainers(_lastContainers); };
+  actions.append(search, makeBtn('Run new container', function() { showRunModal(); }, 'btn primary'));
+  header.append(h2, actions);
+  main.appendChild(header);
+
+  var filtered = containers;
+  if (_containerSearch) {
+    var q = _containerSearch.toLowerCase();
+    filtered = containers.filter(function(c) { return c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q) || c.id.includes(q); });
+  }
+
+  if (filtered.length === 0) {
+    var empty = document.createElement('div'); empty.className = 'empty-state';
+    empty.innerHTML = containers.length === 0 ? '<h3>No containers</h3><p style="margin-top:8px">No containers found on the connected Docker engine.</p>' : '<h3>No matches</h3><p>No containers match your search.</p>';
+    if (containers.length === 0) { var runBtn = makeBtn('Run new container', function() { showRunModal(); }, 'btn primary'); runBtn.style.marginTop = '16px'; empty.appendChild(runBtn); }
+    main.appendChild(empty); return;
+  }
+
+  filtered = sortContainers(filtered, _containerSort, _containerSortDir);
+
+  var table = document.createElement('table');
+  var thead = document.createElement('thead');
+  var headerRow = document.createElement('tr');
+  [['Name','name'],['Image','image'],['Status','state'],['Ports',null],['Created','created'],['Actions',null]].forEach(function(col) {
+    var th = document.createElement('th');
+    th.textContent = col[0];
+    if (col[1]) {
+      th.style.cursor = 'pointer';
+      if (_containerSort === col[1]) th.textContent += _containerSortDir === 1 ? ' \u25B2' : ' \u25BC';
+      th.onclick = function() {
+        if (_containerSort === col[1]) _containerSortDir *= -1;
+        else { _containerSort = col[1]; _containerSortDir = 1; }
+        renderContainers(_lastContainers);
+      };
+    }
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  filtered.forEach(function(c) {
+    var tr = document.createElement('tr');
+    var tdName = document.createElement('td');
+    var nd = document.createElement('div'); nd.className = 'container-name'; nd.textContent = c.name;
+    var id = document.createElement('div'); id.className = 'container-id'; id.textContent = c.id;
+    tdName.append(nd, id);
+    var tdImage = document.createElement('td'); tdImage.style.cssText = 'font-size:12px;color:var(--muted)'; tdImage.textContent = c.image;
+    var tdStatus = document.createElement('td');
+    var ss = document.createElement('span'); ss.className = 'status ' + c.state; ss.textContent = c.status;
+    tdStatus.appendChild(ss);
+    if (c.health && c.health !== 'none') { var hb = document.createElement('span'); hb.className = 'health-badge ' + c.health; hb.textContent = c.health; tdStatus.appendChild(hb); }
+    var tdPorts = document.createElement('td');
+    var portList = formatPorts(c.ports);
+    if (portList) {
+      portList.forEach(function(ps, i) {
+        if (i > 0) tdPorts.appendChild(document.createTextNode(', '));
+        var parts = ps.split(':');
+        if (parts.length === 2 && parts[0] !== '0') {
+          var a = document.createElement('a');
+          a.className = 'port-link';
+          a.textContent = ps;
+          a.href = 'http://' + (_dockerVmHost || location.hostname) + ':' + parts[0];
+          a.target = '_blank';
+          a.rel = 'noopener';
+          tdPorts.appendChild(a);
+        } else {
+          var s = document.createElement('span'); s.style.cssText = 'font-size:12px;color:var(--muted)'; s.textContent = ps; tdPorts.appendChild(s);
+        }
+      });
+    } else { tdPorts.textContent = '\u2014'; tdPorts.style.color = 'var(--muted)'; }
+    var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(c.created);
+    var tdActions = document.createElement('td');
+    var bg = document.createElement('div'); bg.className = 'btn-group';
+    if (c.state === 'running') {
+      bg.append(
+        makeActionBtn('Stop', function() { return apiFetch(API+'/containers/'+c.id+'/stop',{method:'POST'}).then(function(){toast(c.name+' stopped','info');loadContainers();}); }, undefined, 'Stopping\u2026'),
+        makeActionBtn('Restart', function() { return apiFetch(API+'/containers/'+c.id+'/restart',{method:'POST'}).then(function(){loadContainers();}); }, undefined, 'Restarting\u2026'),
+        makeActionBtn('Pause', function() { return apiFetch(API+'/containers/'+c.id+'/pause',{method:'POST'}).then(function(){toast(c.name+' paused','info');loadContainers();}); }),
+        makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
+        makeBtn('Terminal', function() { showDetail(c.id, c.name, 'terminal'); }),
+        makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
+        makeBtn('Stats', function() { showDetail(c.id, c.name, 'stats'); }),
+        makeActionBtn('Kill', function() { if(!confirm('Force kill "'+c.name+'"?'))throw new Error('Cancelled'); return guardedAction('kill-c-' + c.id, function() { return apiFetch(API+'/containers/'+c.id+'/kill',{method:'POST'}).then(function(){toast(c.name+' killed','info');loadContainers();}); }); }, 'btn danger small', 'Killing\u2026'),
+      );
+    } else if (c.state === 'paused') {
+      bg.append(
+        makeActionBtn('Unpause', function() { return apiFetch(API+'/containers/'+c.id+'/unpause',{method:'POST'}).then(function(){loadContainers();}); }, 'btn primary'),
+        makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
+        makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
+      );
+    } else {
+      bg.append(
+        makeActionBtn('Start', function() {
+          return apiFetch(API+'/containers/'+c.id+'/start',{method:'POST'}).then(function(){
+            return new Promise(function(resolve) { setTimeout(resolve, 600); });
+          }).then(function(){
+            return apiFetch(API+'/containers/'+c.id+'/inspect');
+          }).then(function(data){
+            var s = data.state || {};
+            if (s.Status === 'exited' || s.Status === 'dead') {
+              toast(c.name + ' exited immediately (code ' + (s.ExitCode !== undefined ? s.ExitCode : '?') + ')', 'error');
+            } else {
+              toast(c.name + ' started', 'success');
+            }
+            loadContainers();
+          });
+        }, 'btn primary'),
+        makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
+        makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
+      );
+    }
+    bg.appendChild(makeActionBtn('Delete', function() {
+      if (!confirm('Delete container "' + c.name + '"?')) throw new Error('Cancelled');
+      return guardedAction('del-c-' + c.id, function() { return apiFetch(API+'/containers/'+c.id+'?force=true',{method:'DELETE'}).then(function(){toast(c.name+' deleted','info');loadContainers();}); });
+    }, 'btn danger'));
+    tdActions.appendChild(bg);
+    tr.append(tdName, tdImage, tdStatus, tdPorts, tdCreated, tdActions);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  main.appendChild(table);
+}
+
+// ── Detail view ──
+function showDetail(id, name, tab) {
+  clearInterval(refreshTimer); _refreshInFlight = false;
+  var main = document.getElementById('main');
+  if (main._ws) { try { main._ws.close(); } catch(e) {} main._ws = null; }
+  main.innerHTML = '';
+  var header = document.createElement('div'); header.className = 'page-header';
+  var h2 = document.createElement('h2'); h2.textContent = name;
+  header.append(h2, makeBtn('Back to list', function() { showPage('containers'); }));
+  main.appendChild(header);
+  var tabs = document.createElement('div'); tabs.className = 'detail-tabs';
+  ['logs','terminal','inspect','stats','processes','files'].forEach(function(t) {
+    var d = document.createElement('div'); d.className = 'detail-tab' + (t === tab ? ' active' : '');
+    d.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+    d.onclick = function() { showDetail(id, name, t); };
+    tabs.appendChild(d);
+  });
+  main.appendChild(tabs);
+  var content = document.createElement('div'); content.id = 'detail-content'; main.appendChild(content);
+  if (tab === 'logs') showLogsContent(id, name);
+  else if (tab === 'terminal') showShellContent(id);
+  else if (tab === 'inspect') showInspectContent(id);
+  else if (tab === 'stats') showStatsContent(id);
+  else if (tab === 'processes') showProcessesContent(id);
+  else if (tab === 'files') showFilesContent(id);
+}
+
+// ── Logs with search and download ──
+function showLogsContent(id, name) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '';
+  var toolbar = document.createElement('div'); toolbar.className = 'log-toolbar';
+  var searchInp = document.createElement('input'); searchInp.className = 'log-search'; searchInp.placeholder = 'Search logs (regex)...';
+  function downloadLogs(fmt) {
+    var headers = { 'X-Requested-With': 'ContainerManager' };
+    var t = getToken();
+    if (t) headers['Authorization'] = 'Bearer ' + t;
+    var suffix = fmt === 'jsonl' ? '/logs/download.jsonl' : '/logs/download';
+    fetch(API+'/containers/'+id+suffix+'?tail=5000', { headers: headers })
+      .then(function(resp) { if (!resp.ok) throw new Error('HTTP '+resp.status); return resp.blob(); })
+      .then(function(blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = id+(fmt==='jsonl'?'-logs.jsonl':'-logs.txt'); a.click();
+        URL.revokeObjectURL(url);
+      }).catch(function(e) { toast('Download failed: '+e.message, 'error'); });
+  }
+  var dlBtn = makeBtn('Download .txt', function() { downloadLogs('txt'); }, 'btn small');
+  var dlJsonlBtn = makeBtn('Download .jsonl', function() { downloadLogs('jsonl'); }, 'btn small');
+  toolbar.append(searchInp, dlBtn, dlJsonlBtn);
+  el.appendChild(toolbar);
+  var viewer = document.createElement('div'); viewer.className = 'log-viewer'; viewer.id = 'log-output';
+  viewer.textContent = 'Connecting...';
+  el.appendChild(viewer);
+
+  var allLines = [];
+  searchInp.oninput = function() {
+    var q = searchInp.value;
+    if (!q) { viewer.textContent = allLines.join(''); return; }
+    try {
+      var escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      var re = new RegExp('(' + escaped + ')', 'gi');
+      viewer.innerHTML = '';
+      allLines.forEach(function(line) {
+        re.lastIndex = 0;
+        if (re.test(line)) {
+          re.lastIndex = 0;
+          var parts = line.split(re);
+          parts.forEach(function(p) {
+            var s = document.createElement('span');
+            var testRe = new RegExp('^' + escaped + '$', 'i');
+            if (testRe.test(p)) s.className = 'log-match';
+            s.textContent = p;
+            viewer.appendChild(s);
+          });
+        } else {
+          viewer.appendChild(document.createTextNode(line));
+        }
+      });
+    } catch(e) { /* invalid regex, ignore */ }
+  };
+
+  connectLogsWS(id, 0, allLines, viewer);
+}
+
+var MAX_LOG_RECONNECTS = 10;
+function connectLogsWS(id, attempt, allLines, viewer) {
+  if (!document.getElementById('log-output')) return;
+  if (attempt >= MAX_LOG_RECONNECTS) {
+    allLines.push('\n[Max reconnect attempts reached — container may be removed]\n');
+    viewer.textContent = allLines.join('');
+    return;
+  }
+  var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
+  var ws = new WebSocket(wsUrl('/ws/logs/' + id));
+  ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { allLines.push('\n[Reconnected]\n'); viewer.textContent = allLines.join(''); } };
+  ws.onmessage = function(e) {
+    allLines.push(e.data);
+    if (allLines.length > MAX_LOG_LINES) { allLines.splice(0, allLines.length - MAX_LOG_LINES); viewer.textContent = allLines.join(''); }
+    else { viewer.textContent += e.data; }
+    viewer.scrollTop = viewer.scrollHeight;
+  };
+  ws.onerror = function() { allLines.push('\n[Connection error]'); viewer.textContent += '\n[Connection error]'; };
+  ws.onclose = function() {
+    if (document.getElementById('log-output')) {
+      allLines.push('\n[Reconnecting in '+(delay/1000)+'s...]\n');
+      viewer.textContent += '\n[Reconnecting in '+(delay/1000)+'s...]\n';
+      setTimeout(function() { connectLogsWS(id, attempt + 1, allLines, viewer); }, delay);
+    }
+  };
+  document.getElementById('main')._ws = ws;
+}
+
+// ── Terminal ──
+var MAX_EXEC_RECONNECTS = 5;
+function showShellContent(id) {
+  var el = document.getElementById('detail-content'); el.innerHTML = '';
+  var term = document.createElement('div'); term.className = 'terminal'; term.id = 'term-output';
+  var input = document.createElement('input'); input.className = 'terminal-input'; input.placeholder = 'Type command...';
+  el.append(term, input);
+  var _execClosed = false;
+  var disconnectBtn = makeBtn('Disconnect', function() { _execClosed = true; if (document.getElementById('main')._ws) { try { document.getElementById('main')._ws.close(1000, 'user disconnect'); } catch(e) {} document.getElementById('main')._ws = null; } term.textContent += '\r\n[Disconnected]'; }, 'btn small danger');
+  disconnectBtn.style.cssText = 'position:absolute;top:8px;right:8px';
+  el.style.position = 'relative';
+  el.appendChild(disconnectBtn);
+  connectExecWS(id, 0, term, input, el, function() { return _execClosed; }, function(v) { _execClosed = v; });
+  input.focus();
+}
+
+function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
+  if (isClosed()) return;
+  if (attempt >= MAX_EXEC_RECONNECTS) {
+    term.textContent += '\r\n[Max reconnect attempts reached]';
+    var btn = makeBtn('Reconnect shell', function() { setClosed(false); connectExecWS(id, 0, term, input, el, isClosed, setClosed); }, 'btn primary');
+    btn.style.marginTop = '8px';
+    el.appendChild(btn);
+    return;
+  }
+  var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
+  var ws = new WebSocket(wsUrl('/ws/exec/' + id));
+  ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { term.textContent += '\r\n[Reconnected]\r\n'; } };
+  ws.onmessage = function(e) { term.textContent += e.data; term.scrollTop = term.scrollHeight; };
+  ws.onerror = function() { term.textContent += '\r\n[Connection error]'; };
+  ws.onclose = function() {
+    if (!isClosed() && document.getElementById('term-output')) {
+      term.textContent += '\r\n[Reconnecting in ' + (delay / 1000) + 's...]\r\n';
+      setTimeout(function() { connectExecWS(id, attempt + 1, term, input, el, isClosed, setClosed); }, delay);
+    } else if (!isClosed()) {
+      term.textContent += '\r\n[Session ended]';
+      var btn = makeBtn('Reconnect shell', function() { setClosed(false); connectExecWS(id, 0, term, input, el, isClosed, setClosed); }, 'btn primary');
+      btn.style.marginTop = '8px';
+      el.appendChild(btn);
+    }
+  };
+  input.onkeydown = function(e) { if (e.key === 'Enter') { if (ws.readyState === WebSocket.OPEN) { ws.send(input.value + '\n'); } input.value = ''; } };
+  document.getElementById('main')._ws = ws;
+}
+
+// ── Inspect ──
+async function showInspectContent(id) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '<div class="refreshing">Loading...</div>';
+  try {
+    var d = await apiFetch(API+'/containers/'+id+'/inspect');
+    el.innerHTML = '';
+    var panel = document.createElement('div'); panel.className = 'inspect-panel';
+    function addSection(title, entries) {
+      var sec = document.createElement('div'); sec.className = 'inspect-section';
+      var h4 = document.createElement('h4'); h4.textContent = title; sec.appendChild(h4);
+      entries.forEach(function(entry) {
+        var row = document.createElement('div'); row.className = 'inspect-kv';
+        var k = document.createElement('div'); k.className = 'k'; k.textContent = entry[0];
+        var v = document.createElement('div'); v.className = 'v mono';
+        v.textContent = typeof entry[1] === 'object' ? JSON.stringify(entry[1], null, 2) : String(entry[1] == null ? '' : entry[1]);
+        row.append(k, v); sec.appendChild(row);
+      });
+      panel.appendChild(sec);
+    }
+    // Rename button
+    var renameRow = document.createElement('div'); renameRow.style.cssText = 'margin-bottom:12px;display:flex;gap:8px;align-items:center';
+    var renameInp = document.createElement('input'); renameInp.value = d.name; renameInp.style.cssText = 'padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;width:200px';
+    renameRow.append(renameInp, makeActionBtn('Rename', function() {
+      var newName = renameInp.value;
+      if (newName === d.name) throw new Error('Name unchanged');
+      return apiFetch(API+'/containers/'+id+'/rename?name='+encodeURIComponent(newName),{method:'POST'}).then(function(){toast('Renamed to '+newName,'success');showDetail(id, newName, 'inspect');});
+    }, 'btn small'));
+    panel.appendChild(renameRow);
+    addSection('General', [['ID',d.id],['Name',d.name],['Image',d.image],['Created',d.created],['Status',d.state.Status],['PID',d.state.Pid],['Restarts',d.restart_count],['Platform',d.platform]]);
+    addSection('Config', [['Command',(d.config.cmd||[]).join(' ')],['Entrypoint',(d.config.entrypoint||[]).join(' ')],['Working Dir',d.config.working_dir],['User',d.config.user||'(default)'],['Hostname',d.config.hostname]]);
+    addSection('Resources', [['Memory Limit',d.host_config.memory_limit_mb+' MB'],['CPU Shares',d.host_config.cpu_shares],['Restart Policy',d.host_config.restart_policy||'none'],['Read-only FS',d.host_config.readonly_rootfs],['Security',d.host_config.security_opt]]);
+    if (d.config.env && d.config.env.length) { addSection('Environment', d.config.env.map(function(e) { var p = e.split('='); return [p[0], p.slice(1).join('=')]; })); }
+    if (d.mounts && d.mounts.length) { addSection('Mounts', d.mounts.map(function(m) { return [m.destination, m.source+' ('+m.type+(m.rw?',rw':',ro')+')']; })); }
+    if (d.health_check && d.health_check.status !== 'none') {
+      var hcEntries = [['Status', d.health_check.status],['Failing Streak', d.health_check.failing_streak]];
+      if (d.health_check.test) hcEntries.unshift(['Test', d.health_check.test.join(' ')]);
+      if (d.health_check.log && d.health_check.log.length) {
+        d.health_check.log.forEach(function(l,i) { hcEntries.push(['Probe '+(i+1), 'Exit: '+l.ExitCode+' — '+(l.Output||'').substring(0,200)]); });
+      }
+      addSection('Health Check', hcEntries);
+    }
+    if (Object.keys(d.network).length) { addSection('Networks', Object.entries(d.network).map(function(e) { return [e[0], 'IP: '+e[1].ip+' GW: '+e[1].gateway]; })); }
+    el.appendChild(panel);
+  } catch (e) { el.textContent = 'Error: ' + e.message; }
+}
+
+// ── Stats ──
+async function showStatsContent(id) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '<div class="stats-grid" id="stats-grid"><div class="refreshing">Loading stats...</div></div>';
+  var _statsInFlight = false;
+  async function refresh() {
+    if (_statsInFlight) return;
+    _statsInFlight = true;
+    try {
+      var s = await apiFetch(API+'/containers/'+id+'/stats');
+      var grid = document.getElementById('stats-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      [['CPU',s.cpu_percent+'%'],['Memory',s.memory_usage_mb+' MB'],['Mem Limit',s.memory_limit_mb+' MB'],['Mem %',s.memory_percent+'%'],['Net RX',s.net_rx_mb+' MB'],['Net TX',s.net_tx_mb+' MB'],['Disk Read',s.disk_read_mb+' MB'],['Disk Write',s.disk_write_mb+' MB']].forEach(function(item) {
+        var card = document.createElement('div'); card.className = 'stat';
+        var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
+        var v = document.createElement('div'); v.className = 'value'; v.textContent = item[1];
+        card.append(l, v); grid.appendChild(card);
+      });
+    } catch (e) {
+      var grid = document.getElementById('stats-grid');
+      if (grid) { grid.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent='Error: '+e.message; grid.appendChild(p); }
+      if (e.message.indexOf('not running') !== -1 || e.message.indexOf('not found') !== -1 || e.message.indexOf('unreachable') !== -1) clearInterval(refreshTimer);
+    } finally { _statsInFlight = false; }
+  }
+  refresh();
+  var statId = managedInterval(function() {
+    if (!document.getElementById('detail-content')) { clearInterval(statId); return; }
+    refresh();
+  }, 3000);
+}
+
+// ── Processes (docker top) ──
+async function showProcessesContent(id) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '<div class="refreshing">Loading processes...</div>';
+  var _topInFlight = false;
+  async function refresh() {
+    if (_topInFlight) return;
+    _topInFlight = true;
+    try {
+      var data = await apiFetch(API+'/containers/'+id+'/top');
+      var el2 = document.getElementById('detail-content');
+      if (!el2) return;
+      el2.innerHTML = '';
+      if (!data.processes || data.processes.length === 0) {
+        el2.innerHTML = '<div class="empty-state"><p>No processes running (container may be stopped)</p></div>';
+        return;
+      }
+      var table = document.createElement('table');
+      var thead = document.createElement('thead');
+      var headerRow = document.createElement('tr');
+      (data.titles || []).forEach(function(t) { var th = document.createElement('th'); th.textContent = t; headerRow.appendChild(th); });
+      thead.appendChild(headerRow); table.appendChild(thead);
+      var tbody = document.createElement('tbody');
+      data.processes.forEach(function(proc) {
+        var tr = document.createElement('tr');
+        proc.forEach(function(val) { var td = document.createElement('td'); td.className = 'mono'; td.style.fontSize='12px'; td.textContent = val; tr.appendChild(td); });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody); el2.appendChild(table);
+    } catch (e) {
+      var el2 = document.getElementById('detail-content');
+      if (el2) { el2.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent = e.message; el2.appendChild(p); }
+      if (e.message.indexOf('not running') !== -1 || e.message.indexOf('not found') !== -1 || e.message.indexOf('unreachable') !== -1 || e.message.indexOf('conflict') !== -1) clearInterval(refreshTimer);
+    } finally { _topInFlight = false; }
+  }
+  refresh();
+  var procId = managedInterval(function() {
+    if (!document.getElementById('detail-content')) { clearInterval(procId); return; }
+    refresh();
+  }, 3000);
+}
+
+// ── Files (docker diff) ──
+async function showFilesContent(id) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '<div class="refreshing">Loading filesystem changes...</div>';
+  try {
+    var data = await apiFetch(API+'/containers/'+id+'/diff');
+    el.innerHTML = '';
+    if (!data || data.length === 0) {
+      el.innerHTML = '<div class="empty-state"><p>No filesystem changes detected</p></div>';
+      return;
+    }
+    var table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Change</th><th>Path</th></tr></thead>';
+    var tbody = document.createElement('tbody');
+    data.forEach(function(d) {
+      var tr = document.createElement('tr');
+      var tdKind = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'status ' + (d.kind === 'Added' ? 'running' : d.kind === 'Deleted' ? 'exited' : 'created');
+      badge.textContent = d.kind;
+      tdKind.appendChild(badge);
+      var tdPath = document.createElement('td'); tdPath.className = 'mono'; tdPath.style.fontSize='12px'; tdPath.textContent = d.path;
+      tr.append(tdKind, tdPath); tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); el.appendChild(table);
+    var note = document.createElement('p'); note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px';
+    note.textContent = data.length + ' change(s) from base image';
+    el.appendChild(note);
+  } catch (e) { el.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent = e.message; el.appendChild(p); }
+}
+
+// ── Shared Hub Search builder ──
+var POPULAR_IMAGES = [
+  {name:'nginx',    desc:'Web server'},
+  {name:'postgres', desc:'SQL database'},
+  {name:'redis',    desc:'In-memory cache'},
+  {name:'alpine',   desc:'Minimal Linux'},
+  {name:'ubuntu',   desc:'Ubuntu Linux'},
+  {name:'mysql',    desc:'MySQL database'},
+  {name:'node',     desc:'Node.js runtime'},
+  {name:'python',   desc:'Python runtime'},
+];
+
+function buildHubSearch(onSelect) {
+  var section = document.createElement('div');
+  var label = document.createElement('p'); label.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em'; label.textContent = 'Search Docker Hub';
+  section.appendChild(label);
+
+  // Popular starter chips
+  var popular = document.createElement('div'); popular.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px';
+  POPULAR_IMAGES.forEach(function(img) {
+    var chip = document.createElement('button'); chip.type = 'button';
+    chip.style.cssText = 'font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:4px';
+    chip.innerHTML = '<strong>' + esc(img.name) + '</strong><span style="color:var(--muted)"> · ' + esc(img.desc) + '</span>';
+    chip.onclick = function() { showTags(img.name); };
+    popular.appendChild(chip);
+  });
+  section.appendChild(popular);
+
+  var row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px';
+  var hubInp = document.createElement('input'); hubInp.placeholder = 'Search by image name, e.g. postgres'; hubInp.style.flex = '1';
+  var results = document.createElement('div'); results.style.cssText = 'max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px'; results.setAttribute('data-testid','hub-results');
+
+  function showTags(imageName) {
+    results.innerHTML = '<span style="font-size:12px;color:var(--muted)">Loading tags for ' + esc(imageName) + '…</span>';
+    apiFetch(API+'/registry/tags?image=' + encodeURIComponent(imageName))
+      .then(function(data) {
+        results.innerHTML = '';
+        var back = document.createElement('div');
+        back.style.cssText = 'font-size:11px;color:var(--accent,#0d9488);cursor:pointer;margin-bottom:6px;display:flex;align-items:center;gap:4px';
+        back.innerHTML = '&#8592; Back to search';
+        back.onclick = function() { results.innerHTML = ''; };
+        results.appendChild(back);
+        var nameRow = document.createElement('div');
+        nameRow.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border)';
+        nameRow.textContent = imageName + ' — pick a tag:';
+        results.appendChild(nameRow);
+        var tags = data.tags || [];
+        if (!tags.length) { results.innerHTML += '<span style="font-size:12px;color:var(--muted)">No tags found.</span>'; return; }
+        tags.forEach(function(tag) {
+          var full = imageName + ':' + tag;
+          var t = document.createElement('div');
+          t.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; t.setAttribute('data-testid','hub-tag-row');
+          t.innerHTML = '<span style="font-size:13px;font-family:monospace">' + esc(tag) + '</span>' +
+            '<span style="font-size:11px;color:var(--accent,#0d9488)">Select ↵</span>';
+          t.onclick = function() { onSelect(full); results.innerHTML = ''; hubInp.value = ''; };
+          results.appendChild(t);
+        });
+      })
+      .catch(function() { results.innerHTML = '<span style="font-size:12px;color:var(--red,#ef4444)">Failed to load tags.</span>'; });
+  }
+
+  function doSearch() {
+    var q = hubInp.value.trim(); if (!q) return;
+    results.innerHTML = '<span style="font-size:12px;color:var(--muted)">Searching…</span>';
+    apiFetch(API+'/registry/search?q=' + encodeURIComponent(q))
+      .then(function(data) {
+        results.innerHTML = '';
+        (data.results || []).forEach(function(item) {
+          var name = item.repo_name || item.name;
+          var pulls = item.pull_count > 1e6 ? Math.round(item.pull_count/1e6)+'M' : item.pull_count > 1e3 ? Math.round(item.pull_count/1e3)+'K' : (item.pull_count||'');
+          var r2 = document.createElement('div');
+          r2.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; r2.setAttribute('data-testid','hub-result-row');
+          r2.innerHTML = '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(name) + '</div>' +
+            '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis">' + esc(item.short_description||'') + '</div></div>' +
+            (pulls ? '<span style="font-size:11px;color:var(--muted);white-space:nowrap">' + esc(pulls) + ' pulls</span>' : '');
+          r2.onclick = function() { showTags(name); };
+          results.appendChild(r2);
+        });
+        if (!data.results || !data.results.length) results.innerHTML = '<span style="font-size:12px;color:var(--muted)">No results.</span>';
+      })
+      .catch(function() { results.innerHTML = '<span style="font-size:12px;color:var(--red,#ef4444)">Search failed.</span>'; });
+  }
+  hubInp.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
+  var btn = makeBtn('Search', doSearch, 'btn');
+  row.append(hubInp, btn); section.appendChild(row); section.appendChild(results);
+  // Hide if docker.io not allowed
+  apiFetch(API+'/config').then(function(cfg) {
+    if (!(cfg.allowed_registries||[]).some(function(r) { return r.replace(/\/$/, '') === 'docker.io'; })) section.style.display = 'none';
+  }).catch(function(){});
+  return { section: section, focus: function() { hubInp.focus(); } };
+}
+
+// ── Run Modal ──
+function showRunModal(prefillImage) {
+  if (typeof prefillImage !== 'string') prefillImage = '';
+  if (document.querySelector('.modal-bg')) return;
+  clearInterval(refreshTimer);
+  var modal = document.createElement('div'); modal.className = 'modal-bg';
+  modal.onclick = function(e) { if (e.target === modal) { modal.remove(); loadContainers(); } };
+  var box = document.createElement('div'); box.className = 'modal';
+  var h3 = document.createElement('h3'); h3.textContent = 'Run new container'; box.appendChild(h3);
+
+  // Available images quick-pick
+  var pickSection = document.createElement('div');
+  pickSection.style.cssText = 'margin-bottom:16px';
+  var pickLabel = document.createElement('p');
+  pickLabel.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em';
+  pickLabel.textContent = 'Available images on this engine';
+  pickSection.appendChild(pickLabel);
+  var pickList = document.createElement('div');
+  pickList.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;min-height:28px';
+  pickList.innerHTML = '<span style="font-size:12px;color:var(--muted)">Loading…</span>';
+  pickSection.appendChild(pickList);
+  box.appendChild(pickSection);
+
+  function addField(label, fieldId, ph, type) {
+    var lbl = document.createElement('label'); lbl.textContent = label; box.appendChild(lbl);
+    var inp = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+    inp.id = fieldId; inp.placeholder = ph; if (type === 'textarea') inp.rows = 3;
+    box.appendChild(inp);
+    return inp;
+  }
+  // Docker Hub search
+  var hubSearch = buildHubSearch(function(name) { imgInput.value = name; });
+  hubSearch.section.style.marginBottom = '16px';
+  box.appendChild(hubSearch.section);
+
+  var imgInput = addField('Image','run-image', 'registry/image:tag');
+  if (prefillImage) imgInput.value = prefillImage;
+  var dl = document.createElement('datalist'); dl.id = 'image-list'; box.appendChild(dl);
+  imgInput.setAttribute('list','image-list');
+
+  var imgHint = document.createElement('p');
+  imgHint.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px';
+  imgHint.id = 'run-registry-hint';
+  imgHint.textContent = 'Loading registry configuration…';
+  box.appendChild(imgHint);
+
+  addField('Name (optional)','run-name','my-container');
+  addField('Command (optional)','run-cmd','e.g. /bin/sh or sleep 3600');
+  addField('Ports (e.g. 8080:80)','run-ports','host-port:container-port');
+  addField('Environment variables (one per line)','run-env','KEY=VALUE','textarea');
+  addField('Volume mounts (one per line)','run-volumes','volume_name:/container/path','textarea');
+  addField('Labels (one per line, key=value)','run-labels','app=myapp','textarea');
+  var lbl3 = document.createElement('label'); lbl3.textContent = 'Restart policy'; box.appendChild(lbl3);
+  var selRestart = document.createElement('select'); selRestart.id = 'run-restart';
+  ['no','on-failure','unless-stopped','always'].forEach(function(p) { var o = document.createElement('option'); o.value = p; o.textContent = p; selRestart.appendChild(o); });
+  box.appendChild(selRestart);
+  var lbl4 = document.createElement('label'); lbl4.textContent = 'Network (optional)'; box.appendChild(lbl4);
+  var selNet = document.createElement('select'); selNet.id = 'run-network';
+  var defOpt = document.createElement('option'); defOpt.value = ''; defOpt.textContent = '(default bridge)'; selNet.appendChild(defOpt);
+  box.appendChild(selNet);
+  apiFetch(API+'/networks').then(function(nets) { nets.forEach(function(n) { var o = document.createElement('option'); o.value = n.name; o.textContent = n.name + ' (' + n.driver + ')'; selNet.appendChild(o); }); }).catch(function(){});
+  var actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(makeBtn('Cancel', function() { modal.remove(); loadContainers(); }),
+    makeActionBtn('Run', async function() {
+      var image = document.getElementById('run-image').value.trim();
+      if (!image) { toast('Image name is required', 'error'); throw new Error('no image'); }
+      var name = document.getElementById('run-name').value || null;
+      var cmd = document.getElementById('run-cmd').value || null;
+      var portsRaw = document.getElementById('run-ports').value;
+      var envRaw = document.getElementById('run-env').value;
+      var volRaw = document.getElementById('run-volumes').value;
+      var labelsRaw = document.getElementById('run-labels').value;
+      var restart = document.getElementById('run-restart').value;
+      var networkVal = document.getElementById('run-network').value || null;
+      var ports = portsRaw ? Object.fromEntries(portsRaw.split(',').map(function(p) { var s = p.trim().split(':'); return [s[1], s[0]]; })) : null;
+      var environment = envRaw ? envRaw.trim().split('\n').filter(Boolean) : null;
+      var volumes = volRaw ? volRaw.trim().split('\n').filter(Boolean) : null;
+      var labels = null;
+      if (labelsRaw) { labels = {}; labelsRaw.trim().split('\n').filter(Boolean).forEach(function(l) { var eq = l.indexOf('='); if (eq > 0) labels[l.substring(0, eq)] = l.substring(eq + 1); }); }
+      var params = new URLSearchParams(); params.set('image', image); if (name) params.set('name', name);
+      await apiFetch(API+'/containers/run?'+params, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ports:ports, environment:environment, command:cmd, volumes:volumes, restart_policy:restart, network:networkVal, labels:labels}) });
+      if (document.body.contains(modal)) modal.remove(); toast('Container launched','success'); loadContainers();
+    }, 'btn primary', 'Launching\u2026'));
+  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+  imgInput.focus();
+
+  // Load available images for quick-pick chips and datalist
+  apiFetch(API+'/images').then(function(images) {
+    pickList.innerHTML = '';
+    if (!images || images.length === 0) {
+      pickList.innerHTML = '<span style="font-size:12px;color:var(--muted)">No images on this engine yet — pull one from the Images page first.</span>';
+      return;
+    }
+    var tags = [];
+    images.forEach(function(img) { (img.tags || [img.tag]).forEach(function(t) { if (t && t !== '<none>:<none>') tags.push(t); }); });
+    tags.slice(0, 20).forEach(function(tag) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = tag;
+      chip.style.cssText = 'font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis';
+      chip.title = tag;
+      chip.onclick = function() { imgInput.value = tag; };
+      pickList.appendChild(chip);
+      var o = document.createElement('option'); o.value = tag; dl.appendChild(o);
+    });
+    if (tags.length === 0) {
+      pickList.innerHTML = '<span style="font-size:12px;color:var(--muted)">No tagged images available.</span>';
+    }
+  }).catch(function() {
+    pickList.innerHTML = '<span style="font-size:12px;color:var(--muted)">Could not load images.</span>';
+  });
+
+  // Load registry hint
+  apiFetch(API+'/config').then(function(cfg) {
+    var hint = document.getElementById('run-registry-hint');
+    if (!hint) return;
+    var regs = (cfg.allowed_registries || []);
+    if (regs.length === 0) {
+      hint.textContent = 'No registry restriction configured — any image is permitted.';
+    } else {
+      hint.textContent = 'Allowed registries: ' + regs.join(', ') + '. Images must be pulled to this engine before they can be run.';
+    }
+  }).catch(function() {});
+}
+
+// ── Images ──
+async function loadImages() {
+  var main = document.getElementById('main');
+  main.innerHTML = '<div class="refreshing">Loading images...</div>';
+  try {
+    var images = await apiFetch(API+'/images');
+    if (currentPage !== 'images') return;
+    main.innerHTML = '';
+    var header = document.createElement('div'); header.className = 'page-header';
+    var h2 = document.createElement('h2'); h2.textContent = 'Images (' + images.length + ')';
+    var ha = document.createElement('div'); ha.className = 'header-actions';
+    var imgSearch = document.createElement('input'); imgSearch.className = 'search-bar'; imgSearch.placeholder = 'Search images...';
+    ha.append(imgSearch, makeBtn('Pull image', showPullModal, 'btn primary'));
+    header.append(h2, ha);
+    main.appendChild(header);
+    var imgDesc = document.createElement('p'); imgDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; imgDesc.textContent = 'Images are stored on the remote Docker engine. Only images from approved registries can be pulled or run.';
+    main.appendChild(imgDesc);
+    var allImages = images;
+    function renderImageTable(filtered) {
+    var table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Repository / Tag</th><th>Image ID</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead>';
+    var tbody = document.createElement('tbody');
+    if (filtered.length === 0) {
+      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px'; td.textContent = 'No images found'; tr.appendChild(td); tbody.appendChild(tr);
+    } else {
+      filtered.forEach(function(img) {
+        var tr = document.createElement('tr');
+        var tdTag = document.createElement('td'); tdTag.style.cssText = 'font-size:13px;font-weight:500'; tdTag.textContent = img.tag;
+        var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = img.id;
+        var tdSize = document.createElement('td'); tdSize.textContent = img.size_mb + ' MB';
+        var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(img.created);
+        var tdAct = document.createElement('td');
+        var bg = document.createElement('div'); bg.className = 'btn-group';
+        bg.append(makeBtn('Inspect', function() { showImageInspect(img.id, img.tag); }), makeBtn('Run', function() { showPage('containers'); showRunModal(img.tag); }, 'btn'), makeActionBtn('Delete', function() { if(!confirm('Delete image '+img.tag+'?'))throw new Error('Cancelled'); return guardedAction('del-img-' + img.id, function() { return apiFetch(API+'/images/'+encodeURIComponent(img.id)+'?force=true',{method:'DELETE'}).then(function(){toast('Image deleted','info');loadImages();}); }); }, 'btn danger', 'Deleting\u2026'));
+        tdAct.appendChild(bg);
+        tr.append(tdTag, tdId, tdSize, tdCreated, tdAct); tbody.appendChild(tr);
+      });
+    }
+    table.appendChild(tbody);
+    // Remove previous table if re-rendering
+    var prev = main.querySelector('table'); if (prev) prev.remove();
+    main.appendChild(table);
+    }
+    renderImageTable(allImages);
+    imgSearch.oninput = function() {
+      var q = imgSearch.value.toLowerCase();
+      var filtered = q ? allImages.filter(function(img) { return img.tag.toLowerCase().includes(q) || img.id.includes(q); }) : allImages;
+      renderImageTable(filtered);
+    };
+  } catch (e) { main.innerHTML = ''; var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: '+e.message; main.appendChild(p); }
+}
+
+async function showImageInspect(id, tag) {
+  try {
+    var d = await apiFetch(API+'/images/'+encodeURIComponent(id)+'/inspect');
+    var modal = document.createElement('div'); modal.className = 'modal-bg';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    var box = document.createElement('div'); box.className = 'modal';
+    var h3 = document.createElement('h3'); h3.textContent = 'Image: ' + tag; box.appendChild(h3);
+    var panel = document.createElement('div'); panel.className = 'inspect-panel';
+    // General info
+    var info = document.createElement('div'); info.className = 'inspect-section';
+    [['ID',d.id],['Tags',(d.tags||[]).join(', ')],['Size',d.size_mb+' MB'],['OS',d.os],['Arch',d.architecture],['Layers',d.layers],['Created',d.created]].forEach(function(entry) {
+      var row = document.createElement('div'); row.className = 'inspect-kv';
+      var k = document.createElement('div'); k.className = 'k'; k.textContent = entry[0];
+      var v = document.createElement('div'); v.className = 'v mono'; v.textContent = String(entry[1]);
+      row.append(k, v); info.appendChild(row);
+    });
+    panel.appendChild(info);
+    // Layer history
+    if (d.history && d.history.length) {
+      var sec = document.createElement('div'); sec.className = 'inspect-section';
+      var h4 = document.createElement('h4'); h4.textContent = 'Layer History'; sec.appendChild(h4);
+      d.history.forEach(function(l) {
+        var row = document.createElement('div'); row.className = 'inspect-kv';
+        var k = document.createElement('div'); k.className = 'k'; k.textContent = l.size_mb + ' MB';
+        var v = document.createElement('div'); v.className = 'v mono'; v.style.fontSize = '11px'; v.textContent = l.created_by || '';
+        row.append(k, v); sec.appendChild(row);
+      });
+      panel.appendChild(sec);
+    }
+    box.appendChild(panel);
+    // Tag form
+    var tagSec = document.createElement('div'); tagSec.style.cssText = 'margin-top:16px';
+    var tagLbl = document.createElement('label'); tagLbl.textContent = 'Tag image (new repository:tag)'; tagSec.appendChild(tagLbl);
+    var tagRow = document.createElement('div'); tagRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+    var tagInp = document.createElement('input'); tagInp.placeholder = 'us-docker.pkg.dev/project/repo/image'; tagInp.style.cssText = 'flex:1;padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px';
+    var tagTagInp = document.createElement('input'); tagTagInp.placeholder = 'latest'; tagTagInp.value = 'latest'; tagTagInp.style.cssText = 'width:80px;padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px';
+    tagRow.append(tagInp, tagTagInp, makeActionBtn('Tag', function() {
+      var repo = tagInp.value; var tagVal = tagTagInp.value || 'latest';
+      return apiFetch(API+'/images/'+encodeURIComponent(id)+'/tag?repository='+encodeURIComponent(repo)+'&tag='+encodeURIComponent(tagVal),{method:'POST'}).then(function(){toast('Image tagged','success');modal.remove();loadImages();});
+    }, 'btn small primary'));
+    tagSec.appendChild(tagRow);
+    // Push button row
+    var pushRow = document.createElement('div'); pushRow.style.cssText = 'display:flex;gap:8px;margin-top:8px;align-items:center';
+    var pushLbl = document.createElement('span'); pushLbl.style.cssText = 'font-size:12px;color:var(--muted)'; pushLbl.textContent = 'Push to registry:';
+    pushRow.append(pushLbl);
+    (d.tags || []).forEach(function(t) {
+      pushRow.appendChild(makeActionBtn('Push ' + t.split('/').pop(), function() {
+        if (!confirm('Push "' + t + '" to registry?')) throw new Error('Cancelled');
+        return apiFetch(API+'/images/push?image='+encodeURIComponent(t),{method:'POST'}).then(function(){toast('Pushed '+t,'success');});
+      }, 'btn small primary', 'Pushing\u2026'));
+    });
+    tagSec.appendChild(pushRow);
+    box.appendChild(tagSec);
+    var actions = document.createElement('div'); actions.className = 'actions';
+    actions.appendChild(makeBtn('Close', function() { modal.remove(); }));
+    box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function showPullModal(prefillImage) {
+  var modal = document.createElement('div'); modal.className = 'modal-bg';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  var box = document.createElement('div'); box.className = 'modal';
+  var h3 = document.createElement('h3'); h3.textContent = 'Pull image'; box.appendChild(h3);
+
+  var lbl = document.createElement('label'); lbl.textContent = 'Image'; box.appendChild(lbl);
+  var inp = document.createElement('input'); inp.id = 'pull-image'; inp.placeholder = 'image:tag or registry/image:tag';
+  if (typeof prefillImage === 'string' && prefillImage) inp.value = prefillImage;
+  box.appendChild(inp);
+  var hint = document.createElement('p'); hint.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px;margin-bottom:16px'; hint.textContent = 'Loading registry configuration…'; box.appendChild(hint);
+  apiFetch(API+'/config').then(function(cfg) {
+    var regs = cfg.allowed_registries || [];
+    hint.textContent = regs.length ? 'Allowed: ' + regs.join(', ') : 'No registry restriction configured.';
+  }).catch(function() {});
+
+  var hubSearch = buildHubSearch(function(name) { inp.value = name; });
+  box.appendChild(hubSearch.section);
+
+  var actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(makeBtn('Cancel', function() { modal.remove(); }), makeActionBtn('Pull', async function() {
+    var image = document.getElementById('pull-image').value.trim();
+    if (!image) { toast('Image name is required', 'error'); throw new Error('no image'); }
+    await apiFetch(API+'/images/pull?image='+encodeURIComponent(image), {method:'POST'});
+    if (document.body.contains(modal)) modal.remove(); toast('Image pulled: '+image, 'success'); loadImages();
+  }, 'btn primary', 'Pulling\u2026'));
+  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+  inp.focus();
+}
+
+// ── Volumes ──
+async function loadVolumes() {
+  var main = document.getElementById('main');
+  main.innerHTML = '<div class="refreshing">Loading volumes...</div>';
+  try {
+    var volumes = await apiFetch(API+'/volumes');
+    if (currentPage !== 'volumes') return;
+    main.innerHTML = '';
+    var header = document.createElement('div'); header.className = 'page-header';
+    var h2 = document.createElement('h2'); h2.textContent = 'Volumes (' + volumes.length + ')';
+    var ha = document.createElement('div'); ha.className = 'header-actions';
+    ha.append(makeBtn('Create volume', showCreateVolumeModal, 'btn primary'), makeActionBtn('Prune unused', function() { if(!confirm('Remove all unused volumes?'))throw new Error('Cancelled'); return guardedAction('prune-volumes', function() { return apiFetch(API+'/volumes/prune',{method:'POST'}).then(function(r){toast('Pruned '+(r.deleted||[]).length+' volumes, reclaimed '+r.space_reclaimed_mb+' MB','success');loadVolumes();}); }); }, 'btn danger', 'Pruning\u2026'));
+    header.append(h2, ha); main.appendChild(header);
+    var volDesc = document.createElement('p'); volDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; volDesc.textContent = 'Named volumes persist data across container restarts. Host-path mounts are not permitted. Volumes live on the remote Docker engine.';
+    main.appendChild(volDesc);
+    var table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Name</th><th>Driver</th><th>In Use</th><th>Created</th><th>Actions</th></tr></thead>';
+    var tbody = document.createElement('tbody');
+    if (volumes.length === 0) { var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=5; td.style.cssText='text-align:center;color:var(--muted);padding:40px'; td.textContent='No volumes found'; tr.appendChild(td); tbody.appendChild(tr); }
+    else { volumes.forEach(function(v) {
+      var tr = document.createElement('tr');
+      var tdN = document.createElement('td'); tdN.style.fontWeight='500'; tdN.textContent = v.name;
+      var tdD = document.createElement('td'); tdD.textContent = v.driver;
+      var tdU = document.createElement('td');
+      if (v.in_use) { var badge = document.createElement('span'); badge.className = 'status running'; badge.textContent = v.containers.join(', '); tdU.appendChild(badge); }
+      else { tdU.textContent = 'Unused'; tdU.style.color = 'var(--muted)'; }
+      var tdC = document.createElement('td'); tdC.className = 'created-time'; tdC.textContent = v.created ? new Date(v.created).toLocaleString() : '';
+      var tdA = document.createElement('td'); tdA.appendChild(makeActionBtn('Delete', function() { if(!confirm('Delete volume "'+v.name+'"?'))throw new Error('Cancelled'); return guardedAction('del-vol-' + v.name, function() { return apiFetch(API+'/volumes/'+encodeURIComponent(v.name),{method:'DELETE'}).then(function(){toast('Volume deleted','info');loadVolumes();}); }); }, 'btn danger'));
+      tr.append(tdN, tdD, tdU, tdC, tdA); tbody.appendChild(tr);
+    }); }
+    table.appendChild(tbody); main.appendChild(table);
+  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
+}
+
+function showCreateVolumeModal() {
+  var modal = document.createElement('div'); modal.className = 'modal-bg';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  var box = document.createElement('div'); box.className = 'modal';
+  var h3 = document.createElement('h3'); h3.textContent = 'Create volume'; box.appendChild(h3);
+  var lbl = document.createElement('label'); lbl.textContent = 'Volume name'; box.appendChild(lbl);
+  var inp = document.createElement('input'); inp.id = 'vol-name'; inp.placeholder = 'my-volume'; box.appendChild(inp);
+  var actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
+    await apiFetch(API+'/volumes/create?name='+encodeURIComponent(inp.value),{method:'POST'});
+    modal.remove(); toast('Volume created','success'); loadVolumes();
+  },'btn primary'));
+  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+}
+
+// ── Networks ──
+async function loadNetworks() {
+  var main = document.getElementById('main');
+  main.innerHTML = '<div class="refreshing">Loading networks...</div>';
+  try {
+    var networks = await apiFetch(API+'/networks');
+    if (currentPage !== 'networks') return;
+    main.innerHTML = '';
+    var header = document.createElement('div'); header.className = 'page-header';
+    var h2 = document.createElement('h2'); h2.textContent = 'Networks (' + networks.length + ')';
+    var ha = document.createElement('div'); ha.className = 'header-actions';
+    ha.append(makeBtn('Create network', showCreateNetworkModal, 'btn primary'), makeActionBtn('Prune unused', function() { if(!confirm('Remove unused custom networks?'))throw new Error('Cancelled'); return guardedAction('prune-networks', function() { return apiFetch(API+'/networks/prune',{method:'POST'}).then(function(r){ var n = (r.deleted||[]).length; toast(n > 0 ? 'Pruned '+n+' network'+(n===1?'':'s') : 'No unused custom networks to prune', n > 0 ? 'success' : 'info'); loadNetworks();}); }); }, 'btn danger', 'Pruning\u2026'));
+    header.append(h2, ha); main.appendChild(header);
+    var desc = document.createElement('p'); desc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; desc.textContent = 'Docker networks are internal to the container environment and used for container-to-container communication. They are not externally accessible.';
+    main.appendChild(desc);
+    var table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Name</th><th>ID</th><th>Driver</th><th>Scope</th><th>Containers</th><th>Subnet</th><th>Actions</th></tr></thead>';
+    var tbody = document.createElement('tbody');
+    if (networks.length === 0) { var tr=document.createElement('tr'); var td=document.createElement('td'); td.colSpan=7; td.style.cssText='text-align:center;color:var(--muted);padding:40px'; td.textContent='No networks found'; tr.appendChild(td); tbody.appendChild(tr); }
+    else { networks.forEach(function(n) {
+      var tr = document.createElement('tr');
+      var tdN = document.createElement('td'); tdN.style.fontWeight='500'; tdN.textContent = n.name;
+      if (['bridge','host','none'].indexOf(n.name) !== -1) { var def = document.createElement('span'); def.textContent = 'built-in'; def.style.cssText = 'margin-left:6px;font-size:10px;font-weight:500;color:var(--muted);background:#f0f0f0;padding:1px 5px;border-radius:4px'; tdN.appendChild(def); }
+      var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = n.id;
+      var tdD = document.createElement('td'); tdD.textContent = n.driver;
+      var tdS = document.createElement('td'); tdS.textContent = n.scope;
+      var tdC = document.createElement('td');
+      var containerNames = Object.values(n.containers || {});
+      tdC.textContent = containerNames.length > 0 ? containerNames.join(', ') : 'none';
+      tdC.style.color = containerNames.length > 0 ? 'var(--text)' : 'var(--muted)';
+      var tdSubnet = document.createElement('td'); tdSubnet.className = 'container-id';
+      tdSubnet.textContent = (n.ipam && n.ipam.length) ? n.ipam.map(function(c){return c.Subnet||'';}).filter(Boolean).join(', ') : '';
+      var tdAct = document.createElement('td');
+      var actGrp = document.createElement('div'); actGrp.className = 'btn-group';
+      if (['bridge','host','none'].indexOf(n.name) === -1) {
+        actGrp.appendChild(makeActionBtn('Connect...', function() { showNetworkConnectModal(n.id, n.name); }, 'btn small'));
+        // Disconnect buttons for each connected container
+        Object.entries(n.containers || {}).forEach(function(entry) {
+          actGrp.appendChild(makeActionBtn('Disconnect ' + entry[1], function() {
+            return apiFetch(API+'/networks/'+n.id+'/disconnect?container_id='+entry[0],{method:'POST'}).then(function(){toast('Disconnected '+entry[1],'info');loadNetworks();});
+          }, 'btn danger small'));
+        });
+        actGrp.appendChild(makeActionBtn('Delete', function() { if(!confirm('Delete network "'+n.name+'"?'))throw new Error('Cancelled'); return guardedAction('del-net-' + n.id, function() { return apiFetch(API+'/networks/'+n.id,{method:'DELETE'}).then(function(){toast('Network deleted','info');loadNetworks();}); }); }, 'btn danger small'));
+      }
+      tdAct.appendChild(actGrp);
+      tr.append(tdN, tdId, tdD, tdS, tdC, tdSubnet, tdAct); tbody.appendChild(tr);
+    }); }
+    table.appendChild(tbody); main.appendChild(table);
+  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
+}
+
+function showCreateNetworkModal() {
+  var modal = document.createElement('div'); modal.className = 'modal-bg';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  var box = document.createElement('div'); box.className = 'modal';
+  var h3 = document.createElement('h3'); h3.textContent = 'Create network'; box.appendChild(h3);
+  var lbl = document.createElement('label'); lbl.textContent = 'Network name'; box.appendChild(lbl);
+  var inp = document.createElement('input'); inp.id = 'net-name'; inp.placeholder = 'my-network'; box.appendChild(inp);
+  var lbl2 = document.createElement('label'); lbl2.textContent = 'Driver'; box.appendChild(lbl2);
+  var sel = document.createElement('select'); sel.id = 'net-driver';
+  ['bridge','overlay','macvlan'].forEach(function(d) { var o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o); });
+  box.appendChild(sel);
+  var actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
+    var name = document.getElementById('net-name').value;
+    var driver = document.getElementById('net-driver').value;
+    await apiFetch(API+'/networks/create?name='+encodeURIComponent(name)+'&driver='+driver,{method:'POST'});
+    modal.remove(); toast('Network created','success'); loadNetworks();
+  },'btn primary'));
+  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+}
+
+function showNetworkConnectModal(networkId, networkName) {
+  var modal = document.createElement('div'); modal.className = 'modal-bg';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  var box = document.createElement('div'); box.className = 'modal';
+  var h3 = document.createElement('h3'); h3.textContent = 'Connect container to ' + networkName; box.appendChild(h3);
+  var lbl = document.createElement('label'); lbl.textContent = 'Select container'; box.appendChild(lbl);
+  var sel = document.createElement('select'); sel.id = 'net-connect-container'; box.appendChild(sel);
+  var actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Connect', async function() {
+    var cid = sel.value;
+    if (!cid) throw new Error('Select a container');
+    await apiFetch(API+'/networks/'+networkId+'/connect?container_id='+cid,{method:'POST'});
+    modal.remove(); toast('Container connected','success'); loadNetworks();
+  },'btn primary'));
+  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
+  // Load containers into select
+  apiFetch(API+'/containers').then(function(containers) {
+    containers.forEach(function(c) {
+      var o = document.createElement('option'); o.value = c.id; o.textContent = c.name + ' (' + c.state + ')'; sel.appendChild(o);
+    });
+  }).catch(function(){});
+}
+
+// ── Compose ──
+async function showCompose() {
+  var main = document.getElementById('main');
+  main.innerHTML = '<div class="refreshing">Loading...</div>';
+
+  // Load running stacks
+  var stacks = [];
+  try { stacks = await apiFetch(API+'/compose/stacks'); } catch(e) {}
+  if (currentPage !== 'compose') return;
+
+  main.innerHTML = '';
+  var header = document.createElement('div'); header.className = 'page-header';
+  var h2 = document.createElement('h2'); h2.textContent = 'Compose'; header.appendChild(h2); main.appendChild(header);
+  var compDesc = document.createElement('p'); compDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; compDesc.textContent = 'Compose files are validated before deployment. Privileged mode, host-path mounts, build instructions, and unapproved registries are blocked.';
+  main.appendChild(compDesc);
+
+  // Show running stacks
+  if (stacks.length > 0) {
+    var stackHeader = document.createElement('h3'); stackHeader.textContent = 'Running Stacks'; stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px'; main.appendChild(stackHeader);
+    stacks.forEach(function(stack) {
+      var card = document.createElement('div'); card.className = 'stack-card';
+      var h4 = document.createElement('h4');
+      var dot = document.createElement('span'); dot.className = 'dot ' + (stack.status === 'running' ? 'ok' : 'down');
+      h4.append(dot, document.createTextNode(stack.name));
+      card.appendChild(h4);
+      var svcs = document.createElement('div'); svcs.className = 'stack-services';
+      svcs.textContent = stack.services.map(function(s) { return s.name + ' (' + s.state + ')'; }).join(' | ');
+      card.appendChild(svcs);
+      var btnRow = document.createElement('div'); btnRow.style.cssText = 'margin-top:8px;display:flex;gap:6px';
+      btnRow.appendChild(makeActionBtn('Restart', function() {
+        return apiFetch(API+'/compose/down?project_name='+encodeURIComponent(stack.name),{method:'POST'}).then(function(){
+          toast(stack.name+' stopped, restarting...','info');
+          var form = new FormData();
+          return apiFetch(API+'/compose/up?project_name='+encodeURIComponent(stack.name),{method:'POST', body:form});
+        }).then(function(){toast(stack.name+' restarted','success');showCompose();});
+      }, 'btn small', 'Restarting\u2026'));
+      btnRow.appendChild(makeActionBtn('Tear down', function() { return apiFetch(API+'/compose/down?project_name='+encodeURIComponent(stack.name),{method:'POST'}).then(function(){toast(stack.name+' stopped','info');showCompose();}); }, 'btn danger small', 'Tearing down\u2026'));
+      card.appendChild(btnRow);
+      main.appendChild(card);
+    });
+    main.appendChild(document.createElement('hr'));
+  }
+
+  // Deploy new
+  var deployHeader = document.createElement('h3'); deployHeader.textContent = 'Deploy Stack'; deployHeader.style.cssText = 'font-size:16px;margin:16px 0 12px'; main.appendChild(deployHeader);
+  var dz = document.createElement('div'); dz.className = 'drop-zone';
+  var fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.yml,.yaml'; fi.style.display = 'none';
+  fi.onchange = function() { if (fi.files[0]) uploadCompose(fi.files[0]); };
+  dz.onclick = function() { fi.click(); };
+  var p1 = document.createElement('p'); p1.style.cssText = 'font-weight:500;font-size:14px;color:var(--text)'; p1.textContent = 'Upload compose file (docker-compose.yml)';
+  var p2 = document.createElement('p'); p2.style.cssText = 'font-size:12px;margin-top:8px;color:var(--muted)'; p2.textContent = 'Click or drag and drop';
+  dz.append(fi, p1, p2);
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; });
+  dz.addEventListener('dragleave', function() { dz.style.borderColor = 'var(--border)'; });
+  dz.addEventListener('drop', function(e) { e.preventDefault(); dz.style.borderColor = 'var(--border)'; if (e.dataTransfer.files[0]) uploadCompose(e.dataTransfer.files[0]); });
+  main.appendChild(dz);
+
+  var controls = document.createElement('div'); controls.className = 'mt-16';
+  var lbl = document.createElement('label'); lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted)'; lbl.textContent = 'Project Name';
+  var inp = document.createElement('input'); inp.id = 'compose-project'; inp.value = 'dev';
+  inp.style.cssText = 'padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:200px;margin-top:6px';
+  controls.append(lbl, document.createElement('br'), inp); main.appendChild(controls);
+  var output = document.createElement('div'); output.id = 'compose-output'; output.className = 'mt-16'; main.appendChild(output);
+}
+
+async function uploadCompose(file) {
+  var project = document.getElementById('compose-project').value;
+  var form = new FormData(); form.append('file', file);
+  var out = document.getElementById('compose-output');
+  out.innerHTML = '<div class="log-viewer">Deploying stack...</div>';
+  try {
+    var data = await apiFetch(API+'/compose/up?project_name='+encodeURIComponent(project), {method:'POST', body:form});
+    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#3fb950';
+    lv.textContent = data.output || 'Stack deployed successfully.';
+    out.innerHTML = ''; out.appendChild(lv);
+    toast('Stack "'+project+'" deployed', 'success');
+  } catch (e) {
+    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#f85149';
+    lv.textContent = e.message; out.innerHTML = ''; out.appendChild(lv);
+  }
+}
+
+// ── System ──
+async function loadSystem() {
+  var main = document.getElementById('main');
+  main.innerHTML = '<div class="refreshing">Loading system info...</div>';
+  try {
+    var results = await Promise.all([apiFetch(API+'/system/info'), apiFetch(API+'/system/df')]);
+    if (currentPage !== 'system') return;
+    var info = results[0]; var df = results[1];
+    main.innerHTML = '';
+    var header = document.createElement('div'); header.className = 'page-header';
+    var h2 = document.createElement('h2'); h2.textContent = 'System';
+    var ha = document.createElement('div'); ha.className = 'header-actions';
+    ha.appendChild(makeActionBtn('Prune system', function() { if(!confirm('Remove stopped containers, dangling images, and unused networks?'))throw new Error('Cancelled'); return guardedAction('prune-system', function() { return apiFetch(API+'/system/prune',{method:'POST'}).then(function(r){ var parts = []; if(r.containers_deleted) parts.push(r.containers_deleted+' container'+(r.containers_deleted===1?'':'s')); if(r.images_deleted) parts.push(r.images_deleted+' image'+(r.images_deleted===1?'':'s')); if(r.networks_deleted) parts.push(r.networks_deleted+' network'+(r.networks_deleted===1?'':'s')); var msg = parts.length ? 'Pruned '+parts.join(', ') : 'Nothing to prune'; if(r.space_reclaimed_mb > 0) msg += '. Reclaimed '+r.space_reclaimed_mb+' MB'; toast(msg, parts.length ? 'success' : 'info'); loadSystem();}); }); }, 'btn danger', 'Pruning\u2026'));
+    header.append(h2, ha); main.appendChild(header);
+
+    var grid = document.createElement('div'); grid.className = 'info-grid';
+    [['Engine',info.docker_version],['API',info.api_version],['OS',info.os],['Kernel',info.kernel],['Arch',info.architecture],['CPUs',info.cpus],['Memory',info.memory_gb+' GB'],['Storage',info.storage_driver],['Containers',info.containers+' ('+info.containers_running+' running, '+info.containers_paused+' paused, '+info.containers_stopped+' stopped)'],['Images',info.images],['Logging',info.logging_driver],['Cgroup',info.cgroup_driver]].forEach(function(item) {
+      var card = document.createElement('div'); card.className = 'info-card';
+      var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
+      var v = document.createElement('div'); v.className = 'value'; v.textContent = String(item[1]);
+      card.append(l, v); grid.appendChild(card);
+    });
+    main.appendChild(grid);
+
+    var dfH = document.createElement('h3'); dfH.textContent = 'Disk Usage'; dfH.style.cssText = 'margin-top:28px;margin-bottom:16px;font-size:18px'; main.appendChild(dfH);
+    var dfGrid = document.createElement('div'); dfGrid.className = 'info-grid';
+    [['Images',df.images_mb+' MB',df.images_count+' images, '+df.images_reclaimable_mb+' MB reclaimable',null],
+     ['Containers',df.containers_mb+' MB',df.containers_count+' containers',null],
+     ['Volumes',df.volumes_mb+' MB',df.volumes_count+' volumes, '+df.volumes_reclaimable_mb+' MB reclaimable',null],
+     ['Build Cache',df.build_cache_mb+' MB',df.build_cache_reclaimable_mb+' MB reclaimable','build_cache'],
+     ['Total',df.total_mb+' MB','',null]].forEach(function(item) {
+      var card = document.createElement('div'); card.className = 'info-card';
+      var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
+      var v = document.createElement('div'); v.className = 'value'; v.textContent = item[1];
+      card.append(l, v);
+      if (item[2]) { var sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = item[2]; card.appendChild(sub); }
+      if (item[3] === 'build_cache' && df.build_cache_reclaimable_mb > 0) {
+        card.appendChild(makeActionBtn('Prune', function() { if(!confirm('Prune build cache?'))throw new Error('Cancelled'); return guardedAction('prune-build-cache', function() { return apiFetch(API+'/system/prune-build-cache',{method:'POST'}).then(function(r){toast('Reclaimed '+r.space_reclaimed_mb+' MB','success');loadSystem();}); }); }, 'btn danger small', 'Pruning\u2026'));
+      }
+      dfGrid.appendChild(card);
+    });
+    main.appendChild(dfGrid);
+
+    // Security options
+    if (info.security_options && info.security_options.length) {
+      var secH = document.createElement('h3'); secH.textContent = 'Security'; secH.style.cssText = 'margin-top:28px;margin-bottom:12px;font-size:18px'; main.appendChild(secH);
+      var secList = document.createElement('div'); secList.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px';
+      info.security_options.forEach(function(opt) {
+        var p = document.createElement('div'); p.className = 'mono'; p.style.cssText = 'font-size:12px;padding:2px 0'; p.textContent = opt; secList.appendChild(p);
+      });
+      main.appendChild(secList);
+    }
+
+    // Audit log
+    var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; auditH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px'; main.appendChild(auditH);
+    var auditDesc = document.createElement('p'); auditDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px'; auditDesc.textContent = 'Recent API requests made to this app.'; main.appendChild(auditDesc);
+    var auditToolbar = document.createElement('div'); auditToolbar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+    var auditRefreshBtn = makeBtn('Refresh', function() { loadAuditLog(auditBody); }, 'btn small');
+    var auditDlBtn = makeBtn('Download .jsonl', function() {
+      var a = document.createElement('a'); a.href = API+'/system/audit-log/download';
+      a.setAttribute('download','audit.jsonl'); a.click();
+    }, 'btn small');
+    auditToolbar.append(auditRefreshBtn, auditDlBtn);
+    main.appendChild(auditToolbar);
+    var auditTable = document.createElement('table');
+    auditTable.innerHTML = '<thead><tr><th>Time</th><th>Event</th><th>Method</th><th>Path</th><th>Status</th><th>Remote</th></tr></thead>';
+    var auditBody = document.createElement('tbody');
+    auditTable.appendChild(auditBody);
+    main.appendChild(auditTable);
+    loadAuditLog(auditBody);
+
+  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
+}
+
+function loadAuditLog(tbody) {
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
+  apiFetch(API+'/system/audit-log?tail=200').then(function(rows) {
+    tbody.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=6; td.style.cssText='text-align:center;color:var(--muted);padding:20px'; td.textContent='No audit entries yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    rows.slice().reverse().forEach(function(row) {
+      var tr = document.createElement('tr');
+      var ts = row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '';
+      var evt = row.event || row.raw || '';
+      var statusCode = typeof row.status === 'number' ? row.status : 0;
+      var statusColor = statusCode >= 400 ? 'var(--red)' : statusCode >= 200 ? 'var(--green,#22c55e)' : '';
+      function _auditCell(text, extraStyle) {
+        var td = document.createElement('td');
+        td.style.cssText = 'font-size:12px;' + (extraStyle || '');
+        td.textContent = text;
+        return td;
+      }
+      var td0 = document.createElement('td');
+      td0.style.cssText = 'font-size:11px;color:var(--muted);white-space:nowrap';
+      td0.textContent = ts;
+      var td4 = _auditCell(String(row.status || ''));
+      if (statusColor) td4.style.color = statusColor;
+      var td3 = document.createElement('td');
+      td3.style.cssText = 'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      td3.title = row.path || '';
+      td3.textContent = row.path || '';
+      tr.appendChild(td0);
+      tr.appendChild(_auditCell(evt));
+      tr.appendChild(_auditCell(row.method || ''));
+      tr.appendChild(td3);
+      tr.appendChild(td4);
+      tr.appendChild(_auditCell(row.remote || '', 'color:var(--muted)'));
+      tbody.appendChild(tr);
+    });
+  }).catch(function(e) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--red);padding:12px">Failed: ' + e.message + '</td></tr>';
+  });
+}
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', function(e) {
+  // Don't fire when typing in an input/textarea/select or inside a modal
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (!getToken()) return;
+
+  // Esc — close any open modal
+  if (e.key === 'Escape') {
+    var modal = document.querySelector('.modal-overlay');
+    if (modal) { modal.remove(); return; }
+  }
+
+  // Don't fire if a modal is open (other keys)
+  if (document.querySelector('.modal-overlay')) return;
+
+  var key = e.key;
+  // 1-6 — sidebar navigation
+  var navMap = {'1':'containers','2':'images','3':'volumes','4':'networks','5':'compose','6':'system'};
+  if (navMap[key]) { showPage(navMap[key]); return; }
+
+  // r — Run new container
+  if (key === 'r' && currentPage === 'containers') { showRunModal(); return; }
+
+  // / — focus search bar
+  if (key === '/') {
+    e.preventDefault();
+    var searchInput = document.querySelector('#container-search, #image-search, input[placeholder*="Search"]');
+    if (searchInput) searchInput.focus();
+    return;
+  }
+
+  // ? — show shortcut help
+  if (key === '?') {
+    var overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000';
+    overlay.onclick = function(ev) { if (ev.target === overlay) overlay.remove(); };
+    var box = document.createElement('div'); box.style.cssText = 'background:var(--card);border-radius:12px;padding:28px 32px;min-width:320px;max-width:480px';
+    box.innerHTML = '<h3 style="margin-bottom:16px;font-size:16px">Keyboard shortcuts</h3>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<tr><td style="padding:5px 0;color:var(--muted)"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">1</kbd>–<kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">6</kbd></td><td style="padding:5px 0 5px 12px">Navigate sections</td></tr>' +
+      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">r</kbd></td><td style="padding:5px 0 5px 12px">Run new container</td></tr>' +
+      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">/</kbd></td><td style="padding:5px 0 5px 12px">Focus search</td></tr>' +
+      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">Esc</kbd></td><td style="padding:5px 0 5px 12px">Close modal</td></tr>' +
+      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">?</kbd></td><td style="padding:5px 0 5px 12px">Show this help</td></tr>' +
+      '</table>' +
+      '<button class="btn" style="margin-top:20px;width:100%" onclick="this.closest(\'.modal-overlay\').remove()">Close</button>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    return;
+  }
+});
+
+// ── Setup Wizard ──────────────────────────────────────────────────────────
+async function checkSetupState() {
+    try {
+        const r = await fetch('/api/setup-state');
+        const state = await r.json();
+        if (!state.configured && !state.from_env) {
+            showSetupWizard(state);
+            return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
+function showSetupWizard(state) {
+    document.body.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;';
+    // Use safe string values; server-supplied data assigned via textContent/value only
+    const defaultSocket = String((state && state.tunnel_socket) || '/tmp/skiff-docker.sock');
+    const tunnelActive = !!(state && state.tunnel_active);
+
+    // Build the card using a static HTML template — no server data interpolated
+    wrap.innerHTML =
+      '<div style="background:#1e293b;border-radius:12px;padding:40px;width:520px;max-width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
+          '<svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>' +
+          '<span style="color:#f1f5f9;font-size:18px;font-weight:600;">SKIFF Container Manager</span>' +
+        '</div>' +
+        '<p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>' +
+        '<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">' +
+          '<button id="sw-tab-tunnel" onclick="swSetMode(\'tunnel\')" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>' +
+          '<button id="sw-tab-local" onclick="swSetMode(\'local\')" style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>' +
+        '</div>' +
+        '<div id="sw-panel-tunnel">' +
+          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host</span></label>' +
+          '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
+            '<input id="sw-ssh-target" type="text" style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;outline:none;" placeholder="dev@my-docker-vm"/>' +
+            '<button id="sw-tunnel-btn" onclick="swConnectTunnel()" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>' +
+          '</div>' +
+          '<div id="sw-tunnel-status" style="font-size:12px;margin-bottom:16px;min-height:18px;"></div>' +
+        '</div>' +
+        '<div id="sw-panel-local" style="display:none;">' +
+          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">DOCKER HOST</label>' +
+          '<input id="sw-host-custom" type="text" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:6px;outline:none;" placeholder="unix:///var/run/docker.sock"/>' +
+          '<p style="color:#64748b;font-size:12px;margin:0 0 16px;">Local Docker Engine, Docker Desktop, Podman, Colima, or a pre-existing SSH tunnel socket.</p>' +
+        '</div>' +
+        '<input id="sw-host" type="hidden"/>' +
+        '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">API TOKEN</label>' +
+        '<div style="display:flex;gap:8px;margin-bottom:16px;">' +
+          '<input id="sw-token" type="text" readonly style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:13px;font-family:monospace;outline:none;" placeholder="Click Generate \u2192"/>' +
+          '<button onclick="document.getElementById(\'sw-token\').value=Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b=>b.toString(16).padStart(2,\'0\')).join(\'\')" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Generate</button>' +
+        '</div>' +
+        '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">ALLOWED REGISTRIES <span style="color:#64748b;font-weight:400;">(comma-separated, empty = allow all)</span></label>' +
+        '<input id="sw-regs" type="text" value="" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:24px;outline:none;" placeholder="docker.io,ghcr.io,us-docker.pkg.dev/my-project/"/>' +
+        '<div id="sw-error" style="display:none;color:#f87171;font-size:13px;margin-bottom:16px;"></div>' +
+        '<div style="display:flex;gap:12px;">' +
+          '<button onclick="swSubmit(true)" style="flex:1;background:#0d9488;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Save .env &amp; Continue</button>' +
+          '<button onclick="swSubmit(false)" style="flex:1;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Continue (session only)</button>' +
+        '</div>' +
+        '<p style="color:#475569;font-size:11px;text-align:center;margin:16px 0 0;">"Session only" keeps config in server memory. "Save .env" downloads a config file for next time.</p>' +
+      '</div>';
+    document.body.appendChild(wrap);
+
+    // Set server-supplied values safely via DOM properties (never via innerHTML interpolation)
+    const hostInput = document.getElementById('sw-host');
+    const statusEl = document.getElementById('sw-tunnel-status');
+    if (tunnelActive) {
+        hostInput.value = 'unix://' + defaultSocket;
+        statusEl.style.color = '#4ade80';
+        statusEl.textContent = '\u2713 Tunnel active \u2014 ' + defaultSocket;
+    } else {
+        hostInput.value = 'unix:///var/run/docker.sock';
+        statusEl.style.color = '#64748b';
+        statusEl.textContent = 'Requires key-based SSH auth (no passphrase).';
+    }
+    document.getElementById('sw-host-custom').value = 'unix:///var/run/docker.sock';
+}
+
+function swSetMode(mode) {
+    const isTunnel = mode === 'tunnel';
+    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? '' : 'none';
+    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : '';
+    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : 'transparent';
+    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#94a3b8';
+    document.getElementById('sw-tab-local').style.background = isTunnel ? 'transparent' : '#0d9488';
+    document.getElementById('sw-tab-local').style.color = isTunnel ? '#94a3b8' : 'white';
+    if (!isTunnel) {
+        document.getElementById('sw-host').value = document.getElementById('sw-host-custom').value.trim() || 'unix:///var/run/docker.sock';
+    }
+}
+
+async function swConnectTunnel() {
+    const target = document.getElementById('sw-ssh-target').value.trim();
+    const statusEl = document.getElementById('sw-tunnel-status');
+    const btn = document.getElementById('sw-tunnel-btn');
+    if (!target) { statusEl.style.color = '#f87171'; statusEl.textContent = 'Enter user@host first.'; return; }
+    statusEl.style.color = '#94a3b8';
+    statusEl.textContent = 'Connecting\u2026';
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/setup/tunnel', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'ContainerManager'},
+            body: JSON.stringify({ssh_target: target}),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            statusEl.style.color = '#f87171';
+            statusEl.textContent = '\u2717 ' + (d.detail || 'Connection failed');
+        } else {
+            statusEl.style.color = '#4ade80';
+            statusEl.textContent = '\u2713 Tunnel active \u2014 ' + d.socket_path;
+            document.getElementById('sw-host').value = d.docker_host;
+        }
+    } catch (e) {
+        statusEl.style.color = '#f87171';
+        statusEl.textContent = '\u2717 Could not reach server';
+    }
+    btn.disabled = false;
+}
+
+async function swSubmit(saveEnv) {
+    const isTunnel = document.getElementById('sw-panel-tunnel').style.display !== 'none';
+    let host = document.getElementById('sw-host').value.trim();
+    if (!isTunnel) {
+        host = document.getElementById('sw-host-custom').value.trim() || host;
+    }
+    const token = document.getElementById('sw-token').value.trim();
+    const regs = document.getElementById('sw-regs').value.trim();
+    const errEl = document.getElementById('sw-error');
+    errEl.style.display = 'none';
+    if (!host) { errEl.textContent = 'Docker host is required.'; errEl.style.display = 'block'; return; }
+    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (minimum 16 characters).'; errEl.style.display = 'block'; return; }
+
+    if (saveEnv) {
+        const lines = [
+            'API_TOKEN=' + token,
+            'DOCKER_HOST=' + host,
+            regs ? 'ALLOWED_REGISTRIES=' + regs : '# ALLOWED_REGISTRIES=docker.io,ghcr.io',
+            '# ALLOWED_ORIGINS=http://127.0.0.1:8080',
+            '# AUDIT_LOG=./audit.jsonl',
+        ].join('\n');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([lines], {type: 'text/plain'}));
+        a.download = '.env';
+        a.click();
+    }
+
+    try {
+        const r = await fetch('/api/setup', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'ContainerManager'},
+            body: JSON.stringify({docker_host: host, api_token: token, allowed_registries: regs}),
+        });
+        if (!r.ok) {
+            const d = await r.json().catch(() => ({}));
+            errEl.textContent = d.detail || 'Setup failed.';
+            errEl.style.display = 'block';
+            return;
+        }
+    } catch (e) {
+        errEl.textContent = 'Could not reach server.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    sessionStorage.setItem('api_token', token);
+    location.reload();
+}
+
+// ── Init ──
+(async function() {
+  if (await checkSetupState()) return;
+  try {
+    var cfg = await fetch(API+'/auth-required').then(function(r){return r.json();});
+    if (cfg.required && !getToken()) { showLogin(); return; }
+  } catch(e) { /* server down, try loading anyway */ }
+  // Fetch app config (docker_vm_host, docker_host, etc.) for context-aware UI
+  var _appConfig = null;
+  try {
+    var appCfg = await apiFetch(API+'/config');
+    _appConfig = appCfg;
+    if (appCfg.docker_vm_host) _dockerVmHost = appCfg.docker_vm_host;
+  } catch(e) { /* ignore, defaults apply */ }
+  showPage('containers');
+})();

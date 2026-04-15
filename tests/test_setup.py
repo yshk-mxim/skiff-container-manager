@@ -195,3 +195,51 @@ def test_setup_state_reflects_tunnel(client, monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "_tunnel_socket_path", str(sock))
     r = client.get("/api/setup-state")
     assert r.json()["tunnel_active"] is True
+
+
+# ── Security: CSRF required on setup endpoints ────────────────────────────
+
+def test_setup_requires_csrf(client):
+    r = client.post("/api/setup", json={
+        "docker_host": "unix:///var/run/docker.sock",
+        "api_token": "a" * 16,
+    })  # No X-Requested-With header
+    assert r.status_code == 403
+
+
+def test_tunnel_start_requires_csrf(client):
+    r = client.post("/api/setup/tunnel", json={"ssh_target": "user@host"})
+    assert r.status_code == 403
+
+
+def test_tunnel_stop_requires_csrf(client):
+    r = client.delete("/api/setup/tunnel")
+    assert r.status_code == 403
+
+
+# ── Security: docker_host validation ─────────────────────────────────────
+
+def test_setup_rejects_hostname_tcp(client):
+    r = client.post("/api/setup", json={
+        "docker_host": "tcp://evil.example.com:2375",
+        "api_token": "a" * 16,
+    }, headers=CSRF)
+    assert r.status_code == 400
+    assert "IP address" in r.json()["detail"]
+
+
+def test_setup_accepts_ip_tcp(client):
+    r = client.post("/api/setup", json={
+        "docker_host": "tcp://127.0.0.1:2375",
+        "api_token": "a" * 16,
+    }, headers=CSRF)
+    assert r.status_code == 200
+
+
+def test_setup_rejects_http_scheme(client):
+    r = client.post("/api/setup", json={
+        "docker_host": "http://127.0.0.1:8080",
+        "api_token": "a" * 16,
+    }, headers=CSRF)
+    assert r.status_code == 400
+    assert "scheme" in r.json()["detail"]

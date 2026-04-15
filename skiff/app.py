@@ -79,7 +79,8 @@ class _Config:
             )
         self.docker_vm_host: str = os.environ.get("DOCKER_VM_HOST", "")
         # True when config came from environment — setup endpoint disabled in that case
-        self.from_env: bool = bool(os.environ.get("API_TOKEN"))
+        # True when config came from env with a non-empty token — setup endpoint disabled
+        self.from_env: bool = bool(os.environ.get("API_TOKEN", "").strip())
 
 _cfg = _Config()
 
@@ -331,7 +332,7 @@ def _start_tunnel(ssh_target: str, socket_path: str) -> None:
             "ssh", "-fNM",
             "-S", ctl_sock,
             "-o", "ControlPersist=yes",
-            "-o", "StrictHostKeyChecking=no",
+            "-o", "StrictHostKeyChecking=accept-new",
             "-o", f"ConnectTimeout={TUNNEL_CONNECT_TIMEOUT}",
             "-o", f"ServerAliveInterval={TUNNEL_SERVER_ALIVE_INTERVAL}",
             "-o", f"ServerAliveCountMax={TUNNEL_SERVER_ALIVE_COUNT}",
@@ -382,6 +383,15 @@ def verify_auth(request: Request):
     """Dependency: verifies bearer token on all API routes."""
     if not _cfg.api_token:
         return
+    auth = request.headers.get("Authorization", "")
+    if not _constant_time_compare(auth, f"Bearer {_cfg.api_token}"):
+        raise HTTPException(401, "Invalid or missing API token")
+
+
+def verify_auth_strict(request: Request):
+    """Like verify_auth but always requires a token — used for sensitive endpoints."""
+    if not _cfg.api_token:
+        raise HTTPException(503, "Server not configured — set API_TOKEN before accessing this endpoint")
     auth = request.headers.get("Authorization", "")
     if not _constant_time_compare(auth, f"Bearer {_cfg.api_token}"):
         raise HTTPException(401, "Invalid or missing API token")
@@ -544,7 +554,7 @@ BLOCKED_TRUTHY_KEYS = {
 }
 BLOCKED_COMPOSE_SERVICE_KEYS = BLOCKED_PRESENCE_KEYS | BLOCKED_TRUTHY_KEYS  # backwards-compat alias
 BLOCKED_COMPOSE_TOP_KEYS = {"configs", "secrets"}
-BLOCKED_NETWORK_MODES = {"host", "container"}
+BLOCKED_NETWORK_MODES = {"host", "container", "service"}
 
 
 def validate_compose_file(content: bytes) -> dict:
@@ -614,6 +624,11 @@ def validate_compose_file(content: bytes) -> dict:
 async def lifespan(app: FastAPI):
     if not _cfg.api_token:
         log.warning("security.no_api_token", msg="Running without auth — set API_TOKEN for production")
+    if not _cfg.allowed_registries:
+        log.warning(
+            "security.no_registry_allowlist",
+            msg="ALLOWED_REGISTRIES is empty — all registries permitted. Set for production.",
+        )
     log.info("app.started", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries, bind=BIND_HOST)
     yield
     log.info("app.shutdown")
@@ -625,7 +640,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SKIFF Container Manager", lifespan=lifespan)
 
 # Rate limits can be scaled up for testing via RATE_LIMIT_SCALE env var (e.g. "10" = 10x)
-_RATE_SCALE = int(os.environ.get("RATE_LIMIT_SCALE", "1"))
+_RATE_SCALE_RAW = int(os.environ.get("RATE_LIMIT_SCALE", "1"))
+if not (1 <= _RATE_SCALE_RAW <= 100):
+    raise ValueError(f"RATE_LIMIT_SCALE must be between 1 and 100, got {_RATE_SCALE_RAW}")
+_RATE_SCALE = _RATE_SCALE_RAW
 
 
 def _limit(spec: str) -> str:
@@ -687,7 +705,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
             " connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'"
         )
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), usb=()"
@@ -735,6 +753,7 @@ def do_setup(
     allowed_registries: str = Body(default=""),
 ):
     """Configure the server in-memory. Only callable when unconfigured and not from env."""
+    verify_csrf(request)
     if _cfg.from_env:
         raise HTTPException(403, "Server is configured via environment variables — setup endpoint disabled")
     if _cfg.api_token:
@@ -743,8 +762,22 @@ def do_setup(
         raise HTTPException(400, f"api_token must be at least {MIN_TOKEN_LENGTH} characters")
     if not docker_host:
         raise HTTPException(400, "docker_host is required")
+    _dh = docker_host.strip()
+    _parsed = urlparse(_dh)
+    if _parsed.scheme not in ("unix", "tcp", "npipe"):
+        raise HTTPException(400, "docker_host must use unix://, tcp://, or npipe:// scheme")
+    if _parsed.scheme == "tcp":
+        # Only allow explicit IP:port — no arbitrary hostnames
+        import ipaddress
+        _host = _parsed.hostname or ""
+        try:
+            ipaddress.ip_address(_host)
+        except ValueError:
+            raise HTTPException(400, "tcp:// docker_host must specify an IP address, not a hostname") from None
+        if not (1 <= (_parsed.port or 0) <= 65535):
+            raise HTTPException(400, "tcp:// docker_host must include a valid port")
     _cfg.api_token = api_token.strip()
-    _cfg.docker_host = docker_host.strip()
+    _cfg.docker_host = _dh
     _cfg.allowed_registries = [r.strip() for r in allowed_registries.split(",") if r.strip()]
     _invalidate_client()
     log.info("setup.configured", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries)
@@ -759,14 +792,18 @@ def start_tunnel(
     socket_path: str = Body(default=TUNNEL_DEFAULT_SOCKET),
 ):
     """Start an SSH ControlMaster tunnel to the Docker VM. Setup-only endpoint."""
+    verify_csrf(request)
     if _cfg.from_env:
         raise HTTPException(403, "Setup endpoints disabled when configured via environment")
     if _cfg.api_token:
         raise HTTPException(403, "Already configured")
     if not _SSH_TARGET_RE.match(ssh_target):
         raise HTTPException(400, "ssh_target must be user@host")
-    if not socket_path.startswith("/tmp/") or ".." in socket_path:  # noqa: S108
-        raise HTTPException(400, "socket_path must be under /tmp/")
+    _sp_resolved = Path(socket_path).resolve()
+    # /tmp is a symlink to /private/tmp on macOS — check both canonical paths
+    _tmp_resolved = Path("/tmp").resolve()  # noqa: S108
+    if not str(_sp_resolved).startswith(str(_tmp_resolved) + "/"):
+        raise HTTPException(400, "socket_path must resolve to a path under /tmp/")
     try:
         _start_tunnel(ssh_target, socket_path)
     except ValueError as exc:
@@ -778,6 +815,7 @@ def start_tunnel(
 @limiter.limit(_limit(RL_SLOW))
 def stop_tunnel_endpoint(request: Request):
     """Stop the managed SSH tunnel."""
+    verify_csrf(request)
     if _cfg.from_env:
         raise HTTPException(403, "Setup endpoints disabled when configured via environment")
     _stop_tunnel()
@@ -1173,7 +1211,7 @@ def inspect_container(request: Request, container_id: str, client=Depends(docker
         "restart_count": attrs.get("RestartCount", 0),
         "platform": attrs.get("Platform", ""),
         "config": {
-            "env": attrs["Config"].get("Env", []),
+            "env": _redact_env(attrs["Config"].get("Env", [])),
             "cmd": attrs["Config"].get("Cmd"),
             "entrypoint": attrs["Config"].get("Entrypoint"),
             "working_dir": attrs["Config"].get("WorkingDir", ""),
@@ -1466,6 +1504,9 @@ async def exec_shell(websocket: WebSocket, container_id: str):
         try:
             while True:
                 data = await websocket.receive_text()
+                if len(data) > 65536:
+                    await websocket.close(code=4008)
+                    break
                 await loop.run_in_executor(None, sock._sock.sendall, data.encode())
         except Exception:
             pass
@@ -1807,9 +1848,30 @@ def list_compose_stacks(request: Request, client=Depends(docker_client_dep)):
     return list(stacks.values())
 
 
+_ENV_SENSITIVE_RE = re.compile(
+    r"(SECRET|PASSWORD|PASSWD|TOKEN|KEY|CREDENTIAL|AUTH|CERT|PRIVATE|API_KEY)",
+    re.IGNORECASE,
+)
+
+
+def _redact_env(env_list: list[str]) -> list[str]:
+    """Redact environment variable values whose names suggest sensitive data."""
+    redacted = []
+    for entry in env_list:
+        name, sep, _ = entry.partition("=")
+        if sep and _ENV_SENSITIVE_RE.search(name):
+            redacted.append(f"{name}=[REDACTED]")
+        else:
+            redacted.append(entry)
+    return redacted
+
+
 def _sanitize_stderr(stderr: str) -> str:
     """Strip internal paths and hostnames from subprocess error output before returning to client."""
-    sanitized = re.sub(r'(/[^\s:,\'\"]{4,})', '[path]', stderr)
+    # Remove absolute paths (any length)
+    sanitized = re.sub(r'(/[^\s:,\'"]+)', '[path]', stderr)
+    # Remove hostnames embedded in error messages (word.word patterns)
+    sanitized = re.sub(r'\b([a-zA-Z0-9-]+\.){2,}[a-zA-Z]{2,}\b', '[host]', sanitized)
     return sanitized[:400].strip()
 
 
@@ -1981,7 +2043,7 @@ def prune_build_cache(request: Request, client=Depends(docker_client_dep)):
     return {"space_reclaimed_mb": round(space / 1024 / 1024, 1)}
 
 
-@app.get("/api/system/audit-log", dependencies=AUTH)
+@app.get("/api/system/audit-log", dependencies=[Depends(verify_auth_strict)])
 @limiter.limit("20/minute")
 def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_LINES, ge=1)):
     """Return the last N lines of the app audit log."""
@@ -2000,7 +2062,7 @@ def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_
     return result
 
 
-@app.get("/api/system/audit-log/download", dependencies=AUTH)
+@app.get("/api/system/audit-log/download", dependencies=[Depends(verify_auth_strict)])
 @limiter.limit(_limit(RL_SLOW))
 def download_audit_log(request: Request):
     """Download the full audit log as a JSONL file (streamed to avoid memory spikes)."""
