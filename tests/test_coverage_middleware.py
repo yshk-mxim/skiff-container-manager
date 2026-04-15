@@ -148,15 +148,15 @@ def test_validate_image_registry_short_name_no_docker_io():
 
 
 def test_validate_image_registry_empty_allowed():
-    """Empty ALLOWED_REGISTRIES allows all registries."""
-    with patch.object(app_module, "ALLOWED_REGISTRIES", []):
+    """Empty allowed_registries allows all registries."""
+    with patch.object(app_module._cfg, "allowed_registries", []):
         # Should not raise
         validate_image_registry("anyregistry.io/img:latest")
 
 
 def test_validate_image_registry_docker_io_allowed():
     """Short names allowed when docker.io in allowed list."""
-    with patch.object(app_module, "ALLOWED_REGISTRIES", ["docker.io"]):
+    with patch.object(app_module._cfg, "allowed_registries", ["docker.io"]):
         validate_image_registry("nginx")
 
 

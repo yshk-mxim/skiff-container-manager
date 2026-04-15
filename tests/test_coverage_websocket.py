@@ -21,7 +21,7 @@ def _make_ws(origin="", host="localhost:8080"):
 
 
 def test_validate_ws_origin_wildcard():
-    with patch.object(app_module, "ALLOWED_ORIGINS", ["*"]):
+    with patch.object(app_module._cfg, "allowed_origins", ["*"]):
         ws = _make_ws(origin="https://anything.com")
         assert _validate_ws_origin(ws) is True
 
@@ -53,7 +53,7 @@ def test_validate_ws_origin_different_host():
 
 @pytest.mark.asyncio
 async def test_validate_ws_token_no_api_token():
-    with patch.object(app_module, "API_TOKEN", ""):
+    with patch.object(app_module._cfg, "api_token", ""):
         ws = MagicMock()
         result = await _validate_ws_token_from_message(ws)
         assert result is True
@@ -63,7 +63,7 @@ async def test_validate_ws_token_no_api_token():
 async def test_validate_ws_token_valid():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value=f"AUTH {TOKEN}")
-    with patch.object(app_module, "API_TOKEN", TOKEN):
+    with patch.object(app_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is True
 
@@ -72,7 +72,7 @@ async def test_validate_ws_token_valid():
 async def test_validate_ws_token_invalid():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value="AUTH wrongtoken")
-    with patch.object(app_module, "API_TOKEN", TOKEN):
+    with patch.object(app_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
@@ -81,7 +81,7 @@ async def test_validate_ws_token_invalid():
 async def test_validate_ws_token_not_auth_prefix():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value="HELLO world")
-    with patch.object(app_module, "API_TOKEN", TOKEN):
+    with patch.object(app_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
@@ -90,7 +90,7 @@ async def test_validate_ws_token_not_auth_prefix():
 async def test_validate_ws_token_exception_returns_false():
     ws = MagicMock()
     ws.receive_text = AsyncMock(side_effect=Exception("closed"))
-    with patch.object(app_module, "API_TOKEN", TOKEN):
+    with patch.object(app_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
@@ -137,7 +137,7 @@ def test_ws_logs_invalid_origin(client):
 
 def test_ws_logs_invalid_container_id(client):
     """WebSocket logs endpoint rejects invalid container ID."""
-    with patch.object(app_module, "ALLOWED_ORIGINS", ["*"]):
+    with patch.object(app_module._cfg, "allowed_origins", ["*"]):
         try:
             with client.websocket_connect(
                 "/ws/logs/INVALID-ID",

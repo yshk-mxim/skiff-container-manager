@@ -56,19 +56,23 @@ def mock_docker() -> MagicMock:
 @pytest.fixture()
 def client(mock_docker: MagicMock) -> Generator[TestClient, None, None]:
     """TestClient with auth enabled and Docker client mocked."""
+    original_token = app_module._cfg.api_token
+    app_module._cfg.api_token = TOKEN
     with (
-        patch.object(app_module, "API_TOKEN", TOKEN),
         patch.object(app_module, "_client", mock_docker),
         patch.object(app_module, "_client_last_ping", float("inf")),
         patch("app.get_client", return_value=mock_docker),
     ):
         with TestClient(app, raise_server_exceptions=True) as tc:
             yield tc
+    app_module._cfg.api_token = original_token
 
 
 @pytest.fixture()
 def noauth_client() -> Generator[TestClient, None, None]:
-    """TestClient with auth disabled (API_TOKEN='')."""
-    with patch.object(app_module, "API_TOKEN", ""):
-        with TestClient(app, raise_server_exceptions=True) as tc:
-            yield tc
+    """TestClient with auth disabled (api_token='')."""
+    original_token = app_module._cfg.api_token
+    app_module._cfg.api_token = ""
+    with TestClient(app, raise_server_exceptions=True) as tc:
+        yield tc
+    app_module._cfg.api_token = original_token

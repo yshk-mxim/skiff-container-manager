@@ -42,6 +42,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from requests.adapters import HTTPAdapter
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -53,20 +54,35 @@ _STATIC_DIR = _PKG_DIR / "static"
 _LICENSE_FILE = _PKG_DIR.parent / "LICENSE"
 
 # ── Configuration ──────────────────────────────────────────
-DOCKER_HOST = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
-ALLOWED_REGISTRIES = [
-    r.strip() for r in os.environ.get("ALLOWED_REGISTRIES",
-    os.environ.get("ALLOWED_REGISTRY", "us-docker.pkg.dev/")).split(",") if r.strip()
-]
-API_TOKEN = os.environ.get("API_TOKEN", "")
-ALLOWED_ORIGINS = [
-    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://127.0.0.1:8080").split(",") if o.strip()
-]
-if "*" in ALLOWED_ORIGINS:
-    raise ValueError(
-        "ALLOWED_ORIGINS must not contain '*' — this disables CSRF protections. "
-        "Set it to the exact origin(s) of your browser client, e.g. http://127.0.0.1:8080"
-    )
+class _Config:
+    """Mutable runtime configuration. Populated from env on startup; can be
+    updated via /api/setup when running without a pre-configured environment."""
+
+    def __init__(self) -> None:
+        self.docker_host: str = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+        _reg_default = os.environ.get("ALLOWED_REGISTRY", "us-docker.pkg.dev/")
+        self.allowed_registries: list[str] = [
+            r.strip()
+            for r in os.environ.get("ALLOWED_REGISTRIES", _reg_default).split(",")
+            if r.strip()
+        ]
+        self.api_token: str = os.environ.get("API_TOKEN", "")
+        self.allowed_origins: list[str] = [
+            o.strip()
+            for o in os.environ.get("ALLOWED_ORIGINS", "http://127.0.0.1:8080").split(",")
+            if o.strip()
+        ]
+        if "*" in self.allowed_origins:
+            raise ValueError(
+                "ALLOWED_ORIGINS must not contain '*' — this disables CSRF protections. "
+                "Set it to the exact origin(s) of your browser client, e.g. http://127.0.0.1:8080"
+            )
+        self.docker_vm_host: str = os.environ.get("DOCKER_VM_HOST", "")
+        # True when config came from environment — setup endpoint disabled in that case
+        self.from_env: bool = bool(os.environ.get("API_TOKEN"))
+
+_cfg = _Config()
+
 COMPOSE_DIR = Path(os.environ.get("COMPOSE_DIR", "/data/compose"))
 DOCKER_BIN = shutil.which("docker") or "/usr/bin/docker"
 AUDIT_LOG_PATH = Path(os.environ.get("AUDIT_LOG", "/var/log/skiff-audit.jsonl"))
@@ -77,7 +93,6 @@ MAX_CONTAINERS = 50
 MAX_CONTAINER_MEM = "2g"
 MAX_CONTAINER_CPU = 2.0
 BIND_HOST = os.environ.get("BIND_HOST", "127.0.0.1")
-DOCKER_VM_HOST = os.environ.get("DOCKER_VM_HOST", "")  # hostname/IP for port links; empty = use browser hostname
 
 # ── Logging ────────────────────────────────────────────────
 def _level_to_severity(logger, method_name, event_dict):
@@ -154,10 +169,25 @@ DOCKER_TRANSIENT = (
 
 def _build_client() -> docker.DockerClient:
     client = docker.DockerClient(
-        base_url=DOCKER_HOST,
+        base_url=_cfg.docker_host,
         timeout=15,
         max_pool_size=5,
     )
+    # TCP keepalive to detect silent SSH tunnel drops
+    try:
+        _ka_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60))
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
+        if hasattr(socket, "TCP_KEEPCNT"):
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
+        _adapter = HTTPAdapter()
+        _adapter.poolmanager.connection_pool_kw["socket_options"] = _ka_opts
+        client.api.mount("http://", _adapter)
+        client.api.mount("http+docker://", _adapter)
+    except Exception:
+        pass
     client.ping()
     return client
 
@@ -186,12 +216,12 @@ def get_client() -> docker.DockerClient:
         try:
             _client = _build_client()
             _client_last_ping = time.monotonic()
-            log.info("docker.connected", host=DOCKER_HOST)
+            log.info("docker.connected", host=_cfg.docker_host)
             return _client
         except Exception as exc:
             _client = None
             _client_failed_at = time.monotonic()
-            log.error("docker.connection_failed", host=DOCKER_HOST, error=str(exc))
+            log.error("docker.connection_failed", host=_cfg.docker_host, error=str(exc))
             raise
 
 
@@ -221,10 +251,10 @@ def _constant_time_compare(a: str, b: str) -> bool:
 
 def verify_auth(request: Request):
     """Dependency: verifies bearer token on all API routes."""
-    if not API_TOKEN:
+    if not _cfg.api_token:
         return
     auth = request.headers.get("Authorization", "")
-    if not _constant_time_compare(auth, f"Bearer {API_TOKEN}"):
+    if not _constant_time_compare(auth, f"Bearer {_cfg.api_token}"):
         raise HTTPException(401, "Invalid or missing API token")
 
 
@@ -266,7 +296,7 @@ def validate_image_id(image_id: str) -> str:
 def validate_image_registry(image: str):
     if not IMAGE_TAG_RE.match(image):
         raise HTTPException(400, "Invalid image name format")
-    if not ALLOWED_REGISTRIES:
+    if not _cfg.allowed_registries:
         return
     # Extract registry hostname (everything before first /)
     image_no_tag = image.split(":", maxsplit=1)[0] if "@" not in image else image.split("@", maxsplit=1)[0]
@@ -277,17 +307,18 @@ def validate_image_registry(image: str):
     if not image_registry:
         # Short names (e.g. "nginx", "alpine") implicitly belong to docker.io.
         # Allow them when docker.io is in the allowlist; reject otherwise.
-        if any(r.rstrip("/") == "docker.io" for r in ALLOWED_REGISTRIES):
+        if any(r.rstrip("/") == "docker.io" for r in _cfg.allowed_registries):
             return
         raise HTTPException(
-            400, f"Image must include an explicit registry hostname. Allowed: {', '.join(ALLOWED_REGISTRIES)}"
+            400, f"Image must include an explicit registry hostname. Allowed: {', '.join(_cfg.allowed_registries)}"
         )
     # Check registry matches an allowed registry (exact domain or domain prefix with /)
     if not any(
         image_registry == r.rstrip("/") or image.startswith(r if r.endswith("/") else r + "/")
-        for r in ALLOWED_REGISTRIES
+        for r in _cfg.allowed_registries
     ):
-        raise HTTPException(400, f"Only images from approved registries are allowed: {', '.join(ALLOWED_REGISTRIES)}")
+        allowed = ', '.join(_cfg.allowed_registries)
+        raise HTTPException(400, f"Only images from approved registries are allowed: {allowed}")
 
 
 def validate_container_name(name: str | None) -> str | None:
@@ -312,14 +343,18 @@ def _get_container(client, container_id: str):
 
 
 def safe_docker_call(fn, *args, **kwargs):
-    """Execute a Docker SDK call with transient-error handling and retry.
+    """Execute a Docker SDK call with transient-error handling.
 
-    Note: Retry is effective for top-level client methods (client.containers.list).
-    For object-bound methods (container.start), the retry after client invalidation
-    will likely fail because the object retains a reference to the closed client.
+    For top-level client methods (client.containers.list) a single retry is
+    attempted after invalidating the client, since a fresh client will work.
+    For object-bound methods (container.start) the retry is skipped — the
+    object retains a reference to the closed client and would fail again.
     The caller's next request will use a fresh client via get_client().
     """
-    for attempt in range(2):
+    self = getattr(fn, "__self__", None)
+    is_object_bound = self is not None and not isinstance(self, type)
+    attempts = 1 if is_object_bound else 2
+    for attempt in range(attempts):
         try:
             return fn(*args, **kwargs)
         except docker.errors.NotFound as exc:
@@ -330,7 +365,7 @@ def safe_docker_call(fn, *args, **kwargs):
             raise HTTPException(e.status_code or 400, str(e.explanation or "Container operation failed")[:500]) from e
         except DOCKER_TRANSIENT as e:
             if attempt == 0:
-                log.warning("docker.transient_error", error=str(e), action="retry")
+                log.warning("docker.transient_error", error=str(e), action="invalidating_client")
                 _invalidate_client()
                 continue
             raise HTTPException(503, "Container engine unreachable") from e
@@ -449,9 +484,9 @@ def validate_compose_file(content: bytes) -> dict:
 # ── Lifespan ───────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not API_TOKEN:
+    if not _cfg.api_token:
         log.warning("security.no_api_token", msg="Running without auth — set API_TOKEN for production")
-    log.info("app.started", docker_host=DOCKER_HOST, registries=ALLOWED_REGISTRIES, bind=BIND_HOST)
+    log.info("app.started", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries, bind=BIND_HOST)
     yield
     log.info("app.shutdown")
     _invalidate_client()
@@ -478,7 +513,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=_cfg.allowed_origins,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "X-Requested-With", "Content-Type"],
 )
@@ -492,9 +527,9 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             auth_header = request.headers.get("authorization", "")
             token_hint = ""
             token_suffix = ""
-            if auth_header.startswith("Bearer ") and API_TOKEN:
+            if auth_header.startswith("Bearer ") and _cfg.api_token:
                 provided = auth_header[7:]
-                if _constant_time_compare(provided, API_TOKEN):
+                if _constant_time_compare(provided, _cfg.api_token):
                     token_hint = "authenticated"
                     token_suffix = provided[-8:] if len(provided) >= 8 else provided
                 else:
@@ -543,7 +578,42 @@ AUTH = [Depends(verify_auth)]
 @app.get("/api/auth-required")
 def auth_required():
     """Returns whether auth is required and frontend config. No secrets exposed."""
-    return {"required": bool(API_TOKEN)}
+    return {"required": bool(_cfg.api_token)}
+
+
+# ── Setup (only active when unconfigured) ─────────────────
+@app.get("/api/setup-state")
+def setup_state():
+    """Returns configuration state for the setup wizard. No auth required."""
+    return {
+        "configured": bool(_cfg.api_token),
+        "from_env": _cfg.from_env,
+    }
+
+
+@app.post("/api/setup")
+@limiter.limit("10/minute")
+def do_setup(
+    request: Request,
+    docker_host: str = Body(...),
+    api_token: str = Body(...),
+    allowed_registries: str = Body(default=""),
+):
+    """Configure the server in-memory. Only callable when unconfigured and not from env."""
+    if _cfg.from_env:
+        raise HTTPException(403, "Server is configured via environment variables — setup endpoint disabled")
+    if _cfg.api_token:
+        raise HTTPException(403, "Already configured")
+    if not api_token or len(api_token) < 16:
+        raise HTTPException(400, "api_token must be at least 16 characters")
+    if not docker_host:
+        raise HTTPException(400, "docker_host is required")
+    _cfg.api_token = api_token.strip()
+    _cfg.docker_host = docker_host.strip()
+    _cfg.allowed_registries = [r.strip() for r in allowed_registries.split(",") if r.strip()]
+    _invalidate_client()
+    log.info("setup.configured", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries)
+    return {"ok": True}
 
 
 # ── Health Endpoints (no auth) ─────────────────────────────
@@ -603,7 +673,11 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
 @limiter.limit(_limit("60/minute"))
 def get_config(request: Request):
     """Return non-secret server configuration for the UI."""
-    return {"allowed_registries": ALLOWED_REGISTRIES, "docker_vm_host": DOCKER_VM_HOST, "docker_host": DOCKER_HOST}
+    return {
+        "allowed_registries": _cfg.allowed_registries,
+        "docker_vm_host": _cfg.docker_vm_host,
+        "docker_host": _cfg.docker_host,
+    }
 
 
 _APP_VERSION = "1.0.0"
@@ -668,6 +742,7 @@ def run_container(
     restart_policy: str | None = Body(default=None),
     network: str | None = Body(default=None),
     labels: dict[str, str] | None = Body(default=None),
+    read_only: bool = Body(default=True),
     client=Depends(docker_client_dep),
 ):
     verify_csrf(request)
@@ -733,7 +808,7 @@ def run_container(
         mem_limit=MAX_CONTAINER_MEM,
         nano_cpus=int(MAX_CONTAINER_CPU * 1e9),
         security_opt=["no-new-privileges:true"],
-        read_only=False,
+        read_only=read_only,
     )
     if command:
         run_kwargs["command"] = command
@@ -1054,12 +1129,12 @@ def _validate_ws_origin(websocket: WebSocket):
     the request came from our own page.
     """
     origin = websocket.headers.get("origin", "")
-    if ALLOWED_ORIGINS == ["*"]:
+    if _cfg.allowed_origins == ["*"]:
         return True
     if not origin:
         return False  # Fail closed: reject missing origin
     # Explicit allowlist match
-    if origin in ALLOWED_ORIGINS:
+    if origin in _cfg.allowed_origins:
         return True
     # Same-origin check: origin host matches request Host header
     # This handles Cloud Workstation proxy URLs automatically
@@ -1078,14 +1153,14 @@ async def _validate_ws_token_from_message(websocket: WebSocket) -> bool:
 
     Avoids leaking token in proxy/access logs via query string.
     """
-    if not API_TOKEN:
+    if not _cfg.api_token:
         return True
     try:
         first_msg = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
     except Exception:
         return False
     if first_msg.startswith("AUTH "):
-        return _constant_time_compare(first_msg[5:], API_TOKEN)
+        return _constant_time_compare(first_msg[5:], _cfg.api_token)
     return False
 
 
@@ -1105,9 +1180,9 @@ async def stream_logs(websocket: WebSocket, container_id: str):
     _ws_acquire(ip)
     log.info("audit.ws_logs", container=container_id, remote=websocket.client.host if websocket.client else "unknown")
     try:
-        client = get_client()
-        container = client.containers.get(container_id)
         loop = asyncio.get_running_loop()
+        client = await loop.run_in_executor(None, get_client)
+        container = await loop.run_in_executor(None, client.containers.get, container_id)
         # Run blocking log iterator in executor to avoid blocking the event loop
         gen = container.logs(stream=True, follow=True, tail=50, timestamps=True)
 
@@ -1116,7 +1191,7 @@ async def stream_logs(websocket: WebSocket, container_id: str):
                 try:
                     line = await asyncio.wait_for(
                         loop.run_in_executor(None, lambda: next(gen, None)),
-                        timeout=300,  # 5 min idle timeout
+                        timeout=30,  # 30 sec idle timeout
                     )
                     if line is None:
                         break
@@ -1129,6 +1204,14 @@ async def stream_logs(websocket: WebSocket, container_id: str):
 
         # Run log reader and also listen for client disconnect
         read_task = asyncio.create_task(read_logs())
+        async def _ws_keepalive():
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    await websocket.send_text("\x00")
+                except Exception:
+                    break
+        keepalive_task = asyncio.create_task(_ws_keepalive())
         try:
             while True:
                 await websocket.receive_text()  # just wait for disconnect
@@ -1136,6 +1219,7 @@ async def stream_logs(websocket: WebSocket, container_id: str):
             pass
         finally:
             read_task.cancel()
+            keepalive_task.cancel()
             # Close the blocking log generator to free the HTTP connection
             try:
                 gen.close()
@@ -1168,8 +1252,9 @@ async def exec_shell(websocket: WebSocket, container_id: str):
     _ws_acquire(ip)
     log.info("audit.ws_exec", container=container_id, remote=websocket.client.host if websocket.client else "unknown")
     try:
-        client = get_client()
-        container = client.containers.get(container_id)
+        loop = asyncio.get_running_loop()
+        client = await loop.run_in_executor(None, get_client)
+        container = await loop.run_in_executor(None, client.containers.get, container_id)
         shell = "/bin/sh"
         try:
             exit_code, _ = container.exec_run("which /bin/bash", demux=True)
@@ -1184,7 +1269,6 @@ async def exec_shell(websocket: WebSocket, container_id: str):
         sock._sock.settimeout(0.5)
 
         async def read_output():
-            loop = asyncio.get_running_loop()
             idle_since = time.monotonic()
             while True:
                 try:
@@ -1203,7 +1287,14 @@ async def exec_shell(websocket: WebSocket, container_id: str):
                     break
 
         read_task = asyncio.create_task(read_output())
-        loop = asyncio.get_running_loop()
+        async def _ws_keepalive():
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    await websocket.send_text("\x00")
+                except Exception:
+                    break
+        keepalive_task = asyncio.create_task(_ws_keepalive())
         try:
             while True:
                 data = await websocket.receive_text()
@@ -1212,6 +1303,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
             pass
         finally:
             read_task.cancel()
+            keepalive_task.cancel()
             sock.close()
     except Exception as exc:
         log.warning("ws.exec_error", container=container_id, error=str(exc))
@@ -1251,7 +1343,7 @@ def list_allowed_images(request: Request, client=Depends(docker_client_dep)):
             tag_registry = tag_parts[0] if len(tag_parts) >= 2 and ("." in tag_parts[0] or ":" in tag_parts[0]) else ""
             if tag_registry and any(
                 tag_registry == r.rstrip("/") or tag.startswith(r if r.endswith("/") else r + "/")
-                for r in ALLOWED_REGISTRIES
+                for r in _cfg.allowed_registries
             ):
                 result.append({"tag": tag, "id": img.short_id, "size_mb": round(img.attrs["Size"] / 1024 / 1024, 1)})
     return result
@@ -1579,7 +1671,7 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
 
     minimal_env = {
         "PATH": os.environ.get("PATH", "/usr/bin"),
-        "DOCKER_HOST": DOCKER_HOST,
+        "DOCKER_HOST": _cfg.docker_host,
         "HOME": os.environ.get("HOME", "/root"),
         "SSH_AUTH_SOCK": os.environ.get("SSH_AUTH_SOCK", ""),
     }
@@ -1608,7 +1700,7 @@ def compose_down(request: Request, project_name: str = "dev"):
     validate_project_name(project_name)
     minimal_env = {
         "PATH": os.environ.get("PATH", "/usr/bin"),
-        "DOCKER_HOST": DOCKER_HOST,
+        "DOCKER_HOST": _cfg.docker_host,
         "HOME": os.environ.get("HOME", "/root"),
         "SSH_AUTH_SOCK": os.environ.get("SSH_AUTH_SOCK", ""),
     }
