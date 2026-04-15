@@ -6,7 +6,11 @@ Built for teams running containers on remote VMs (GCP Cloud Workstations, EC2, b
 
 No per-seat licensing. No installation on the container host. Works wherever you have a browser and SSH.
 
-![SKIFF Container Manager UI](docs/screenshot.png)
+![SKIFF Container Manager — containers list](docs/screenshot.png)
+
+![SKIFF Container Manager — live log streaming](docs/screenshot-logs.png)
+
+![SKIFF Container Manager — exec terminal](docs/screenshot-exec.png)
 
 ---
 
