@@ -52,8 +52,8 @@ See [SECURITY.md](SECURITY.md) for the full security model, production hardening
 | Requirement | Minimum | Notes |
 |---|---|---|
 | Python | 3.11+ | 3.12 recommended |
-| Docker CLI | 24+ | For compose commands |
-| Docker Engine | 24+ | Local or remote |
+| Docker CLI or equivalent | 24+ | For compose commands |
+| Docker Engine or equivalent | 24+ | Local or remote |
 | pip / venv | any | `run.sh` creates a venv automatically |
 
 ---
@@ -100,7 +100,7 @@ Copy `.env.example` to `.env` and edit. All values can also be set as environmen
 |---|---|---|
 | `API_TOKEN` | _(none)_ | Bearer token for API auth. Leave unset only for local dev. |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Socket path for the container daemon. Recognised by any Docker-API-compatible runtime (Docker Engine, Podman, Colima, etc.) — not Docker-specific. Set to your local socket or SSH-tunnelled socket path. |
-| `ALLOWED_REGISTRIES` | `us-docker.pkg.dev/` | Comma-separated registry prefixes. Images outside these are rejected. |
+| `ALLOWED_REGISTRIES` | `us-docker.pkg.dev/` | Comma-separated registry prefixes. Images outside these are rejected. **Change this for non-GCP setups** — e.g. `docker.io,ghcr.io` or leave empty to allow all registries (dev only). |
 | `ALLOWED_ORIGINS` | `http://127.0.0.1:8080` | Comma-separated CORS origins. |
 | `BIND_HOST` | `127.0.0.1` | Address uvicorn listens on. |
 | `PORT` | `8080` | Port uvicorn listens on (run.sh only). |
@@ -170,7 +170,7 @@ API_TOKEN="" uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080
 ```bash
 make lint        # ruff check
 make format      # ruff format + auto-fix
-make test-unit   # fast unit tests (no Docker required)
+make test-unit   # fast unit tests (no container daemon required)
 make test-e2e    # Playwright e2e (requires pip install -e .[dev,e2e] && playwright install chromium)
 make coverage    # coverage report
 make security    # bandit-equivalent security scan
