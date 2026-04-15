@@ -37,6 +37,9 @@ e2e = [
     "playwright>=1.40",      # requires `playwright install chromium` after pip install
     "pytest-playwright>=0.4",
 ]
+gcp = [
+    "google-cloud-logging>=3.0",   # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
+]
 
 [project.scripts]
 skiff = "skiff.app:_main"

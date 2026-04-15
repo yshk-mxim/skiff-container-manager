@@ -118,13 +118,46 @@ oauth2-proxy --provider=github \
 
 Works with any OIDC provider (Google, GitHub, Azure AD, Okta, Keycloak). No code changes required — the proxy handles login and passes identity headers to the app.
 
-### 7. Audit log export
+### 7. Audit log export and retention
 
-The app writes structured JSON logs to stdout. Pipe to a log aggregator for retention, search, and alerting:
+The app writes structured JSON logs to stdout and a rotating JSONL file. Each entry includes `event_type` (semantic label for SIEM rules), `method`, `path`, `status`, `remote`, `auth`, and optionally `user` (from `X-Forwarded-User`) and `resource_type`/`resource_id`.
+
+**Configure retention** for compliance (SOC 2 Type II requires ≥ 90 days; 13 months recommended):
+
+```bash
+# 1-year retention at ~4 MB/day: 200 MB × 20 = 4 GB total
+AUDIT_MAX_MB=200
+AUDIT_BACKUP_COUNT=20
+AUDIT_LOG=/var/log/skiff-audit.jsonl
+```
+
+**Ship to a log aggregator:**
 
 - **Loki + Grafana** (open source)
 - **ELK / OpenSearch**
 - **Cloud-native**: Cloud Logging (GCP), CloudWatch (AWS), Azure Monitor
+
+**GCP Cloud Logging native sink** — install the optional dep and set the project:
+
+```bash
+pip install skiff[gcp]
+export GOOGLE_CLOUD_PROJECT=my-project-id
+export GCP_LOG_NAME=skiff-audit          # optional, default: skiff-audit
+```
+
+SKIFF will dual-write every log entry to Cloud Logging alongside the local file and stdout.
+
+**Per-user identity** — when running behind oauth2-proxy, pass the authenticated user email via `X-Forwarded-User`. SKIFF logs this as the `user` field automatically — no configuration required.
+
+**SIEM alert rules** — the `event_type` field enables per-event alerting. Recommended alert thresholds:
+
+| Event type | Threshold | Suggested severity |
+|---|---|---|
+| `auth.denied` | > 5 in 10 min from same IP | P2 |
+| `compose.deployed` | Any, outside business hours | P3 |
+| `container.run` | Any with `resource_id` containing "priv" | P2 |
+| `image.pull` | Outside allowed registry (blocked at API, still logged) | P2 |
+| `audit.log_read` | Any | P3 |
 
 ### 8. Dependency scanning
 

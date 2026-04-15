@@ -113,7 +113,11 @@ Copy `.env.example` to `.env` and edit. All values can also be set as environmen
 | `DOCKER_VM_HOST` | _(empty)_ | Hostname shown for container port links in the UI. |
 | `COMPOSE_DIR` | `/data/compose` | Directory where compose files are stored on the server. |
 | `AUDIT_LOG` | `/var/log/skiff-audit.jsonl` | Audit log path. Set to a writable path (e.g. `./audit.jsonl`). |
-| `RATE_LIMIT_SCALE` | `1` | Multiply all rate limits by this factor (e.g. `100` for CI / load tests). |
+| `AUDIT_MAX_MB` | `10` | Max size per audit log file in MB. Increase for longer retention (e.g. `200` for ~1-year at moderate traffic). |
+| `AUDIT_BACKUP_COUNT` | `5` | Number of rotated audit log files to keep. Total retention ≈ `AUDIT_MAX_MB × AUDIT_BACKUP_COUNT`. |
+| `GOOGLE_CLOUD_PROJECT` | _(empty)_ | GCP project ID. When set (and `google-cloud-logging` installed via `pip install skiff[gcp]`), all audit log entries are dual-written to GCP Cloud Logging. |
+| `GCP_LOG_NAME` | `skiff-audit` | Cloud Logging log name (only used when `GOOGLE_CLOUD_PROJECT` is set). |
+| `RATE_LIMIT_SCALE` | `1` | Multiply all rate limits by this factor (e.g. `100` for CI / load tests). Must be between 1 and 100. |
 
 ---
 

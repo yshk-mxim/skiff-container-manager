@@ -127,9 +127,11 @@ TOKEN_AUDIT_SUFFIX_LEN = 8          # chars of token shown in audit log
 RL_DEFAULT = "30/minute"
 RL_FAST = "60/minute"
 RL_SLOW = "10/minute"
-# Audit log
-AUDIT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per audit log file
-AUDIT_BACKUP_COUNT = 5
+# Audit log — configurable for SOC 2 retention requirements
+# Default: 10 MB x 5 files ~= 50 MB (~13 days). For 1-year retention at ~4 MB/day:
+#   AUDIT_MAX_MB=200 AUDIT_BACKUP_COUNT=20  → 4 GB (covers 13 months at 10 MB/day)
+AUDIT_MAX_BYTES = int(os.environ.get("AUDIT_MAX_MB", "10")) * 1024 * 1024
+AUDIT_BACKUP_COUNT = int(os.environ.get("AUDIT_BACKUP_COUNT", "5"))
 # Registry
 REGISTRY_SEARCH_PAGE_SIZE = 10
 REGISTRY_MAX_TAGS = 20
@@ -171,15 +173,38 @@ def _make_audit_handler() -> logging.handlers.RotatingFileHandler | None:
 
 _audit_handler = _make_audit_handler()
 
+# ── Optional GCP Cloud Logging sink ───────────────────────
+# Activated when GOOGLE_CLOUD_PROJECT env var is set and google-cloud-logging is installed.
+# Dual-writes every structured log entry to Cloud Logging alongside local file + stdout.
+_gcp_logger = None
+_GCP_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+_GCP_LOG_NAME = os.environ.get("GCP_LOG_NAME", "skiff-audit")
+if _GCP_PROJECT:
+    try:
+        import google.cloud.logging as _gcl  # type: ignore[import]
+        _gcp_client = _gcl.Client(project=_GCP_PROJECT)
+        _gcp_logger = _gcp_client.logger(_GCP_LOG_NAME)
+        print(f"INFO: GCP Cloud Logging sink active → project={_GCP_PROJECT} log={_GCP_LOG_NAME}", flush=True)  # noqa: T201
+    except ImportError:
+        pass
+    except Exception as _gcp_exc:
+        print(f"WARNING: GCP Cloud Logging init failed: {_gcp_exc}", flush=True)  # noqa: T201
+
 
 def _audit_file_sink(_, __, event_dict):
-    """Write every log line to the rotating audit JSONL file in addition to stdout."""
+    """Write every log line to the rotating audit JSONL file and optionally GCP Cloud Logging."""
     if _audit_handler is not None:
         line = json.dumps(event_dict) + "\n"
         try:
             _audit_handler.stream.write(line)
             _audit_handler.stream.flush()
         except OSError:
+            pass
+    if _gcp_logger is not None:
+        try:
+            severity = event_dict.get("severity", "DEFAULT")
+            _gcp_logger.log_struct(event_dict, severity=severity)
+        except Exception:
             pass
     return event_dict
 
@@ -379,13 +404,42 @@ def _constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
+# ── Server-side session age tracking ──────────────────────
+# Maps token_hash → first-seen timestamp. Rejects tokens older than SESSION_ABS_TIMEOUT.
+# Cleared when _cfg.api_token is rotated (setup endpoint calls _invalidate_session_cache).
+_session_first_seen: dict[str, float] = {}
+_session_lock = threading.Lock()
+# Server-side absolute session lifetime matching the JS constant (8 hours)
+SESSION_ABS_TIMEOUT = 8 * 60 * 60  # seconds
+
+
+def _check_session_age(token: str) -> None:
+    """Reject tokens that have been active longer than SESSION_ABS_TIMEOUT."""
+    import hashlib
+    token_hash = hashlib.sha256(b"skiff-session:" + token.encode()).hexdigest()[:16]  # short fingerprint
+    now = time.monotonic()
+    with _session_lock:
+        first = _session_first_seen.get(token_hash)
+        if first is None:
+            _session_first_seen[token_hash] = now
+        elif (now - first) > SESSION_ABS_TIMEOUT:
+            raise HTTPException(401, "Session expired — please reload and re-authenticate")
+
+
+def _invalidate_session_cache() -> None:
+    """Clear session age tracking (call when token is rotated)."""
+    with _session_lock:
+        _session_first_seen.clear()
+
+
 def verify_auth(request: Request):
-    """Dependency: verifies bearer token on all API routes."""
+    """Dependency: verifies bearer token and enforces server-side session lifetime."""
     if not _cfg.api_token:
         return
     auth = request.headers.get("Authorization", "")
     if not _constant_time_compare(auth, f"Bearer {_cfg.api_token}"):
         raise HTTPException(401, "Invalid or missing API token")
+    _check_session_age(auth[7:])  # track age of valid tokens only
 
 
 def verify_auth_strict(request: Request):
@@ -395,6 +449,7 @@ def verify_auth_strict(request: Request):
     auth = request.headers.get("Authorization", "")
     if not _constant_time_compare(auth, f"Bearer {_cfg.api_token}"):
         raise HTTPException(401, "Invalid or missing API token")
+    _check_session_age(auth[7:])
 
 
 def verify_csrf(request: Request):
@@ -665,8 +720,74 @@ app.add_middleware(
     allow_headers=["Authorization", "X-Requested-With", "Content-Type"],
 )
 
+# ── Audit event classification ─────────────────────────────
+# Maps (HTTP method, path prefix) → semantic event_type label for SIEM ingestion.
+# More-specific prefixes must appear before less-specific ones.
+_AUDIT_EVENT_MAP: list[tuple[str, str, str]] = [
+    # Containers
+    ("POST",   "/api/containers/",        "container.run"),
+    ("POST",   "/api/containers",         "container.list_refresh"),
+    ("DELETE", "/api/containers/",        "container.removed"),
+    # Container sub-actions (start/stop/restart/kill/pause/unpause/rename/exec)
+    ("POST",   "/api/containers",         "container.action"),
+    # Logs / exec WebSocket
+    ("GET",    "/ws/logs/",               "container.logs_stream"),
+    ("GET",    "/ws/exec/",               "container.exec_session"),
+    # Images
+    ("POST",   "/api/images/pull",        "image.pull"),
+    ("POST",   "/api/images/push",        "image.push"),
+    ("POST",   "/api/images/tag",         "image.tag"),
+    ("DELETE", "/api/images/",            "image.removed"),
+    ("GET",    "/api/images",             "image.list"),
+    # Volumes
+    ("POST",   "/api/volumes",            "volume.created"),
+    ("DELETE", "/api/volumes/",           "volume.removed"),
+    ("POST",   "/api/volumes/prune",      "volume.pruned"),
+    # Networks
+    ("POST",   "/api/networks",           "network.created"),
+    ("DELETE", "/api/networks/",          "network.removed"),
+    ("POST",   "/api/networks/prune",     "network.pruned"),
+    # Compose
+    ("POST",   "/api/compose/up",         "compose.deployed"),
+    ("DELETE", "/api/compose/",           "compose.torn_down"),
+    # System
+    ("POST",   "/api/system/prune",       "system.pruned"),
+    ("GET",    "/api/system/audit-log",   "audit.log_read"),
+    # Setup
+    ("POST",   "/api/setup/tunnel",       "setup.tunnel_start"),
+    ("DELETE", "/api/setup/tunnel",       "setup.tunnel_stop"),
+    ("POST",   "/api/setup",              "setup.configured"),
+    # Auth failures (status 401/403 — applied after method/path match)
+    ("*",      "/api/",                   "api.request"),
+]
+
+# Regex to extract resource type and ID from common path patterns
+_RESOURCE_PATH_RE = re.compile(
+    r"/api/(?P<rtype>containers|images|volumes|networks|compose)/(?P<rid>[^/]+)"
+)
+
+
+def _classify_event(method: str, path: str, status: int) -> tuple[str, str, str]:
+    """Return (event_type, resource_type, resource_id) for an API request."""
+    if status in {401, 403}:
+        return "auth.denied", "", ""
+    if status == 429:
+        return "rate_limit.exceeded", "", ""
+    for m, prefix, label in _AUDIT_EVENT_MAP:
+        if (m in ("*", method)) and path.startswith(prefix):
+            event_type = label
+            break
+    else:
+        event_type = "api.request"
+    # Extract resource identity from path
+    m2 = _RESOURCE_PATH_RE.match(path)
+    resource_type = m2.group("rtype").rstrip("s") if m2 else ""  # containers→container
+    resource_id = m2.group("rid") if m2 else ""
+    return event_type, resource_type, resource_id
+
+
 class AuditLogMiddleware(BaseHTTPMiddleware):
-    """Log all authenticated API requests for governance compliance (SOC 2 CC7.1)."""
+    """Log all authenticated API requests for governance compliance (SOC 2 CC7.1/CC7.2)."""
 
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -685,15 +806,36 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     )
                 else:
                     token_hint = "invalid"
-            level = "error" if response.status_code >= 500 else "info"
+
+            # Per-user identity: populated by oauth2-proxy or any identity-aware reverse proxy
+            forwarded_user = request.headers.get("x-forwarded-user", "")
+
+            event_type, resource_type, resource_id = _classify_event(
+                request.method, request.url.path, response.status_code
+            )
+
+            level = "warning" if response.status_code in (401, 403, 429) else (
+                "error" if response.status_code >= 500 else "info"
+            )
+            extra: dict = {}
+            if token_suffix:
+                extra["token_suffix"] = token_suffix
+            if forwarded_user:
+                extra["user"] = forwarded_user
+            if resource_type:
+                extra["resource_type"] = resource_type
+            if resource_id:
+                extra["resource_id"] = resource_id
+
             getattr(log, level)(
                 "audit.api_access",
+                event_type=event_type,
                 method=request.method,
                 path=request.url.path,
                 status=response.status_code,
                 remote=request.client.host if request.client else "unknown",
                 auth=token_hint or ("none" if not auth_header else "present"),
-                **({"token_suffix": token_suffix} if token_suffix else {}),
+                **extra,
             )
         return response
 
@@ -780,6 +922,7 @@ def do_setup(
     _cfg.docker_host = _dh
     _cfg.allowed_registries = [r.strip() for r in allowed_registries.split(",") if r.strip()]
     _invalidate_client()
+    _invalidate_session_cache()
     log.info("setup.configured", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries)
     return {"ok": True}
 
@@ -1215,7 +1358,7 @@ def inspect_container(request: Request, container_id: str, client=Depends(docker
             "cmd": attrs["Config"].get("Cmd"),
             "entrypoint": attrs["Config"].get("Entrypoint"),
             "working_dir": attrs["Config"].get("WorkingDir", ""),
-            "labels": attrs["Config"].get("Labels", {}),
+            "labels": _redact_dict(attrs["Config"].get("Labels", {})),
             "hostname": attrs["Config"].get("Hostname", ""),
             "user": attrs["Config"].get("User", ""),
         },
@@ -1660,7 +1803,7 @@ def inspect_image(request: Request, image_id: str, client=Depends(docker_client_
             "cmd": attrs.get("Config", {}).get("Cmd"),
             "entrypoint": attrs.get("Config", {}).get("Entrypoint"),
             "exposed_ports": list(attrs.get("Config", {}).get("ExposedPorts", {}).keys()),
-            "labels": attrs.get("Config", {}).get("Labels", {}),
+            "labels": _redact_dict(attrs.get("Config", {}).get("Labels", {})),
             "working_dir": attrs.get("Config", {}).get("WorkingDir", ""),
             "user": attrs.get("Config", {}).get("User", ""),
         },
@@ -1866,6 +2009,21 @@ def _redact_env(env_list: list[str]) -> list[str]:
     return redacted
 
 
+def _redact_dict(d: dict) -> dict:
+    """Recursively redact sensitive string values from a dict (labels, env mappings, etc.)."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, str) and _ENV_SENSITIVE_RE.search(str(k)):
+            out[k] = "[REDACTED]"
+        elif isinstance(v, dict):
+            out[k] = _redact_dict(v)
+        elif isinstance(v, list):
+            out[k] = _redact_env(v) if all(isinstance(i, str) for i in v) else v
+        else:
+            out[k] = v
+    return out
+
+
 def _sanitize_stderr(stderr: str) -> str:
     """Strip internal paths and hostnames from subprocess error output before returning to client."""
     # Remove absolute paths (any length)
@@ -1891,7 +2049,14 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
 
     if file and file.filename:
         content = file.file.read()
-        validate_compose_file(content)
+        parsed = validate_compose_file(content)
+        # Audit: log compose structure with sensitive env values redacted
+        services_summary = {
+            svc: {"image": cfg.get("image", ""), "env_keys": list(cfg.get("environment", {}).keys())}
+            for svc, cfg in (parsed.get("services") or {}).items()
+            if isinstance(cfg, dict)
+        }
+        log.info("compose.upload", project=project_name, services=services_summary)
         compose_path.write_bytes(content)
     elif not compose_path.exists():
         raise HTTPException(400, "No compose file uploaded and no existing file found for this project")
