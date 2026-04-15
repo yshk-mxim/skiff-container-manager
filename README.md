@@ -128,13 +128,7 @@ SKIFF sidesteps all three: it runs as a plain Python process on your workstation
 | Multiple hosts | Supported (some tools) | One instance per host, each via its own SSH context |
 | Per-user RBAC | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
 
-See [SECURITY.md](SECURITY.md) for the full security model, production hardening guide, and design trade-off notes.
-
----
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for the full security model, production hardening checklist, and vulnerability reporting process. Key controls at a glance: registry allowlist, compose/volume sandboxing, CSRF protection, WebSocket token-via-message, rate limiting, security headers, and structured audit logging.
+See [SECURITY.md](SECURITY.md) for the full security model, production hardening checklist, design trade-off notes, and vulnerability reporting process. Key controls: registry allowlist, compose/volume sandboxing, CSRF protection, WebSocket token-via-message, rate limiting, security headers, and structured audit logging.
 
 ---
 
