@@ -153,3 +153,36 @@ Defaults are 15-minute idle timeout and 8-hour absolute timeout. For high-securi
 var IDLE_TIMEOUT   = 10 * 60 * 1000;  // 10 minutes
 var ABS_TIMEOUT    = 4 * 60 * 60 * 1000;  // 4 hours
 ```
+
+---
+
+## Design Trade-offs and Mitigations
+
+SKIFF is intentionally scoped. Two limitations come up in comparisons with heavier management tools — both are by design, and both have straightforward mitigations.
+
+### Single bearer token (no built-in RBAC)
+
+**What it means.** Everyone who knows `API_TOKEN` has full access — there are no per-user roles or audit trails that identify individual users.
+
+**Why it's this way.** Adding a user database would require a persistent backing store, migrations, and account management UI. For a tool designed to run on-demand from a developer's workstation, that overhead is the wrong trade-off.
+
+**Mitigation.** Place an OAuth2/OIDC proxy in front of SKIFF (see §6 above). The proxy handles login with your identity provider (Google, GitHub, Okta, Azure AD) and enforces per-user access. SKIFF's audit log then receives requests only after the proxy has authenticated the user, and you can add the `X-Forwarded-User` header to your log pipeline for per-user attribution. No code changes to SKIFF required.
+
+```bash
+# Example: oauth2-proxy with Google provider, in front of SKIFF on :8080
+oauth2-proxy \
+  --provider=google \
+  --upstream=http://127.0.0.1:8080 \
+  --email-domain=yourcompany.com \
+  --cookie-secret=<random-32-bytes> \
+  --client-id=<oauth-client-id> \
+  --client-secret=<oauth-client-secret>
+```
+
+### One Docker host per instance
+
+**What it means.** SKIFF connects to exactly one Docker socket. Managing ten Docker hosts means running ten SKIFF instances (one per workstation, or behind separate ports).
+
+**Why it's this way.** Multi-host state management (cross-host routing, host health tracking, aggregate views) adds substantial complexity that conflicts with the "no persistent server" design goal.
+
+**Mitigation.** The lightweight footprint makes this practical: each instance is a single Python process with no database, so running several in parallel is cheap. Use different `PORT` values or separate reverse proxy routes per host. If you genuinely need a unified view across many hosts, a server-based manager with native multi-host support is the better fit for that use case.

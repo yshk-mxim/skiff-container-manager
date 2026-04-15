@@ -59,93 +59,7 @@ skiff
 # Opens http://127.0.0.1:8080
 ```
 
----
-
-## Platform setup
-
-### Linux (local Docker Engine)
-
-```bash
-# Docker Engine is at /var/run/docker.sock by default
-cp .env.example .env
-# Edit .env: set API_TOKEN, leave DOCKER_HOST as unix:///var/run/docker.sock
-./run.sh
-```
-
-### macOS (Docker Desktop)
-
-```bash
-cp .env.example .env
-# Edit .env: set API_TOKEN
-# Docker Desktop exposes the socket at /var/run/docker.sock automatically
-./run.sh
-```
-
-### Windows (WSL2)
-
-`dockerd` does not start automatically in WSL2. Start it first:
-
-```bash
-# In WSL2 terminal
-sudo dockerd &>/tmp/dockerd.log &
-
-# Wait a few seconds, then:
-cp .env.example .env
-# Edit .env: set API_TOKEN, DOCKER_HOST=unix:///var/run/docker.sock
-./run.sh
-```
-
-To start `dockerd` automatically, enable systemd in WSL2 via `/etc/wsl.conf`:
-```ini
-[boot]
-systemd=true
-```
-Then `sudo systemctl enable docker`.
-
-### Remote Docker host (SSH tunnel)
-
-```bash
-# Open the tunnel first (once per session)
-ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host
-
-# Configure and start
-cp .env.example .env
-# Edit .env:
-#   API_TOKEN=<your-token>
-#   DOCKER_HOST=unix:///tmp/docker.sock
-./run.sh
-```
-
-### GCP Cloud Workstation
-
-See [docs/deployment.md](docs/deployment.md) for the full GCP setup guide.
-
-```bash
-# On the Docker Engine VM:
-gcloud auth configure-docker us-docker.pkg.dev
-
-# On the Cloud Workstation:
-ssh -fNL /tmp/docker.sock:/var/run/docker.sock dev@<DOCKER_VM_IP>
-
-cp .env.example .env
-# Edit .env:
-#   API_TOKEN=<your-token>
-#   DOCKER_HOST=unix:///tmp/docker.sock
-#   ALLOWED_REGISTRIES=us-docker.pkg.dev/my-project/
-./run.sh
-```
-
----
-
-## How it connects to Docker
-
-The app talks to Docker via a Unix socket. Set `DOCKER_HOST` to point at the right socket:
-
-| Scenario | DOCKER_HOST |
-|---|---|
-| Local Docker Engine (Linux / macOS Desktop) | `unix:///var/run/docker.sock` |
-| SSH tunnel to remote host | `unix:///tmp/docker.sock` |
-| TCP (insecure, LAN only) | `tcp://192.168.1.10:2375` |
+For platform-specific setup (Linux, macOS, WSL2, GCP Cloud Workstation, remote SSH tunnel) see [docs/deployment.md](docs/deployment.md).
 
 ---
 
@@ -165,21 +79,6 @@ Copy `.env.example` to `.env` and edit. All values can also be set as environmen
 | `COMPOSE_DIR` | `/data/compose` | Directory where compose files are stored on the server. |
 | `AUDIT_LOG` | `/var/log/skiff-audit.jsonl` | Audit log path. Set to a writable path (e.g. `./audit.jsonl`). |
 | `RATE_LIMIT_SCALE` | `1` | Multiply all rate limits by this factor (e.g. `100` for CI / load tests). |
-
----
-
-## Deployment (systemd)
-
-A systemd unit file is provided at `docs/skiff.service`. To install:
-
-```bash
-sudo cp docs/skiff.service /etc/systemd/system/skiff@.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now skiff@$USER
-sudo journalctl -u skiff@$USER -f
-```
-
-The service reads configuration from `/opt/skiff/.env`.
 
 ---
 
@@ -208,40 +107,53 @@ Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerM
 
 ---
 
-## Why SKIFF instead of a container management server?
+## Why SKIFF?
 
-Most Docker management UIs are designed around a different assumption: they run as a container *on* the Docker host itself and reach the daemon through the Unix socket mounted into that container. That works well for always-on infrastructure, but it carries a few architectural costs that matter in cloud workstation environments.
+Most Docker management UIs run as a container on the Docker host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
 
-**The `docker.sock` risk.** Mounting `/var/run/docker.sock` into a container is equivalent to granting root access to the host — the container can start new privileged containers, escape to the host filesystem, or terminate any running workload. Security teams regularly flag this pattern; the standard mitigation is adding a separate socket-proxy container to filter which API calls are allowed, which adds another moving part to maintain.
+- **`docker.sock` is root.** A container with socket access can start privileged containers, escape to the host filesystem, or terminate any workload. Security teams regularly flag this; the mitigation (a socket-proxy container) adds another thing to run and maintain.
+- **Always-on management plane.** A server-based manager needs a dedicated VM running 24/7 — extra cost, another system to patch, a single point of failure, just to manage your other VMs.
+- **No nested virtualisation needed.** Cloud workstations are VMs themselves. Running Docker *inside* them requires nested virt, which not all SKUs support and many security policies prohibit.
 
-**The always-on management plane.** A server-based manager needs a VM dedicated to running the management UI, even when no one is actively using it — extra compute cost, another system to patch, a single point of failure, and (the real irony) a VM that exists purely to manage your other VMs. This cost is invisible when your workloads already run 24/7, but it's wasteful for on-demand or dev workloads.
-
-**The nested-virtualisation problem on cloud workstations.** Cloud workstations (GCP Cloud Workstations, AWS WorkSpaces, Azure Dev Box, etc.) are VMs themselves. Running Docker inside them requires nested virtualisation, which not all SKUs support, adds a kernel-sharing exposure layer, and can conflict with corporate security policies that prohibit nested virt.
-
-**How SKIFF handles these differently:**
+SKIFF sidesteps all three: it runs as a plain Python process on your workstation, the Docker socket is forwarded over SSH (never mounted anywhere), and there is no idle management server.
 
 | Concern | Server-based manager | SKIFF |
 |---|---|---|
-| `docker.sock` exposure | Socket mounted into a privileged container on the host | Socket forwarded over SSH — never mounted anywhere |
-| Always-on cost | Dedicated management VM required | Runs as a Python process on your workstation; start it when you need it |
+| `docker.sock` exposure | Mounted into a privileged container on the host | Forwarded over SSH — never mounted |
+| Always-on cost | Dedicated management VM required | Starts on your workstation; stop it when done |
 | Nested virtualisation | Required if running on a cloud workstation | Not required — SKIFF is not a container |
 | Agent on Docker host | Required for remote hosts | None — SSH ControlMaster is the transport |
 | Multiple hosts | Supported (some tools) | One Docker host per instance |
-| RBAC | Supported (some tools) | Single bearer token — all-or-nothing access |
+| Per-user RBAC | Supported (some tools) | Single bearer token; SSO proxy for multi-user teams |
 
-**The right tool for the right situation.** If you manage many Docker hosts, need per-user RBAC, or run Swarm/Kubernetes, a server-based manager is probably the better fit. SKIFF is designed for teams where developers have cloud workstations and Docker runs on a separate VM in the same VPC — the SSH tunnel is the security boundary, there is no idle management server, and the manager runs only when someone is actively using it.
+See [SECURITY.md](SECURITY.md) for the full security model, production hardening guide, and notes on the design trade-offs.
 
 ---
 
 ## Security
 
 - **Registry allowlist** — `ALLOWED_REGISTRIES` restricts which images can be pulled, pushed, or run.
-- **Compose sandboxing** — compose files are validated before execution; `privileged`, host path mounts, `cap_add`, `devices`, `build`, and unapproved registries are rejected.
+- **Compose sandboxing** — `privileged`, host path mounts, `cap_add`, `devices`, `build`, and unapproved registries are rejected before execution.
 - **Volume sandboxing** — only named volumes are permitted; host path mounts are rejected.
-- **WebSocket auth** — tokens sent as the first WebSocket message, not query parameters.
-- **Rate limiting** — all endpoints rate-limited via slowapi.
-- **Security headers** — CSP, X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy.
-- **Audit logging** — every API request logged with method, path, status, IP, and auth status.
+- **WebSocket auth** — token sent as first message, not query parameter.
+- **Rate limiting**, **security headers** (CSP, HSTS, X-Frame-Options), **audit logging**.
+
+See [SECURITY.md](SECURITY.md) for the production hardening guide and vulnerability reporting process.
+
+---
+
+## Deployment (systemd)
+
+A systemd unit file is provided at `docs/skiff.service`. To install:
+
+```bash
+sudo cp docs/skiff.service /etc/systemd/system/skiff@.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now skiff@$USER
+sudo journalctl -u skiff@$USER -f
+```
+
+The service reads configuration from `/opt/skiff/.env`.
 
 ---
 
