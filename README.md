@@ -2,7 +2,36 @@
 
 A cloud-native container manager with a web UI. Built for teams running Docker on remote VMs — GCP Cloud Workstations, EC2, bare metal — accessible securely over an SSH tunnel from anywhere with a browser.
 
+No per-seat licensing. No installation on the Docker host. Works wherever you have a browser and SSH.
+
 ![SKIFF Container Manager UI](docs/screenshot.png)
+
+---
+
+## Why SKIFF?
+
+SKIFF connects to any Docker daemon — local Engine, Docker Desktop, or a remote VM over SSH. Its primary design target is teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote Docker host without running a persistent management VM. In the remote case the socket is forwarded over SSH rather than mounted into a container, which is the key security difference described below.
+
+Most Docker management UIs run as a container on the Docker host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
+
+- **`docker.sock` is root.** A container with socket access can start privileged containers, escape to the host filesystem, or terminate any workload. Security teams regularly flag this; the mitigation (a socket-proxy container) adds another thing to run and maintain.
+- **Always-on management plane.** A server-based manager needs a dedicated VM running 24/7 — extra cost, another system to patch, a single point of failure, just to manage your other VMs.
+- **No nested virtualisation needed.** Cloud workstations are VMs themselves. Running Docker *inside* them requires nested virt, which not all SKUs support and many security policies prohibit.
+
+SKIFF sidesteps all three: it runs as a plain Python process on your workstation, the Docker socket is forwarded over SSH (never mounted anywhere), and there is no idle management server.
+
+| Concern | Server-based manager | SKIFF |
+|---|---|---|
+| `docker.sock` exposure | Mounted into a privileged container on the host | Forwarded over SSH — never mounted |
+| Always-on cost | Dedicated management VM required | Starts on your workstation; stop it when done |
+| Nested virtualisation | Required if running on a cloud workstation | Not required — SKIFF is not a container |
+| Agent on Docker host | Required for remote hosts | None — SSH ControlMaster is the transport |
+| Multiple hosts | Supported (some tools) | One instance per host, each via its own SSH context |
+| Per-user RBAC | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
+
+See [SECURITY.md](SECURITY.md) for the full security model, production hardening checklist, design trade-off notes, and vulnerability reporting process. Key controls: registry allowlist, compose/volume sandboxing, CSRF protection, WebSocket token-via-message, rate limiting, security headers, and structured audit logging.
+
+---
 
 ## Features
 
@@ -104,31 +133,6 @@ See [docs/api-reference.md](docs/api-reference.md) for the full endpoint referen
 
 All `/api/` endpoints require `Authorization: Bearer <token>`.  
 Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerManager`.
-
----
-
-## Why SKIFF?
-
-SKIFF connects to any Docker daemon — local Engine, Docker Desktop, or a remote VM over SSH. Its primary design target is teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote Docker host without running a persistent management VM. In the remote case the socket is forwarded over SSH rather than mounted into a container, which is the key security difference described below.
-
-Most Docker management UIs run as a container on the Docker host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
-
-- **`docker.sock` is root.** A container with socket access can start privileged containers, escape to the host filesystem, or terminate any workload. Security teams regularly flag this; the mitigation (a socket-proxy container) adds another thing to run and maintain.
-- **Always-on management plane.** A server-based manager needs a dedicated VM running 24/7 — extra cost, another system to patch, a single point of failure, just to manage your other VMs.
-- **No nested virtualisation needed.** Cloud workstations are VMs themselves. Running Docker *inside* them requires nested virt, which not all SKUs support and many security policies prohibit.
-
-SKIFF sidesteps all three: it runs as a plain Python process on your workstation, the Docker socket is forwarded over SSH (never mounted anywhere), and there is no idle management server.
-
-| Concern | Server-based manager | SKIFF |
-|---|---|---|
-| `docker.sock` exposure | Mounted into a privileged container on the host | Forwarded over SSH — never mounted |
-| Always-on cost | Dedicated management VM required | Starts on your workstation; stop it when done |
-| Nested virtualisation | Required if running on a cloud workstation | Not required — SKIFF is not a container |
-| Agent on Docker host | Required for remote hosts | None — SSH ControlMaster is the transport |
-| Multiple hosts | Supported (some tools) | One instance per host, each via its own SSH context |
-| Per-user RBAC | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
-
-See [SECURITY.md](SECURITY.md) for the full security model, production hardening checklist, design trade-off notes, and vulnerability reporting process. Key controls: registry allowlist, compose/volume sandboxing, CSRF protection, WebSocket token-via-message, rate limiting, security headers, and structured audit logging.
 
 ---
 
