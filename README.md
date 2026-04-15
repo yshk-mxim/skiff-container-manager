@@ -109,7 +109,7 @@ Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerM
 
 ## Why SKIFF?
 
-SKIFF is built for teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote Docker host without running a persistent management VM.
+SKIFF works with any Docker socket — local Engine, Docker Desktop, or a remote VM over SSH. Its primary design target is teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote Docker host without running a persistent management VM.
 
 Most Docker management UIs run as a container on the Docker host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
 
