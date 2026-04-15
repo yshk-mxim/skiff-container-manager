@@ -180,13 +180,21 @@ function setDockerStatus(ok, msg) {
     el.innerHTML = '<span class="dot down"></span> <span>Disconnected</span>';
     banner.className = 'status-banner error';
     var _dockerHost = (typeof _appConfig !== 'undefined' && _appConfig && _appConfig.docker_host) || '';
-    var _bannerMsg = '<strong>Container engine unreachable.</strong> ';
+    // Build banner with DOM methods — docker_host is server-supplied and must not go into innerHTML
+    while (banner.firstChild) banner.removeChild(banner.firstChild);
+    var _strong = document.createElement('strong');
+    _strong.textContent = 'Container engine unreachable. ';
+    banner.appendChild(_strong);
     if (_dockerHost && !_dockerHost.startsWith('unix:///var/run/docker')) {
-      _bannerMsg += 'Open an SSH tunnel to your Docker host, then reload:<br><code style="font-size:12px;user-select:all">ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host</code>';
+      var _hint = document.createTextNode('Open an SSH tunnel to your Docker host, then reload: ');
+      var _code = document.createElement('code');
+      _code.style.cssText = 'font-size:12px;user-select:all';
+      _code.textContent = 'ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host';
+      banner.appendChild(_hint);
+      banner.appendChild(_code);
     } else {
-      _bannerMsg += 'Make sure Docker Desktop (or dockerd) is running, then reload the page.';
+      banner.appendChild(document.createTextNode('Make sure Docker Desktop (or dockerd) is running, then reload the page.'));
     }
-    banner.innerHTML = _bannerMsg;
     banner.style.display = 'block';
   }
 }
@@ -1460,7 +1468,13 @@ function loadAuditLog(tbody) {
       tbody.appendChild(tr);
     });
   }).catch(function(e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--red);padding:12px">Failed: ' + e.message + '</td></tr>';
+    var tr = document.createElement('tr');
+    var td = document.createElement('td');
+    td.colSpan = 6;
+    td.style.cssText = 'color:var(--red);padding:12px';
+    td.textContent = 'Failed: ' + e.message;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
   });
 }
 

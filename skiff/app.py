@@ -195,9 +195,10 @@ def _audit_file_sink(_, __, event_dict):
     """Write every log line to the rotating audit JSONL file and optionally GCP Cloud Logging."""
     if _audit_handler is not None:
         line = json.dumps(event_dict) + "\n"
+        # Use handler.emit() — triggers shouldRollover/doRollover and acquires the handler lock.
+        record = logging.makeLogRecord({"msg": line})
         try:
-            _audit_handler.stream.write(line)
-            _audit_handler.stream.flush()
+            _audit_handler.emit(record)
         except OSError:
             pass
     if _gcp_logger is not None:
@@ -407,8 +408,14 @@ def _constant_time_compare(a: str, b: str) -> bool:
 # ── Server-side session age tracking ──────────────────────
 # Maps token_hash → first-seen timestamp. Rejects tokens older than SESSION_ABS_TIMEOUT.
 # Cleared when _cfg.api_token is rotated (setup endpoint calls _invalidate_session_cache).
+#
+# Design note: because SKIFF uses a single shared token (not per-user tokens), there is
+# typically only one entry in this dict. The dict is also capped to prevent unbounded growth
+# in any future multi-token scenario. Server restart resets the clock — this is a known
+# limitation of in-memory state; persistent session tracking would require external storage.
 _session_first_seen: dict[str, float] = {}
 _session_lock = threading.Lock()
+_SESSION_CACHE_MAX = 1000           # safety cap — evict oldest entries when exceeded
 # Server-side absolute session lifetime matching the JS constant (8 hours)
 SESSION_ABS_TIMEOUT = 8 * 60 * 60  # seconds
 
@@ -421,6 +428,10 @@ def _check_session_age(token: str) -> None:
     with _session_lock:
         first = _session_first_seen.get(token_hash)
         if first is None:
+            if len(_session_first_seen) >= _SESSION_CACHE_MAX:
+                # Evict the oldest entry to bound memory usage
+                oldest = min(_session_first_seen, key=_session_first_seen.__getitem__)
+                del _session_first_seen[oldest]
             _session_first_seen[token_hash] = now
         elif (now - first) > SESSION_ABS_TIMEOUT:
             raise HTTPException(401, "Session expired — please reload and re-authenticate")
@@ -679,6 +690,12 @@ def validate_compose_file(content: bytes) -> dict:
 async def lifespan(app: FastAPI):
     if not _cfg.api_token:
         log.warning("security.no_api_token", msg="Running without auth — set API_TOKEN for production")
+    if "API_TOKEN" in os.environ and not os.environ["API_TOKEN"].strip():
+        log.warning(
+            "security.empty_api_token_env",
+            msg="API_TOKEN env var is set but empty — setup endpoint is OPEN. "
+                "Set a non-empty token or unset the variable.",
+        )
     if not _cfg.allowed_registries:
         log.warning(
             "security.no_registry_allowlist",
@@ -724,12 +741,10 @@ app.add_middleware(
 # Maps (HTTP method, path prefix) → semantic event_type label for SIEM ingestion.
 # More-specific prefixes must appear before less-specific ones.
 _AUDIT_EVENT_MAP: list[tuple[str, str, str]] = [
-    # Containers
-    ("POST",   "/api/containers/",        "container.run"),
-    ("POST",   "/api/containers",         "container.list_refresh"),
+    # Containers — more-specific entries MUST come before less-specific ones
+    ("POST",   "/api/containers/run",     "container.run"),      # POST /api/containers/run
+    ("POST",   "/api/containers/",        "container.action"),   # POST /api/containers/{id}/start etc.
     ("DELETE", "/api/containers/",        "container.removed"),
-    # Container sub-actions (start/stop/restart/kill/pause/unpause/rename/exec)
-    ("POST",   "/api/containers",         "container.action"),
     # Logs / exec WebSocket
     ("GET",    "/ws/logs/",               "container.logs_stream"),
     ("GET",    "/ws/exec/",               "container.exec_session"),
@@ -807,8 +822,12 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 else:
                     token_hint = "invalid"
 
-            # Per-user identity: populated by oauth2-proxy or any identity-aware reverse proxy
-            forwarded_user = request.headers.get("x-forwarded-user", "")
+            # Per-user identity: populated by oauth2-proxy or any identity-aware reverse proxy.
+            # Sanitize: printable ASCII only, max 128 chars — header is attacker-controlled
+            # when no proxy is present, so we must not trust it for access decisions,
+            # only for audit attribution when a proxy is in use.
+            _raw_user = request.headers.get("x-forwarded-user", "")
+            forwarded_user = re.sub(r"[^\x20-\x7E]", "", _raw_user)[:128]
 
             event_type, resource_type, resource_id = _classify_event(
                 request.method, request.url.path, response.status_code
@@ -1098,6 +1117,25 @@ def run_container(
     validate_image_registry(image)
     validate_container_name(name)
 
+    # Validate port mappings — prevent binding privileged or sensitive host ports
+    if ports:
+        if len(ports) > 10:
+            raise HTTPException(400, "Too many port mappings (max 10)")
+        for cport, hport in ports.items():
+            if not re.match(r"^\d{1,5}(/tcp|/udp)?$", str(cport)):
+                raise HTTPException(400, f"Invalid container port format: {str(cport)[:20]}")
+            # hport may be a bare port number, "ip:port", or ("ip", port) tuple
+            raw_hp = hport
+            if isinstance(raw_hp, (list, tuple)) and len(raw_hp) == 2:
+                raw_hp = raw_hp[1]
+            if raw_hp is not None:
+                try:
+                    hp = int(str(raw_hp).split(":")[-1])
+                except (ValueError, TypeError):
+                    raise HTTPException(400, f"Invalid host port: {str(hport)[:20]}") from None
+                if hp < 1024:
+                    raise HTTPException(400, f"Binding to privileged host port {hp} (<1024) is not allowed")
+
     if environment:
         for env in environment:
             if "=" not in env or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*=", env):
@@ -1160,6 +1198,8 @@ def run_container(
         read_only=read_only,
     )
     if command:
+        if len(command) > 4096:
+            raise HTTPException(400, "Command too long (max 4096 chars)")
         run_kwargs["command"] = command
     if volume_binds:
         run_kwargs["volumes"] = volume_binds
@@ -1501,6 +1541,7 @@ async def _validate_ws_token_from_message(websocket: WebSocket) -> bool:
     """Validate token sent as first WS message ('AUTH <token>') instead of URL query param.
 
     Avoids leaking token in proxy/access logs via query string.
+    Also enforces server-side session age (same 8-hour absolute limit as HTTP endpoints).
     """
     if not _cfg.api_token:
         return True
@@ -1509,7 +1550,14 @@ async def _validate_ws_token_from_message(websocket: WebSocket) -> bool:
     except Exception:
         return False
     if first_msg.startswith("AUTH "):
-        return _constant_time_compare(first_msg[5:], _cfg.api_token)
+        token = first_msg[5:]
+        if not _constant_time_compare(token, _cfg.api_token):
+            return False
+        try:
+            _check_session_age(token)
+        except HTTPException:
+            return False
+        return True
     return False
 
 
@@ -2009,14 +2057,16 @@ def _redact_env(env_list: list[str]) -> list[str]:
     return redacted
 
 
-def _redact_dict(d: dict) -> dict:
+def _redact_dict(d: dict, _depth: int = 0) -> dict:
     """Recursively redact sensitive string values from a dict (labels, env mappings, etc.)."""
+    if _depth > 10:
+        return {"[truncated]": "..."}
     out = {}
     for k, v in d.items():
         if isinstance(v, str) and _ENV_SENSITIVE_RE.search(str(k)):
             out[k] = "[REDACTED]"
         elif isinstance(v, dict):
-            out[k] = _redact_dict(v)
+            out[k] = _redact_dict(v, _depth + 1)
         elif isinstance(v, list):
             out[k] = _redact_env(v) if all(isinstance(i, str) for i in v) else v
         else:
@@ -2051,8 +2101,15 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
         content = file.file.read()
         parsed = validate_compose_file(content)
         # Audit: log compose structure with sensitive env values redacted
+        def _env_keys(env) -> list[str]:
+            """Extract env var names only (never values). Handles both dict and list forms."""
+            if isinstance(env, dict):
+                return list(env.keys())
+            if isinstance(env, list):
+                return [str(e).split("=", 1)[0] for e in env if isinstance(e, str)]
+            return []
         services_summary = {
-            svc: {"image": cfg.get("image", ""), "env_keys": list(cfg.get("environment", {}).keys())}
+            svc: {"image": cfg.get("image", ""), "env_keys": _env_keys(cfg.get("environment"))}
             for svc, cfg in (parsed.get("services") or {}).items()
             if isinstance(cfg, dict)
         }
@@ -2211,12 +2268,27 @@ def prune_build_cache(request: Request, client=Depends(docker_client_dep)):
 @app.get("/api/system/audit-log", dependencies=[Depends(verify_auth_strict)])
 @limiter.limit("20/minute")
 def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_LINES, ge=1)):
-    """Return the last N lines of the app audit log."""
+    """Return the last N lines of the app audit log, read efficiently without loading the full file."""
     if not AUDIT_LOG_PATH.exists():
         return []
-    lines = AUDIT_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    # Read only the last chunk of the file to avoid loading hundreds of MB into memory.
+    # Assumes average line length of ~300 bytes; read 2x that budget to be safe.
+    chunk_size = tail * 600
+    raw_lines: list[str] = []
+    try:
+        with AUDIT_LOG_PATH.open("rb") as fh:
+            fh.seek(0, 2)
+            file_size = fh.tell()
+            seek_to = max(0, file_size - chunk_size)
+            fh.seek(seek_to)
+            chunk = fh.read()
+        raw_lines = chunk.decode("utf-8", errors="replace").splitlines()
+        if seek_to > 0:
+            raw_lines = raw_lines[1:]  # discard potentially partial first line
+    except OSError:
+        return []
     result = []
-    for raw_line in lines[-tail:]:
+    for raw_line in raw_lines[-tail:]:
         stripped = raw_line.strip()
         if not stripped:
             continue

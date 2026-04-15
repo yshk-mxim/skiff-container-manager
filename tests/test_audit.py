@@ -32,7 +32,8 @@ def client():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("method,path,status,expected_type", [
-    ("POST",   "/api/containers/abc123/start",  200, "container.run"),
+    ("POST",   "/api/containers/abc123/start",  200, "container.action"),
+    ("POST",   "/api/containers/run",           200, "container.run"),
     ("DELETE", "/api/containers/abc123",        200, "container.removed"),
     ("POST",   "/api/images/pull",              200, "image.pull"),
     ("POST",   "/api/compose/up",               200, "compose.deployed"),
