@@ -1,0 +1,10 @@
+fastapi==0.135.3
+starlette==1.0.0
+uvicorn==0.34.0
+docker==7.1.0
+python-multipart==0.0.26
+websockets==14.1
+slowapi==0.1.9
+structlog==24.4.0
+pyyaml==6.0.2
+requests==2.32.3

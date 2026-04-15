@@ -1,0 +1,23 @@
+SKIFF Container Manager
+Copyright 2026 Yakov Shkolnikov and contributors
+
+This product includes software developed by third parties:
+
+MIT License:
+- FastAPI (https://github.com/tiangolo/fastapi) — Sebastián Ramírez
+- PyYAML (https://github.com/yaml/pyyaml) — Kirill Simonov and contributors
+- slowapi (https://github.com/laurentS/slowapi) — Laurent Savaete
+
+Apache 2.0 License:
+- Docker SDK for Python (https://github.com/docker/docker-py) — Docker, Inc.
+- Structlog (https://github.com/hynek/structlog) — Hynek Schlawack and contributors
+- python-multipart (https://github.com/Kludex/python-multipart) — Andrew Dunstan and contributors
+- Requests (https://github.com/psf/requests) — Kenneth Reitz and contributors
+
+BSD License:
+- Uvicorn (https://github.com/encode/uvicorn) — Tom Christie (BSD-3-Clause)
+- Starlette (https://github.com/encode/starlette) — Tom Christie (BSD-3-Clause)
+- websockets (https://github.com/python-websockets/websockets) — Aymeric Augustin (BSD-3-Clause)
+
+Full dependency list with licenses available via:
+  pip install pip-licenses && pip-licenses --from=mixed --format=markdown

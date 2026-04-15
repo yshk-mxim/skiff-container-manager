@@ -1,0 +1,29 @@
+[Unit]
+Description=SKIFF Container Manager — Docker web UI
+Documentation=https://github.com/your-org/skiff
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/skiff
+EnvironmentFile=-/opt/skiff/.env
+ExecStart=/opt/skiff/.venv/bin/uvicorn app:app \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --workers 1 \
+    --log-level warning
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skiff
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/skiff /var/log /data/compose
+
+[Install]
+WantedBy=multi-user.target

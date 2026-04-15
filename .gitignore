@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment / secrets
+.env
+*.env
+
+# Logs
+*.log
+*.jsonl
+
+# Coverage
+coverage.json
+coverage.xml
+htmlcov/
+.coverage
+.coverage.*
+
+# Test / tool caches
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# Security scan outputs
+sbom.cdx.json
+bandit-report.*
+
+# macOS
+.DS_Store

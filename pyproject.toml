@@ -1,0 +1,168 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skiff"
+version = "1.0.0"
+description = "Web UI for managing Docker containers via a secure SSH tunnel"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    # CVE note: fastapi>=0.116 pulls starlette>=0.49.1 which fixes CVE-2025-54121 and CVE-2025-62727.
+    "fastapi>=0.116",
+    "starlette>=0.49.1",    # explicit floor — CVE-2025-54121, CVE-2025-62727
+    "uvicorn[standard]>=0.30",
+    "docker>=7.1",
+    "pyyaml>=6.0",
+    "slowapi>=0.1.9",
+    "structlog>=24.0",
+    "requests>=2.32",
+    "python-multipart>=0.0.22",  # CVE-2026-24486 fixed in 0.0.22
+    "websockets>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.0",
+    "httpx>=0.27",           # TestClient transport
+]
+e2e = [
+    "playwright>=1.40",      # requires `playwright install chromium` after pip install
+    "pytest-playwright>=0.4",
+]
+
+[project.scripts]
+skiff = "skiff.app:_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["skiff*"]
+
+[tool.setuptools.package-data]
+"skiff" = ["static/**/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "S",        # bandit security
+    "B",        # flake8-bugbear
+    "C90",      # mccabe complexity
+    "PL",       # pylint
+    "RUF",      # ruff-specific
+    "SIM",      # flake8-simplify
+    "C4",       # flake8-comprehensions
+    "PIE",      # flake8-pie
+    "T20",      # no print statements
+    "RET",      # flake8-return
+    "ARG",      # unused arguments
+    "TRY",      # tryceratops
+    "PERF",     # perflint
+]
+ignore = [
+    # FastAPI idioms — intentional
+    "B008",    # Depends() in defaults is standard FastAPI
+    "RET504",  # unnecessary assignment before return (FastAPI style)
+
+    # Singleton pattern — intentional
+    "PLW0603", # global singleton for Docker client
+
+    # Exception handling — intentional patterns
+    "TRY300",  # return inside try — FastAPI pattern
+    "TRY400",  # structlog uses log.error(), not logging.exception()
+    "TRY003",  # long HTTPException detail strings
+    "SIM105",  # contextlib.suppress vs try/except/pass — best-effort cleanup
+    "S110",    # try/except/pass in best-effort cleanup
+    "BLE001",  # broad Exception — needed for Docker transient error handling
+
+    # Complexity — security validation functions inherently need many branches
+    "PLR2004", # magic values: HTTP status codes and config constants are self-documenting
+    "PLR0912", # too many branches: validate_compose_file and run_container
+    "C901",    # complexity: same functions
+    "PLR0915", # too many statements: exec_shell WebSocket handler
+
+    # Style preferences
+    "SIM102",  # nested if: clearer than collapsed form in validation logic
+    "C408",    # dict() call: used intentionally for run_kwargs construction
+    "ARG001",  # unused arg: structlog processor and FastAPI lifespan signatures
+    "PLR0913", # too many args: FastAPI route signatures
+    "S603",    # subprocess with shell=False (trusted fixed args)
+    "S607",    # partial executable path (docker CLI on PATH)
+    "S105",    # false positive: audit status strings ("authenticated", "invalid") flagged as passwords
+    "PLC0415", # import inside _main() is intentional (lazy import keeps uvicorn optional at module level)
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 18
+
+[tool.ruff.lint.pylint]
+max-args = 12
+max-branches = 12
+max-statements = 60
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",    # assert in tests
+    "PLR2004", # magic values in tests
+    "S105",    # hardcoded token values in tests
+    "S106",    # hardcoded password in function call
+    "T201",    # print in tests
+    "ARG001",  # unused fixture arguments
+    "ARG002",  # unused method arguments
+    "PLC0415", # imports inside test functions (for patching)
+    "SIM117",  # nested with for TestClient context manager
+    "BLE001",  # catch-all in property tests
+    "S108",    # /tmp/ paths are acceptable in test fixtures
+    "E402",    # module-level imports after pytest_plugins declaration
+    "E501",    # line length — long selectors in Playwright tests
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: fast tests with mocked Docker client",
+    "integration: tests against a real Docker daemon",
+    "property: hypothesis property-based tests",
+    "e2e: end-to-end Playwright tests requiring live server and Docker tunnel",
+]
+addopts = ["--strict-markers", "--strict-config"]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 75
+precision = 1
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.codespell]
+skip = "*.git,*.pyc,__pycache__,htmlcov,.pytest_cache,.ruff_cache"
+ignore-words-list = "fo,nd"
