@@ -18,7 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "slowapi>=0.1.9",
     "structlog>=24.0",
-    "requests>=2.32",
+    "requests>=2.33.0",
     "python-multipart>=0.0.22",  # CVE-2026-24486 fixed in 0.0.22
     "websockets>=13.0",
 ]
