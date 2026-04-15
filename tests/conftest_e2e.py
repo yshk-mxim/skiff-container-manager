@@ -61,20 +61,57 @@ _SOCKET_PATH = (
 
 # ── SSH tunnel ──────────────────────────────────────────────────────────────
 
+def _kill_stale_tunnels(target_host: str, socket_path: str | None) -> None:
+    """Kill any orphaned SSH processes forwarding the same target/socket."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"ssh.*{target_host}"],
+            capture_output=True, text=True, check=False,
+        )
+        for pid in result.stdout.split():
+            try:
+                subprocess.run(["kill", pid], check=False, capture_output=True)
+            except Exception:
+                pass
+        if result.returncode == 0:
+            time.sleep(0.5)  # give processes time to die
+    except Exception:
+        pass
+    # Remove stale socket file
+    if socket_path and os.path.exists(socket_path):
+        try:
+            os.unlink(socket_path)
+        except OSError:
+            pass
+
+
+def _docker_socket_alive(socket_path: str) -> bool:
+    """Return True if the Docker socket responds to a ping."""
+    try:
+        client = docker.DockerClient(base_url=f"unix://{socket_path}", timeout=5)
+        client.ping()
+        client.close()
+        return True
+    except Exception:
+        return False
+
+
 @pytest.fixture(scope="session")
 def ssh_tunnel():
     """Open an SSH tunnel if E2E_SSH_TUNNEL is set; otherwise no-op.
 
     Uses a ControlMaster socket so we can cleanly shut down the tunnel after
     the session without relying on process-group signals.
+
+    Kills any orphaned SSH processes for the same target before starting,
+    to avoid multiple competing tunnels fighting over the same Unix socket.
     """
     if not E2E_SSH_TUNNEL or not _SOCKET_PATH:
         yield
         return
 
-    # Remove stale socket if present
-    if os.path.exists(_SOCKET_PATH):
-        os.unlink(_SOCKET_PATH)
+    # Kill any stale tunnels from previous test runs and remove socket
+    _kill_stale_tunnels(E2E_SSH_TUNNEL, _SOCKET_PATH)
 
     ctl_socket = f"/tmp/skiff-e2e-ssh-ctl-{os.getpid()}.sock"
     cmd = [
@@ -94,14 +131,14 @@ def ssh_tunnel():
     except subprocess.CalledProcessError as exc:
         pytest.skip(f"Could not open SSH tunnel to {E2E_SSH_TUNNEL}: {exc}")
 
-    # Wait for socket to appear
-    deadline = time.time() + 10
+    # Wait for socket to appear AND respond to Docker API
+    deadline = time.time() + 15
     while time.time() < deadline:
-        if _SOCKET_PATH and os.path.exists(_SOCKET_PATH):
+        if _SOCKET_PATH and os.path.exists(_SOCKET_PATH) and _docker_socket_alive(_SOCKET_PATH):
             break
-        time.sleep(0.3)
+        time.sleep(0.5)
     else:
-        pytest.skip(f"SSH tunnel socket {_SOCKET_PATH} did not appear within 10s")
+        pytest.skip(f"SSH tunnel socket {_SOCKET_PATH} did not become reachable within 15s")
 
     yield
 

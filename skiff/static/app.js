@@ -415,9 +415,9 @@ function renderContainers(containers) {
     var bg = document.createElement('div'); bg.className = 'btn-group';
     if (c.state === 'running') {
       bg.append(
-        makeActionBtn('Stop', function() { return apiFetch(API+'/containers/'+c.id+'/stop',{method:'POST'}).then(function(){toast(c.name+' stopped','info');loadContainers();}); }, undefined, 'Stopping\u2026'),
-        makeActionBtn('Restart', function() { return apiFetch(API+'/containers/'+c.id+'/restart',{method:'POST'}).then(function(){loadContainers();}); }, undefined, 'Restarting\u2026'),
-        makeActionBtn('Pause', function() { return apiFetch(API+'/containers/'+c.id+'/pause',{method:'POST'}).then(function(){toast(c.name+' paused','info');loadContainers();}); }),
+        makeActionBtn('Stop', function() { return guardedAction('stop-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/stop',{method:'POST'}).then(function(){toast(c.name+' stopped','info');loadContainers();}); }); }, undefined, 'Stopping\u2026'),
+        makeActionBtn('Restart', function() { return guardedAction('restart-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/restart',{method:'POST'}).then(function(){loadContainers();}); }); }, undefined, 'Restarting\u2026'),
+        makeActionBtn('Pause', function() { return guardedAction('pause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/pause',{method:'POST'}).then(function(){toast(c.name+' paused','info');loadContainers();}); }); }),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
         makeBtn('Terminal', function() { showDetail(c.id, c.name, 'terminal'); }),
         makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
@@ -426,25 +426,27 @@ function renderContainers(containers) {
       );
     } else if (c.state === 'paused') {
       bg.append(
-        makeActionBtn('Unpause', function() { return apiFetch(API+'/containers/'+c.id+'/unpause',{method:'POST'}).then(function(){loadContainers();}); }, 'btn primary'),
+        makeActionBtn('Unpause', function() { return guardedAction('unpause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/unpause',{method:'POST'}).then(function(){loadContainers();}); }); }, 'btn primary'),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
         makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
       );
     } else {
       bg.append(
         makeActionBtn('Start', function() {
-          return apiFetch(API+'/containers/'+c.id+'/start',{method:'POST'}).then(function(){
-            return new Promise(function(resolve) { setTimeout(resolve, 600); });
-          }).then(function(){
-            return apiFetch(API+'/containers/'+c.id+'/inspect');
-          }).then(function(data){
-            var s = data.state || {};
-            if (s.Status === 'exited' || s.Status === 'dead') {
-              toast(c.name + ' exited immediately (code ' + (s.ExitCode !== undefined ? s.ExitCode : '?') + ')', 'error');
-            } else {
-              toast(c.name + ' started', 'success');
-            }
-            loadContainers();
+          return guardedAction('start-c-'+c.id, function() {
+            return apiFetch(API+'/containers/'+c.id+'/start',{method:'POST'}).then(function(){
+              return new Promise(function(resolve) { setTimeout(resolve, 600); });
+            }).then(function(){
+              return apiFetch(API+'/containers/'+c.id+'/inspect');
+            }).then(function(data){
+              var s = data.state || {};
+              if (s.Status === 'exited' || s.Status === 'dead') {
+                toast(c.name + ' exited immediately (code ' + (s.ExitCode !== undefined ? s.ExitCode : '?') + ')', 'error');
+              } else {
+                toast(c.name + ' started', 'success');
+              }
+              loadContainers();
+            });
           });
         }, 'btn primary'),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
@@ -647,7 +649,9 @@ async function showInspectContent(id) {
     renameRow.append(renameInp, makeActionBtn('Rename', function() {
       var newName = renameInp.value;
       if (newName === d.name) throw new Error('Name unchanged');
-      return apiFetch(API+'/containers/'+id+'/rename?name='+encodeURIComponent(newName),{method:'POST'}).then(function(){toast('Renamed to '+newName,'success');showDetail(id, newName, 'inspect');});
+      return guardedAction('rename-c-'+id, function() {
+        return apiFetch(API+'/containers/'+id+'/rename?name='+encodeURIComponent(newName),{method:'POST'}).then(function(){toast('Renamed to '+newName,'success');showDetail(id, newName, 'inspect');});
+      });
     }, 'btn small'));
     panel.appendChild(renameRow);
     addSection('General', [['ID',d.id],['Name',d.name],['Image',d.image],['Created',d.created],['Status',d.state.Status],['PID',d.state.Pid],['Restarts',d.restart_count],['Platform',d.platform]]);
@@ -1174,7 +1178,9 @@ function showCreateVolumeModal() {
   var inp = document.createElement('input'); inp.id = 'vol-name'; inp.placeholder = 'my-volume'; box.appendChild(inp);
   var actions = document.createElement('div'); actions.className = 'actions';
   actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
-    await apiFetch(API+'/volumes/create?name='+encodeURIComponent(inp.value),{method:'POST'});
+    await guardedAction('create-volume', function() {
+      return apiFetch(API+'/volumes/create?name='+encodeURIComponent(inp.value),{method:'POST'});
+    });
     modal.remove(); toast('Volume created','success'); loadVolumes();
   },'btn primary'));
   box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
@@ -1246,7 +1252,9 @@ function showCreateNetworkModal() {
   actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
     var name = document.getElementById('net-name').value;
     var driver = document.getElementById('net-driver').value;
-    await apiFetch(API+'/networks/create?name='+encodeURIComponent(name)+'&driver='+driver,{method:'POST'});
+    await guardedAction('create-network', function() {
+      return apiFetch(API+'/networks/create?name='+encodeURIComponent(name)+'&driver='+driver,{method:'POST'});
+    });
     modal.remove(); toast('Network created','success'); loadNetworks();
   },'btn primary'));
   box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
