@@ -152,11 +152,11 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["app"]
+source = ["skiff"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
-fail_under = 75
+fail_under = 95
 precision = 1
 show_missing = true
 exclude_lines = [

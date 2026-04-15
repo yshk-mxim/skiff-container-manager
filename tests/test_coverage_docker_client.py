@@ -170,8 +170,8 @@ def test_ws_acquire_and_release():
 
 def test_ws_acquire_too_many_raises_429():
     ip = "10.0.0.88"
-    from app import MAX_WS_PER_IP, _ws_connections
-    _ws_connections[ip] = MAX_WS_PER_IP
+    from skiff.app import WS_MAX_PER_IP, _ws_connections
+    _ws_connections[ip] = WS_MAX_PER_IP
 
     with pytest.raises(HTTPException) as exc_info:
         _ws_acquire(ip)
