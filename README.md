@@ -10,7 +10,7 @@ No per-seat licensing. No installation on the container host. Works wherever you
 
 ## Why SKIFF?
 
-SKIFF connects to any container daemon that speaks the Docker API — Docker Engine, Podman, Colima, OrbStack, Rancher Desktop, or a remote VM over SSH. Designed and tested against GCP; extendable to any Docker-API-compatible runtime. Its primary design target is teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote container host without running a persistent management VM. In the remote case the socket is forwarded over SSH rather than mounted into a container, which is the key security difference described below.
+SKIFF connects to any container daemon that speaks the Docker API — Docker Engine, Podman, Colima, OrbStack, Rancher Desktop, or a remote VM over SSH. Its primary design target is teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote container host without running a persistent management VM. In the remote case the socket is forwarded over SSH rather than mounted into a container, which is the key security difference described below.
 
 Most container management UIs run as a container on the container host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
 
