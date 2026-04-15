@@ -1,6 +1,6 @@
 # SKIFF Container Manager
 
-A FastAPI-based web UI for managing Docker containers over a secure SSH tunnel. Runs on any machine with Python — connect it to a local Docker Engine or a remote VM.
+A cloud-native container manager with a web UI. Built for teams running Docker on remote VMs — GCP Cloud Workstations, EC2, bare metal — accessible securely over an SSH tunnel from anywhere with a browser.
 
 ![SKIFF Container Manager UI](docs/screenshot.png)
 

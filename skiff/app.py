@@ -2,7 +2,7 @@
 # Copyright 2026 Yakov Shkolnikov and contributors
 """
 SKIFF Container Manager — FastAPI backend.
-Runs on Cloud Workstation, connects to remote container engine VM via SSH.
+Cloud-native container manager; connects to a remote Docker engine via SSH tunnel.
 Authentication: Bearer token required on all endpoints (configurable).
 """
 

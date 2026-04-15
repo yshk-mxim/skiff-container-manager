@@ -2,7 +2,7 @@
 
 ## GCP Cloud Workstation (recommended)
 
-SKIFF Container Manager is designed to run directly on a GCP Cloud Workstation, connecting to a separate Docker Engine VM via SSH.
+SKIFF Container Manager is a cloud-native container manager designed to run on a GCP Cloud Workstation (or any cloud-hosted machine), connecting to a separate Docker Engine VM via SSH.
 
 ### Prerequisites
 

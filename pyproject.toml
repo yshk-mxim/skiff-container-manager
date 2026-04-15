@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "skiff"
 version = "1.0.0"
-description = "Web UI for managing Docker containers via a secure SSH tunnel"
+description = "Cloud-native container manager with a web UI — designed for remote Docker engines over SSH"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
