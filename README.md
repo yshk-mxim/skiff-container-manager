@@ -1,6 +1,8 @@
 # SKIFF Container Manager
 
-A lightweight web UI for managing containers. Built for teams running containers on remote VMs — GCP Cloud Workstations, EC2, bare metal — accessible securely over an SSH tunnel from anywhere with a browser.
+Docker API access with guardrails — registry allowlists, compose sandboxing, audit logging, and WebSocket log streaming — packaged as a lightweight web UI for cloud workstation teams.
+
+Built for teams running containers on remote VMs (GCP Cloud Workstations, EC2, bare metal) who want to manage them securely from a browser without installing anything on the container host.
 
 No per-seat licensing. No installation on the container host. Works wherever you have a browser and SSH.
 
