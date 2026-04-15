@@ -94,6 +94,55 @@ MAX_CONTAINER_MEM = "2g"
 MAX_CONTAINER_CPU = 2.0
 BIND_HOST = os.environ.get("BIND_HOST", "127.0.0.1")
 
+# ── Named constants (no magic values) ──────────────────────
+# Docker client
+DOCKER_CLIENT_TIMEOUT = 15          # seconds for Docker SDK HTTP requests
+DOCKER_POOL_SIZE = 5                # urllib3 connection pool size
+DOCKER_PING_TTL = 3                 # skip ping if last success was within this window (seconds)
+DOCKER_BACKOFF = 5                  # seconds to wait after a failed connection before retrying
+# TCP keepalive
+TCP_KEEPALIVE_IDLE = 60             # seconds before first keepalive probe
+TCP_KEEPALIVE_INTERVAL = 10         # seconds between probes
+TCP_KEEPALIVE_COUNT = 3             # probes before declaring dead
+# SSH tunnel
+TUNNEL_DEFAULT_SOCKET = "/tmp/skiff-docker.sock"  # noqa: S108
+TUNNEL_CONNECT_TIMEOUT = 15         # seconds for SSH to establish connection
+TUNNEL_SOCKET_WAIT = 10             # seconds to wait for socket file to appear after SSH starts
+TUNNEL_SOCKET_POLL = 0.3            # seconds between socket existence polls
+TUNNEL_SERVER_ALIVE_INTERVAL = 30   # SSH ServerAliveInterval
+TUNNEL_SERVER_ALIVE_COUNT = 3       # SSH ServerAliveCountMax
+# WebSocket
+WS_LOG_TAIL = 50                    # initial tail lines for log streaming
+WS_KEEPALIVE_INTERVAL = 15          # seconds between WebSocket ping frames
+WS_LOG_IDLE_TIMEOUT = 30            # seconds of no log output before closing stream
+WS_EXEC_IDLE_TIMEOUT = 600          # seconds of exec terminal inactivity before closing
+WS_EXEC_RECV_TIMEOUT = 0.5          # seconds for exec socket recv timeout
+WS_TOKEN_TIMEOUT = 5.0              # seconds to wait for auth token as first WS message
+WS_MAX_PER_IP = 5                   # max concurrent WebSocket connections per IP
+# Auth
+MIN_TOKEN_LENGTH = 16               # minimum API token length enforced by setup
+TOKEN_AUDIT_SUFFIX_LEN = 8          # chars of token shown in audit log
+# Rate limits (base values, scaled by RATE_LIMIT_SCALE)
+RL_DEFAULT = "30/minute"
+RL_FAST = "60/minute"
+RL_SLOW = "10/minute"
+# Audit log
+AUDIT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per audit log file
+AUDIT_BACKUP_COUNT = 5
+# Registry
+REGISTRY_SEARCH_PAGE_SIZE = 10
+REGISTRY_MAX_TAGS = 20
+REGISTRY_TIMEOUT = 8                # seconds for Docker Hub API requests
+REGISTRY_DESC_MAX = 200             # max chars of registry description to return
+# Containers
+CONTAINER_STOP_TIMEOUT = 5          # seconds for graceful stop before kill
+CONTAINER_RESTART_TIMEOUT = 10      # seconds for restart
+CONTAINER_STATS_TIMEOUT = 10.0      # seconds for stats call
+IMAGE_PULL_TIMEOUT = 300.0          # seconds for image pull
+# Security headers
+HSTS_MAX_AGE = 31536000             # 1 year in seconds
+HSTS_HEADER = f"max-age={HSTS_MAX_AGE}; includeSubDomains"
+
 # ── Logging ────────────────────────────────────────────────
 def _level_to_severity(logger, method_name, event_dict):
     """Map Python log levels to Cloud Logging severity field."""
@@ -109,8 +158,8 @@ def _make_audit_handler() -> logging.handlers.RotatingFileHandler | None:
         AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(
             AUDIT_LOG_PATH,
-            maxBytes=10 * 1024 * 1024,  # 10 MB per file
-            backupCount=5,
+            maxBytes=AUDIT_MAX_BYTES,
+            backupCount=AUDIT_BACKUP_COUNT,
             encoding="utf-8",
         )
         return handler
@@ -155,8 +204,6 @@ _client_lock = threading.Lock()
 _client: docker.DockerClient | None = None
 _client_failed_at: float = 0.0
 _client_last_ping: float = 0.0
-BACKOFF_SECONDS = 5
-PING_TTL_SECONDS = 3  # Skip ping if last successful ping was within this window
 
 DOCKER_TRANSIENT = (
     docker.errors.DockerException,
@@ -170,18 +217,18 @@ DOCKER_TRANSIENT = (
 def _build_client() -> docker.DockerClient:
     client = docker.DockerClient(
         base_url=_cfg.docker_host,
-        timeout=15,
-        max_pool_size=5,
+        timeout=DOCKER_CLIENT_TIMEOUT,
+        max_pool_size=DOCKER_POOL_SIZE,
     )
     # TCP keepalive to detect silent SSH tunnel drops
     try:
         _ka_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
         if hasattr(socket, "TCP_KEEPIDLE"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60))
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE))
         if hasattr(socket, "TCP_KEEPINTVL"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10))
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL))
         if hasattr(socket, "TCP_KEEPCNT"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3))
+            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_COUNT))
         _adapter = HTTPAdapter()
         _adapter.poolmanager.connection_pool_kw["socket_options"] = _ka_opts
         client.api.mount("http://", _adapter)
@@ -196,11 +243,11 @@ def get_client() -> docker.DockerClient:
     global _client, _client_failed_at, _client_last_ping
     with _client_lock:
         now = time.monotonic()
-        if _client is None and (now - _client_failed_at) < BACKOFF_SECONDS:
+        if _client is None and (now - _client_failed_at) < DOCKER_BACKOFF:
             raise docker.errors.DockerException("Docker connection in backoff")
         if _client is not None:
             # Skip ping if we pinged recently (avoids SSH round-trip on every request)
-            if (now - _client_last_ping) < PING_TTL_SECONDS:
+            if (now - _client_last_ping) < DOCKER_PING_TTL:
                 return _client
             try:
                 _client.ping()
@@ -235,6 +282,88 @@ def _invalidate_client():
             except Exception:
                 pass
         _client = None
+
+
+# ── SSH Tunnel Management ──────────────────────────────────
+_SSH_TARGET_RE = re.compile(r"^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$")
+_tunnel_lock = threading.Lock()
+_tunnel_ctl_sock: str = ""
+_tunnel_ssh_target: str = ""
+_tunnel_socket_path: str = ""
+
+
+def _stop_tunnel_locked() -> None:
+    """Stop the managed SSH tunnel. Must be called with _tunnel_lock held."""
+    global _tunnel_ctl_sock, _tunnel_ssh_target, _tunnel_socket_path
+    if _tunnel_ctl_sock and _tunnel_ssh_target:
+        try:
+            subprocess.run(
+                ["ssh", "-S", _tunnel_ctl_sock, "-O", "exit", _tunnel_ssh_target],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            pass
+        for path in (_tunnel_ctl_sock, _tunnel_socket_path):
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except OSError:
+                pass
+    _tunnel_ctl_sock = ""
+    _tunnel_ssh_target = ""
+    _tunnel_socket_path = ""
+
+
+def _start_tunnel(ssh_target: str, socket_path: str) -> None:
+    """Start an SSH ControlMaster tunnel. Raises ValueError on failure."""
+    global _tunnel_ctl_sock, _tunnel_ssh_target, _tunnel_socket_path
+    with _tunnel_lock:
+        _stop_tunnel_locked()
+        if os.path.exists(socket_path):
+            try:
+                os.unlink(socket_path)
+            except OSError:
+                pass
+        ctl_sock = f"/tmp/skiff-tunnel-ctl-{os.getpid()}.sock"  # noqa: S108
+        cmd = [
+            "ssh", "-fNM",
+            "-S", ctl_sock,
+            "-o", "ControlPersist=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", f"ConnectTimeout={TUNNEL_CONNECT_TIMEOUT}",
+            "-o", f"ServerAliveInterval={TUNNEL_SERVER_ALIVE_INTERVAL}",
+            "-o", f"ServerAliveCountMax={TUNNEL_SERVER_ALIVE_COUNT}",
+            "-L", f"{socket_path}:/var/run/docker.sock",
+            ssh_target,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=TUNNEL_CONNECT_TIMEOUT + 5, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("SSH connection timed out") from exc
+        except FileNotFoundError as exc:
+            raise ValueError("ssh binary not found") from exc
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            raise ValueError(f"SSH failed: {stderr[:200] or 'unknown error'}")
+        deadline = time.monotonic() + TUNNEL_SOCKET_WAIT
+        while time.monotonic() < deadline:
+            if os.path.exists(socket_path):
+                break
+            time.sleep(TUNNEL_SOCKET_POLL)
+        else:
+            raise ValueError(f"Tunnel socket did not appear at {socket_path}")
+        _tunnel_ctl_sock = ctl_sock
+        _tunnel_ssh_target = ssh_target
+        _tunnel_socket_path = socket_path
+        log.info("tunnel.started", target=ssh_target, socket=socket_path)
+
+
+def _stop_tunnel() -> None:
+    """Stop the managed SSH tunnel (public, acquires lock)."""
+    with _tunnel_lock:
+        _stop_tunnel_locked()
 
 
 def docker_client_dep():
@@ -375,12 +504,11 @@ def safe_docker_call(fn, *args, **kwargs):
 # ── WebSocket Rate Limiting ────────────────────────────────
 _ws_connections: dict[str, int] = collections.defaultdict(int)
 _ws_lock = threading.Lock()
-MAX_WS_PER_IP = 5
 
 
 def _ws_acquire(ip: str) -> None:
     with _ws_lock:
-        if _ws_connections[ip] >= MAX_WS_PER_IP:
+        if _ws_connections[ip] >= WS_MAX_PER_IP:
             raise HTTPException(429, "Too many WebSocket connections from this IP")
         _ws_connections[ip] += 1
 
@@ -489,6 +617,7 @@ async def lifespan(app: FastAPI):
     log.info("app.started", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries, bind=BIND_HOST)
     yield
     log.info("app.shutdown")
+    _stop_tunnel()
     _invalidate_client()
 
 
@@ -531,7 +660,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 provided = auth_header[7:]
                 if _constant_time_compare(provided, _cfg.api_token):
                     token_hint = "authenticated"
-                    token_suffix = provided[-8:] if len(provided) >= 8 else provided
+                    token_suffix = (
+                        provided[-TOKEN_AUDIT_SUFFIX_LEN:]
+                        if len(provided) >= TOKEN_AUDIT_SUFFIX_LEN
+                        else provided
+                    )
                 else:
                     token_hint = "invalid"
             level = "error" if response.status_code >= 500 else "info"
@@ -561,7 +694,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Check both direct scheme and X-Forwarded-Proto (Cloud Workstation proxy terminates TLS)
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         if scheme == "https":
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            response.headers["Strict-Transport-Security"] = HSTS_HEADER
         return response
 
 
@@ -588,11 +721,13 @@ def setup_state():
     return {
         "configured": bool(_cfg.api_token),
         "from_env": _cfg.from_env,
+        "tunnel_active": bool(_tunnel_socket_path and os.path.exists(_tunnel_socket_path)),
+        "tunnel_socket": _tunnel_socket_path or TUNNEL_DEFAULT_SOCKET,
     }
 
 
 @app.post("/api/setup")
-@limiter.limit("10/minute")
+@limiter.limit(_limit(RL_SLOW))
 def do_setup(
     request: Request,
     docker_host: str = Body(...),
@@ -604,8 +739,8 @@ def do_setup(
         raise HTTPException(403, "Server is configured via environment variables — setup endpoint disabled")
     if _cfg.api_token:
         raise HTTPException(403, "Already configured")
-    if not api_token or len(api_token) < 16:
-        raise HTTPException(400, "api_token must be at least 16 characters")
+    if not api_token or len(api_token) < MIN_TOKEN_LENGTH:
+        raise HTTPException(400, f"api_token must be at least {MIN_TOKEN_LENGTH} characters")
     if not docker_host:
         raise HTTPException(400, "docker_host is required")
     _cfg.api_token = api_token.strip()
@@ -616,23 +751,56 @@ def do_setup(
     return {"ok": True}
 
 
+@app.post("/api/setup/tunnel")
+@limiter.limit(_limit(RL_SLOW))
+def start_tunnel(
+    request: Request,
+    ssh_target: str = Body(...),
+    socket_path: str = Body(default=TUNNEL_DEFAULT_SOCKET),
+):
+    """Start an SSH ControlMaster tunnel to the Docker VM. Setup-only endpoint."""
+    if _cfg.from_env:
+        raise HTTPException(403, "Setup endpoints disabled when configured via environment")
+    if _cfg.api_token:
+        raise HTTPException(403, "Already configured")
+    if not _SSH_TARGET_RE.match(ssh_target):
+        raise HTTPException(400, "ssh_target must be user@host")
+    if not socket_path.startswith("/tmp/") or ".." in socket_path:  # noqa: S108
+        raise HTTPException(400, "socket_path must be under /tmp/")
+    try:
+        _start_tunnel(ssh_target, socket_path)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"ok": True, "socket_path": socket_path, "docker_host": f"unix://{socket_path}"}
+
+
+@app.delete("/api/setup/tunnel")
+@limiter.limit(_limit(RL_SLOW))
+def stop_tunnel_endpoint(request: Request):
+    """Stop the managed SSH tunnel."""
+    if _cfg.from_env:
+        raise HTTPException(403, "Setup endpoints disabled when configured via environment")
+    _stop_tunnel()
+    return {"ok": True}
+
+
 # ── Health Endpoints (no auth) ─────────────────────────────
 @app.get("/api/registry/search", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def registry_search(request: Request, q: str = Query(..., min_length=1, max_length=100)):
     """Proxy Docker Hub image search to avoid browser CORS restrictions."""
     try:
         resp = requests.get(
             "https://hub.docker.com/v2/search/repositories/",
-            params={"query": q, "page_size": 10},
-            timeout=8,
+            params={"query": q, "page_size": REGISTRY_SEARCH_PAGE_SIZE},
+            timeout=REGISTRY_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
         results = [
             {
                 "repo_name": item.get("repo_name") or item.get("name", ""),
-                "short_description": (item.get("short_description") or "")[:200],
+                "short_description": (item.get("short_description") or "")[:REGISTRY_DESC_MAX],
                 "pull_count": item.get("pull_count", 0),
                 "is_official": bool(item.get("is_official")),
             }
@@ -645,7 +813,7 @@ def registry_search(request: Request, q: str = Query(..., min_length=1, max_leng
 
 
 @app.get("/api/registry/tags", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def registry_tags(request: Request, image: str = Query(..., min_length=1, max_length=200)):
     """Fetch available tags for a Docker Hub image."""
     # Normalize: official images like 'nginx' become 'library/nginx'
@@ -655,8 +823,8 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
     try:
         resp = requests.get(
             f"https://hub.docker.com/v2/repositories/{repo}/tags/",
-            params={"page_size": 20, "ordering": "last_updated"},
-            timeout=8,
+            params={"page_size": REGISTRY_MAX_TAGS, "ordering": "last_updated"},
+            timeout=REGISTRY_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -664,13 +832,13 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
             t["name"] for t in data.get("results", [])
             if isinstance(t.get("name"), str) and t["name"]
         ]
-        return {"image": image, "tags": tags[:20]}
+        return {"image": image, "tags": tags[:REGISTRY_MAX_TAGS]}
     except requests.exceptions.RequestException as exc:
         raise HTTPException(502, f"Tag fetch failed: {exc}") from exc
 
 
 @app.get("/api/config", dependencies=AUTH)
-@limiter.limit(_limit("60/minute"))
+@limiter.limit(_limit(RL_FAST))
 def get_config(request: Request):
     """Return non-secret server configuration for the UI."""
     return {
@@ -706,7 +874,7 @@ def ready():
 
 # ── Containers ─────────────────────────────────────────────
 @app.get("/api/containers", dependencies=AUTH)
-@limiter.limit(_limit("60/minute"))
+@limiter.limit(_limit(RL_FAST))
 def list_containers(request: Request, client=Depends(docker_client_dep)):
     containers = safe_docker_call(client.containers.list, all=True)
     result = []
@@ -730,7 +898,7 @@ def list_containers(request: Request, client=Depends(docker_client_dep)):
 
 
 @app.post("/api/containers/run", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def run_container(
     request: Request,
     image: str,
@@ -831,7 +999,7 @@ def run_container(
 
 
 @app.post("/api/containers/{container_id}/start", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def start_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     container = _get_container(client, container_id)
@@ -841,27 +1009,27 @@ def start_container(request: Request, container_id: str, client=Depends(docker_c
 
 
 @app.post("/api/containers/{container_id}/stop", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def stop_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     container = _get_container(client, container_id)
-    safe_docker_call(container.stop, timeout=5)
+    safe_docker_call(container.stop, timeout=CONTAINER_STOP_TIMEOUT)
     log.info("container.stopped", id=container_id)
     return {"ok": True}
 
 
 @app.post("/api/containers/{container_id}/restart", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def restart_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     container = _get_container(client, container_id)
-    safe_docker_call(container.restart, timeout=10)
+    safe_docker_call(container.restart, timeout=CONTAINER_RESTART_TIMEOUT)
     log.info("container.restarted", id=container_id)
     return {"ok": True}
 
 
 @app.post("/api/containers/{container_id}/pause", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def pause_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     container = _get_container(client, container_id)
@@ -871,7 +1039,7 @@ def pause_container(request: Request, container_id: str, client=Depends(docker_c
 
 
 @app.post("/api/containers/{container_id}/unpause", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def unpause_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     container = _get_container(client, container_id)
@@ -893,7 +1061,7 @@ def kill_container(request: Request, container_id: str, signal: str = "SIGKILL",
 
 
 @app.post("/api/containers/{container_id}/rename", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def rename_container(request: Request, container_id: str, name: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     validate_container_name(name)
@@ -914,7 +1082,7 @@ def delete_container(request: Request, container_id: str, force: bool = False, c
 
 
 @app.get("/api/containers/{container_id}/logs", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def container_logs(
     request: Request,
     container_id: str,
@@ -934,7 +1102,7 @@ def container_logs(
 
 
 @app.get("/api/containers/{container_id}/logs/download", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def download_container_logs(
     request: Request,
     container_id: str,
@@ -959,7 +1127,7 @@ def download_container_logs(
 
 
 @app.get("/api/containers/{container_id}/logs/download.jsonl", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def download_container_logs_jsonl(
     request: Request,
     container_id: str,
@@ -992,7 +1160,7 @@ def download_container_logs_jsonl(
 
 
 @app.get("/api/containers/{container_id}/inspect", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def inspect_container(request: Request, container_id: str, client=Depends(docker_client_dep)):
     container = _get_container(client, container_id)
     attrs = container.attrs
@@ -1046,14 +1214,14 @@ def inspect_container(request: Request, container_id: str, client=Depends(docker
 
 
 @app.get("/api/containers/{container_id}/stats", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 async def container_stats(request: Request, container_id: str, client=Depends(docker_client_dep)):
     container = _get_container(client, container_id)
     loop = asyncio.get_running_loop()
     try:
         stats = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: container.stats(stream=False)),
-            timeout=10.0,
+            timeout=CONTAINER_STATS_TIMEOUT,
         )
     except TimeoutError as exc:
         raise HTTPException(504, "Stats request timed out") from exc
@@ -1094,7 +1262,7 @@ async def container_stats(request: Request, container_id: str, client=Depends(do
 
 
 @app.get("/api/containers/{container_id}/top", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def container_top(request: Request, container_id: str, client=Depends(docker_client_dep)):
     """List processes running inside a container (like docker top)."""
     container = _get_container(client, container_id)
@@ -1108,7 +1276,7 @@ def container_top(request: Request, container_id: str, client=Depends(docker_cli
 
 
 @app.get("/api/containers/{container_id}/diff", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def container_diff(request: Request, container_id: str, client=Depends(docker_client_dep)):
     """Show filesystem changes in a container (like docker diff)."""
     container = _get_container(client, container_id)
@@ -1156,7 +1324,7 @@ async def _validate_ws_token_from_message(websocket: WebSocket) -> bool:
     if not _cfg.api_token:
         return True
     try:
-        first_msg = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+        first_msg = await asyncio.wait_for(websocket.receive_text(), timeout=WS_TOKEN_TIMEOUT)
     except Exception:
         return False
     if first_msg.startswith("AUTH "):
@@ -1184,14 +1352,14 @@ async def stream_logs(websocket: WebSocket, container_id: str):
         client = await loop.run_in_executor(None, get_client)
         container = await loop.run_in_executor(None, client.containers.get, container_id)
         # Run blocking log iterator in executor to avoid blocking the event loop
-        gen = container.logs(stream=True, follow=True, tail=50, timestamps=True)
+        gen = container.logs(stream=True, follow=True, tail=WS_LOG_TAIL, timestamps=True)
 
         async def read_logs():
             while True:
                 try:
                     line = await asyncio.wait_for(
                         loop.run_in_executor(None, lambda: next(gen, None)),
-                        timeout=30,  # 30 sec idle timeout
+                        timeout=WS_LOG_IDLE_TIMEOUT,
                     )
                     if line is None:
                         break
@@ -1206,7 +1374,7 @@ async def stream_logs(websocket: WebSocket, container_id: str):
         read_task = asyncio.create_task(read_logs())
         async def _ws_keepalive():
             while True:
-                await asyncio.sleep(15)
+                await asyncio.sleep(WS_KEEPALIVE_INTERVAL)
                 try:
                     await websocket.send_text("\x00")
                 except Exception:
@@ -1266,7 +1434,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
         sock = client.api.exec_start(exec_id, socket=True, tty=True)
         # Use blocking socket with a short timeout so recv yields control periodically
         sock._sock.setblocking(True)
-        sock._sock.settimeout(0.5)
+        sock._sock.settimeout(WS_EXEC_RECV_TIMEOUT)
 
         async def read_output():
             idle_since = time.monotonic()
@@ -1279,7 +1447,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
                     await websocket.send_text(data.decode(errors="replace"))
                 except TimeoutError:
                     # Socket timeout — no data, check idle limit
-                    if time.monotonic() - idle_since > 600:
+                    if time.monotonic() - idle_since > WS_EXEC_IDLE_TIMEOUT:
                         await websocket.send_text("\r\n[Session idle timeout — 10 minutes]\r\n")
                         break
                     continue
@@ -1289,7 +1457,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
         read_task = asyncio.create_task(read_output())
         async def _ws_keepalive():
             while True:
-                await asyncio.sleep(15)
+                await asyncio.sleep(WS_KEEPALIVE_INTERVAL)
                 try:
                     await websocket.send_text("\x00")
                 except Exception:
@@ -1317,7 +1485,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
 
 # ── Images ─────────────────────────────────────────────────
 @app.get("/api/images", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def list_images(request: Request, client=Depends(docker_client_dep)):
     images = safe_docker_call(client.images.list)
     result = []
@@ -1333,7 +1501,7 @@ def list_images(request: Request, client=Depends(docker_client_dep)):
 
 
 @app.get("/api/images/allowed", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def list_allowed_images(request: Request, client=Depends(docker_client_dep)):
     images = safe_docker_call(client.images.list)
     result = []
@@ -1358,7 +1526,7 @@ async def pull_image(request: Request, image: str, client=Depends(docker_client_
     try:
         await asyncio.wait_for(
             loop.run_in_executor(None, lambda: client.images.pull(image)),
-            timeout=300.0,
+            timeout=IMAGE_PULL_TIMEOUT,
         )
         log.info("image.pulled", image=image)
         return {"ok": True, "image": image}
@@ -1369,7 +1537,7 @@ async def pull_image(request: Request, image: str, client=Depends(docker_client_
 
 
 @app.post("/api/images/{image_id}/tag", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def tag_image(request: Request, image_id: str, repository: str, tag: str = "latest", client=Depends(docker_client_dep)):
     verify_csrf(request)
     validate_image_id(image_id)
@@ -1421,7 +1589,7 @@ def delete_image(request: Request, image_id: str, force: bool = False, client=De
 
 
 @app.get("/api/images/{image_id}/inspect", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def inspect_image(request: Request, image_id: str, client=Depends(docker_client_dep)):
     validate_image_id(image_id)
     img = safe_docker_call(client.images.get, image_id)
@@ -1461,7 +1629,7 @@ def inspect_image(request: Request, image_id: str, client=Depends(docker_client_
 
 # ── Volumes ────────────────────────────────────────────────
 @app.get("/api/volumes", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def list_volumes(request: Request, client=Depends(docker_client_dep)):
     volumes = safe_docker_call(client.volumes.list)
     # Build volume->containers lookup in one pass (avoid N+1)
@@ -1490,7 +1658,7 @@ def list_volumes(request: Request, client=Depends(docker_client_dep)):
 
 
 @app.post("/api/volumes/create", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def create_volume(request: Request, name: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", name):
@@ -1501,7 +1669,7 @@ def create_volume(request: Request, name: str, client=Depends(docker_client_dep)
 
 
 @app.delete("/api/volumes/{volume_name}", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def delete_volume(request: Request, volume_name: str, force: bool = False, client=Depends(docker_client_dep)):
     verify_csrf(request)
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", volume_name):
@@ -1524,7 +1692,7 @@ def prune_volumes(request: Request, client=Depends(docker_client_dep)):
 
 # ── Networks ───────────────────────────────────────────────
 @app.get("/api/networks", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def list_networks(request: Request, client=Depends(docker_client_dep)):
     networks = safe_docker_call(client.networks.list)
     return [
@@ -1545,7 +1713,7 @@ def list_networks(request: Request, client=Depends(docker_client_dep)):
 
 
 @app.post("/api/networks/create", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def create_network(request: Request, name: str, driver: str = "bridge", client=Depends(docker_client_dep)):
     verify_csrf(request)
     if not NETWORK_NAME_RE.match(name):
@@ -1558,7 +1726,7 @@ def create_network(request: Request, name: str, driver: str = "bridge", client=D
 
 
 @app.delete("/api/networks/{network_id}", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def delete_network(request: Request, network_id: str, client=Depends(docker_client_dep)):
     verify_csrf(request)
     if not re.match(r"^[a-f0-9]{4,64}$", network_id):
@@ -1572,7 +1740,7 @@ def delete_network(request: Request, network_id: str, client=Depends(docker_clie
 
 
 @app.post("/api/networks/{network_id}/connect", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def connect_container_to_network(
     request: Request, network_id: str, container_id: str, client=Depends(docker_client_dep)
 ):
@@ -1588,7 +1756,7 @@ def connect_container_to_network(
 
 
 @app.post("/api/networks/{network_id}/disconnect", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def disconnect_container_from_network(
     request: Request, network_id: str, container_id: str, client=Depends(docker_client_dep)
 ):
@@ -1615,7 +1783,7 @@ def prune_networks(request: Request, client=Depends(docker_client_dep)):
 
 # ── Compose ────────────────────────────────────────────────
 @app.get("/api/compose/stacks", dependencies=AUTH)
-@limiter.limit(_limit("30/minute"))
+@limiter.limit(_limit(RL_DEFAULT))
 def list_compose_stacks(request: Request, client=Depends(docker_client_dep)):
     """List running compose stacks by inspecting container labels."""
     containers = safe_docker_call(client.containers.list, all=True)
@@ -1722,7 +1890,7 @@ def compose_down(request: Request, project_name: str = "dev"):
 
 # ── System ─────────────────────────────────────────────────
 @app.get("/api/system/info", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def system_info(request: Request, client=Depends(docker_client_dep)):
     info = safe_docker_call(client.info)
     ver = safe_docker_call(client.version)
@@ -1833,7 +2001,7 @@ def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_
 
 
 @app.get("/api/system/audit-log/download", dependencies=AUTH)
-@limiter.limit(_limit("10/minute"))
+@limiter.limit(_limit(RL_SLOW))
 def download_audit_log(request: Request):
     """Download the full audit log as a JSONL file (streamed to avoid memory spikes)."""
     if not AUDIT_LOG_PATH.exists():

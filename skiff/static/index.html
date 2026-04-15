@@ -1694,36 +1694,67 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// ── Setup Wizard ──
+// ── Setup Wizard ──────────────────────────────────────────────────────────
 async function checkSetupState() {
     try {
         const r = await fetch('/api/setup-state');
         const state = await r.json();
         if (!state.configured && !state.from_env) {
-            showSetupWizard();
+            showSetupWizard(state);
             return true;
         }
     } catch (e) {}
     return false;
 }
 
-function showSetupWizard() {
+function showSetupWizard(state) {
     document.body.innerHTML = '';
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;';
+    wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;';
+    const defaultSocket = (state && state.tunnel_socket) || '/tmp/skiff-docker.sock';
+    const tunnelActive = state && state.tunnel_active;
     wrap.innerHTML = `
-      <div style="background:#1e293b;border-radius:12px;padding:40px;width:480px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+      <div style="background:#1e293b;border-radius:12px;padding:40px;width:520px;max-width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
           <svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>
           <span style="color:#f1f5f9;font-size:18px;font-weight:600;">SKIFF Container Manager</span>
         </div>
-        <p style="color:#94a3b8;font-size:13px;margin:0 0 28px;">First-run setup. Configure your connection and generate an access token.</p>
+        <p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>
 
-        <label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">DOCKER HOST</label>
-        <input id="sw-host" type="text" value="unix:///var/run/docker.sock"
-          style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:6px;outline:none;"
-          placeholder="unix:///var/run/docker.sock"/>
-        <p style="color:#64748b;font-size:12px;margin:0 0 16px;">SSH tunnel: <code style="color:#94a3b8;">unix:///tmp/docker.sock</code> — run <code style="color:#94a3b8;">ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@host</code> first.</p>
+        <!-- Connection mode tabs -->
+        <div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">
+          <button id="sw-tab-tunnel" onclick="swSetMode('tunnel')"
+            style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>
+          <button id="sw-tab-local" onclick="swSetMode('local')"
+            style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>
+        </div>
+
+        <!-- SSH tunnel panel -->
+        <div id="sw-panel-tunnel">
+          <label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host</span></label>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <input id="sw-ssh-target" type="text"
+              style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;outline:none;"
+              placeholder="dev@my-docker-vm"/>
+            <button id="sw-tunnel-btn" onclick="swConnectTunnel()"
+              style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>
+          </div>
+          <div id="sw-tunnel-status" style="font-size:12px;margin-bottom:16px;min-height:18px;color:${tunnelActive ? '#4ade80' : '#64748b'};">
+            ${tunnelActive ? '✓ Tunnel active — ' + defaultSocket : 'Requires key-based SSH auth (no passphrase).'}
+          </div>
+        </div>
+
+        <!-- Local / custom panel -->
+        <div id="sw-panel-local" style="display:none;">
+          <label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">DOCKER HOST</label>
+          <input id="sw-host-custom" type="text" value="unix:///var/run/docker.sock"
+            style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:6px;outline:none;"
+            placeholder="unix:///var/run/docker.sock"/>
+          <p style="color:#64748b;font-size:12px;margin:0 0 16px;">Local Docker Engine, Docker Desktop, Podman, Colima, or a pre-existing SSH tunnel socket.</p>
+        </div>
+
+        <!-- Hidden computed docker_host -->
+        <input id="sw-host" type="hidden" value="${tunnelActive ? 'unix://' + defaultSocket : 'unix:///var/run/docker.sock'}"/>
 
         <label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">API TOKEN</label>
         <div style="display:flex;gap:8px;margin-bottom:16px;">
@@ -1736,7 +1767,7 @@ function showSetupWizard() {
 
         <label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">ALLOWED REGISTRIES <span style="color:#64748b;font-weight:400;">(comma-separated, empty = allow all)</span></label>
         <input id="sw-regs" type="text" value=""
-          style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:28px;outline:none;"
+          style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:24px;outline:none;"
           placeholder="docker.io,ghcr.io,us-docker.pkg.dev/my-project/"/>
 
         <div id="sw-error" style="display:none;color:#f87171;font-size:13px;margin-bottom:16px;"></div>
@@ -1747,19 +1778,66 @@ function showSetupWizard() {
           <button onclick="swSubmit(false)"
             style="flex:1;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Continue (session only)</button>
         </div>
-        <p style="color:#475569;font-size:11px;text-align:center;margin:16px 0 0;">"Session only" keeps config in server memory — reconfigure on next start.</p>
+        <p style="color:#475569;font-size:11px;text-align:center;margin:16px 0 0;">"Session only" keeps config in server memory. "Save .env" downloads a config file for next time.</p>
       </div>`;
     document.body.appendChild(wrap);
 }
 
+function swSetMode(mode) {
+    const isTunnel = mode === 'tunnel';
+    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? '' : 'none';
+    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : '';
+    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : 'transparent';
+    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#94a3b8';
+    document.getElementById('sw-tab-local').style.background = isTunnel ? 'transparent' : '#0d9488';
+    document.getElementById('sw-tab-local').style.color = isTunnel ? '#94a3b8' : 'white';
+    if (!isTunnel) {
+        document.getElementById('sw-host').value = document.getElementById('sw-host-custom').value.trim() || 'unix:///var/run/docker.sock';
+    }
+}
+
+async function swConnectTunnel() {
+    const target = document.getElementById('sw-ssh-target').value.trim();
+    const statusEl = document.getElementById('sw-tunnel-status');
+    const btn = document.getElementById('sw-tunnel-btn');
+    if (!target) { statusEl.style.color = '#f87171'; statusEl.textContent = 'Enter user@host first.'; return; }
+    statusEl.style.color = '#94a3b8';
+    statusEl.textContent = 'Connecting\u2026';
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/setup/tunnel', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'ContainerManager'},
+            body: JSON.stringify({ssh_target: target}),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            statusEl.style.color = '#f87171';
+            statusEl.textContent = '\u2717 ' + (d.detail || 'Connection failed');
+        } else {
+            statusEl.style.color = '#4ade80';
+            statusEl.textContent = '\u2713 Tunnel active \u2014 ' + d.socket_path;
+            document.getElementById('sw-host').value = d.docker_host;
+        }
+    } catch (e) {
+        statusEl.style.color = '#f87171';
+        statusEl.textContent = '\u2717 Could not reach server';
+    }
+    btn.disabled = false;
+}
+
 async function swSubmit(saveEnv) {
-    const host = document.getElementById('sw-host').value.trim();
+    const isTunnel = document.getElementById('sw-panel-tunnel').style.display !== 'none';
+    let host = document.getElementById('sw-host').value.trim();
+    if (!isTunnel) {
+        host = document.getElementById('sw-host-custom').value.trim() || host;
+    }
     const token = document.getElementById('sw-token').value.trim();
     const regs = document.getElementById('sw-regs').value.trim();
     const errEl = document.getElementById('sw-error');
     errEl.style.display = 'none';
     if (!host) { errEl.textContent = 'Docker host is required.'; errEl.style.display = 'block'; return; }
-    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (must be at least 16 characters).'; errEl.style.display = 'block'; return; }
+    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (minimum 16 characters).'; errEl.style.display = 'block'; return; }
 
     if (saveEnv) {
         const lines = [
