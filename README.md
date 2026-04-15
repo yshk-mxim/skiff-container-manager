@@ -109,6 +109,8 @@ Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerM
 
 ## Why SKIFF?
 
+SKIFF is built for teams using cloud workstations (GCP Cloud Workstations, AWS Dev Boxes, Azure Dev Box) who need to manage a remote Docker host without running a persistent management VM.
+
 Most Docker management UIs run as a container on the Docker host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter in cloud environments:
 
 - **`docker.sock` is root.** A container with socket access can start privileged containers, escape to the host filesystem, or terminate any workload. Security teams regularly flag this; the mitigation (a socket-proxy container) adds another thing to run and maintain.
@@ -123,22 +125,16 @@ SKIFF sidesteps all three: it runs as a plain Python process on your workstation
 | Always-on cost | Dedicated management VM required | Starts on your workstation; stop it when done |
 | Nested virtualisation | Required if running on a cloud workstation | Not required — SKIFF is not a container |
 | Agent on Docker host | Required for remote hosts | None — SSH ControlMaster is the transport |
-| Multiple hosts | Supported (some tools) | One Docker host per instance |
-| Per-user RBAC | Supported (some tools) | Single bearer token; SSO proxy for multi-user teams |
+| Multiple hosts | Supported (some tools) | One instance per host, each via its own SSH context |
+| Per-user RBAC | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
 
-See [SECURITY.md](SECURITY.md) for the full security model, production hardening guide, and notes on the design trade-offs.
+See [SECURITY.md](SECURITY.md) for the full security model, production hardening guide, and design trade-off notes.
 
 ---
 
 ## Security
 
-- **Registry allowlist** — `ALLOWED_REGISTRIES` restricts which images can be pulled, pushed, or run.
-- **Compose sandboxing** — `privileged`, host path mounts, `cap_add`, `devices`, `build`, and unapproved registries are rejected before execution.
-- **Volume sandboxing** — only named volumes are permitted; host path mounts are rejected.
-- **WebSocket auth** — token sent as first message, not query parameter.
-- **Rate limiting**, **security headers** (CSP, HSTS, X-Frame-Options), **audit logging**.
-
-See [SECURITY.md](SECURITY.md) for the production hardening guide and vulnerability reporting process.
+See [SECURITY.md](SECURITY.md) for the full security model, production hardening checklist, and vulnerability reporting process. Key controls at a glance: registry allowlist, compose/volume sandboxing, CSRF protection, WebSocket token-via-message, rate limiting, security headers, and structured audit logging.
 
 ---
 
