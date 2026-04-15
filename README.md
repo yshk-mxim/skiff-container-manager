@@ -208,6 +208,31 @@ Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerM
 
 ---
 
+## Why SKIFF instead of a container management server?
+
+Most Docker management UIs are designed around a different assumption: they run as a container *on* the Docker host itself and reach the daemon through the Unix socket mounted into that container. That works well for always-on infrastructure, but it carries a few architectural costs that matter in cloud workstation environments.
+
+**The `docker.sock` risk.** Mounting `/var/run/docker.sock` into a container is equivalent to granting root access to the host — the container can start new privileged containers, escape to the host filesystem, or terminate any running workload. Security teams regularly flag this pattern; the standard mitigation is adding a separate socket-proxy container to filter which API calls are allowed, which adds another moving part to maintain.
+
+**The always-on management plane.** A server-based manager needs a VM dedicated to running the management UI, even when no one is actively using it — extra compute cost, another system to patch, a single point of failure, and (the real irony) a VM that exists purely to manage your other VMs. This cost is invisible when your workloads already run 24/7, but it's wasteful for on-demand or dev workloads.
+
+**The nested-virtualisation problem on cloud workstations.** Cloud workstations (GCP Cloud Workstations, AWS WorkSpaces, Azure Dev Box, etc.) are VMs themselves. Running Docker inside them requires nested virtualisation, which not all SKUs support, adds a kernel-sharing exposure layer, and can conflict with corporate security policies that prohibit nested virt.
+
+**How SKIFF handles these differently:**
+
+| Concern | Server-based manager | SKIFF |
+|---|---|---|
+| `docker.sock` exposure | Socket mounted into a privileged container on the host | Socket forwarded over SSH — never mounted anywhere |
+| Always-on cost | Dedicated management VM required | Runs as a Python process on your workstation; start it when you need it |
+| Nested virtualisation | Required if running on a cloud workstation | Not required — SKIFF is not a container |
+| Agent on Docker host | Required for remote hosts | None — SSH ControlMaster is the transport |
+| Multiple hosts | Supported (some tools) | One Docker host per instance |
+| RBAC | Supported (some tools) | Single bearer token — all-or-nothing access |
+
+**The right tool for the right situation.** If you manage many Docker hosts, need per-user RBAC, or run Swarm/Kubernetes, a server-based manager is probably the better fit. SKIFF is designed for teams where developers have cloud workstations and Docker runs on a separate VM in the same VPC — the SSH tunnel is the security boundary, there is no idle management server, and the manager runs only when someone is actively using it.
+
+---
+
 ## Security
 
 - **Registry allowlist** — `ALLOWED_REGISTRIES` restricts which images can be pulled, pushed, or run.
