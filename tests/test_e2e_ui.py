@@ -20,6 +20,8 @@ import time
 
 import pytest
 
+pytest.importorskip("playwright", reason="playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")
+
 pytestmark = pytest.mark.e2e
 
 BASE_URL = "http://127.0.0.1:18080"

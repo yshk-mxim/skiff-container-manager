@@ -22,8 +22,8 @@ test:  ## Run all unit tests
 test-unit:  ## Run unit tests (no Docker daemon required)
 	pytest -v -m unit tests/
 
-coverage:  ## Generate coverage report
-	pytest --cov --cov-report=term-missing --cov-report=html tests/
+coverage:  ## Generate coverage report (excludes e2e tests)
+	pytest --cov --cov-report=term-missing --cov-report=html -m "not e2e" tests/
 
 clean:  ## Remove build artifacts and caches
 	rm -rf .pytest_cache .ruff_cache htmlcov __pycache__
