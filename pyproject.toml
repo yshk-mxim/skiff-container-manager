@@ -36,7 +36,7 @@ dev = [
 ]
 e2e = [
     "playwright>=1.40",      # requires `playwright install chromium` after pip install
-    "pytest-playwright>=0.4",
+    "pytest-playwright>=0.7.2",
 ]
 gcp = [
     "google-cloud-logging>=3.0",   # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
