@@ -220,7 +220,7 @@ def live_server(ssh_tunnel):
 # ── Playwright browser (one process for the whole session) ──────────────────
 
 @pytest.fixture(scope="session")
-def browser(live_server):  # noqa: F811 — shadows playwright's own `browser` name
+def browser(live_server):  # shadows playwright's own `browser` fixture name intentionally
     """Single headless Chromium process reused across all tests."""
     if sync_playwright is None:
         pytest.skip("playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")

@@ -727,7 +727,7 @@ async def _loop_lag_monitor() -> None:
             frame_info = []
             for tid, frame in frames.items():
                 frame_info.append(f"Thread {tid}:\n{''.join(traceback.format_stack(frame))}")
-            print(
+            print(  # noqa: T201 — last-resort diagnostic; structlog itself may be blocked
                 f"[LOOP_LAG] event loop blocked {lag*1000:.0f}ms\n" + "\n".join(frame_info),
                 file=sys.stderr, flush=True,
             )

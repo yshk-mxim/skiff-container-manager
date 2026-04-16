@@ -639,7 +639,6 @@ def test_setup_tcp_invalid_port(client):
 def test_gcp_logging_init_exception_swallowed():
     """Non-ImportError from GCP logging client init is swallowed with a warning."""
     with patch.dict(os.environ, {"GCP_PROJECT": "my-project", "GCP_LOG_NAME": "my-log"}):
-        import importlib
         import skiff.app as _mod
         orig = _mod._GCP_PROJECT
         try:
