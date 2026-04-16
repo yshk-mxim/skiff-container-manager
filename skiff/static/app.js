@@ -166,6 +166,13 @@ function showLogin() {
 
 // ── Fetch wrapper ──
 var FETCH_TIMEOUT_MS = 30000;
+/**
+ * Authenticated fetch wrapper. Injects the API token and CSRF header, enforces session
+ * expiry, and surfaces HTTP errors as thrown Error objects with the server's detail message.
+ * @param {string} url - API path (e.g. '/api/containers')
+ * @param {RequestInit} [opts] - Fetch options (method, body, headers, etc.)
+ * @returns {Promise<any>} Parsed JSON response body
+ */
 async function apiFetch(url, opts) {
   if (checkSessionExpiry()) throw new Error('Session expired');
   opts = opts || {};
@@ -281,6 +288,10 @@ function relTime(iso) {
 }
 
 // ── Containers ──
+/**
+ * Load the container list from the API, render it into the containers page, and wire up
+ * search/sort controls and the auto-refresh interval. Guards against concurrent refreshes.
+ */
 async function loadContainers() {
   if (_refreshInFlight) return;
   _refreshInFlight = true;
@@ -357,6 +368,12 @@ function sortContainers(arr, key, dir) {
     return 0;
   });
 }
+/**
+ * Build and insert the containers table into the DOM from an API response array.
+ * Applies the current search filter and sort order, wires action buttons, and
+ * sets up the detail-panel click handlers.
+ * @param {Array<Object>} containers - Container objects from GET /api/containers
+ */
 function renderContainers(containers) {
   var main = document.getElementById('main');
   main.innerHTML = '';
@@ -524,6 +541,12 @@ function showDetail(id, name, tab) {
 }
 
 // ── Logs with search and download ──
+/**
+ * Render the log viewer tab for a container: search/filter input, WebSocket stream,
+ * and plain-text + JSONL download buttons.
+ * @param {string} id - Container short ID
+ * @param {string} name - Container name (used in download filename)
+ */
 function showLogsContent(id, name) {
   var el = document.getElementById('detail-content');
   el.innerHTML = '';
@@ -580,6 +603,15 @@ function showLogsContent(id, name) {
 }
 
 var MAX_LOG_RECONNECTS = 10;
+/**
+ * Open a WebSocket to stream container logs. Reconnects automatically with
+ * exponential backoff on unexpected close. Appends lines to `allLines` and
+ * re-renders `viewer` respecting the current search filter.
+ * @param {string} id - Container short ID
+ * @param {number} attempt - Current reconnect attempt count (0 = first connect)
+ * @param {string[]} allLines - Accumulated log lines (mutated in place)
+ * @param {HTMLElement} viewer - DOM element to render lines into
+ */
 function connectLogsWS(id, attempt, allLines, viewer) {
   if (!document.getElementById('log-output')) return;
   if (attempt >= MAX_LOG_RECONNECTS) {
@@ -629,6 +661,18 @@ function showShellContent(id) {
   input.focus();
 }
 
+/**
+ * Open a WebSocket for an interactive exec shell inside a container. Sends keyboard
+ * input from `input` textarea to the shell and streams output into `term`. Reconnects
+ * on unexpected close up to MAX_EXEC_RECONNECTS times.
+ * @param {string} id - Container short ID
+ * @param {number} attempt - Current reconnect attempt count
+ * @param {HTMLElement} term - Terminal output element
+ * @param {HTMLTextAreaElement} input - Keyboard input element
+ * @param {HTMLElement} el - Container element (used to check if still visible)
+ * @param {Function} isClosed - Returns true if the user has closed the panel
+ * @param {Function} setClosed - Call to mark the session as closed
+ */
 function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
   if (isClosed()) return;
   if (attempt >= MAX_EXEC_RECONNECTS) {
@@ -829,6 +873,12 @@ var POPULAR_IMAGES = [
   {name:'python',   desc:'Python runtime'},
 ];
 
+/**
+ * Build and return the Docker Hub registry search UI (input + auto-suggest dropdown).
+ * Calls `onSelect(imageName)` when the user picks a result or presses Enter.
+ * @param {Function} onSelect - Callback receiving the selected image name string
+ * @returns {HTMLElement} The search container element to insert into the modal
+ */
 function buildHubSearch(onSelect) {
   var section = document.createElement('div');
   var label = document.createElement('p'); label.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em'; label.textContent = 'Search Docker Hub';
@@ -910,6 +960,12 @@ function buildHubSearch(onSelect) {
 }
 
 // ── Run Modal ──
+/**
+ * Open the "Run new container" modal and render the full creation form:
+ * image selector (with Hub search), ports, volumes, environment variables,
+ * labels, restart policy, network, and read-only flag.
+ * @param {string} [prefillImage] - Optional image name to pre-populate the image field
+ */
 function showRunModal(prefillImage) {
   if (typeof prefillImage !== 'string') prefillImage = '';
   if (document.querySelector('.modal-bg')) return;
@@ -1035,6 +1091,11 @@ function showRunModal(prefillImage) {
 }
 
 // ── Images ──
+/**
+ * Load and render the images list page with search filtering and per-image action buttons
+ * (inspect, tag, push, delete). Also triggers a stale-pull notification if an image
+ * was recently pulled.
+ */
 async function loadImages() {
   var main = document.getElementById('main');
   main.innerHTML = '<div class="refreshing">Loading images...</div>';
@@ -1086,6 +1147,12 @@ async function loadImages() {
   } catch (e) { main.innerHTML = ''; var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: '+e.message; main.appendChild(p); }
 }
 
+/**
+ * Fetch and display the image inspect modal with metadata (size, architecture, OS),
+ * layer history, exposed ports, and tag/push UI for allowed registries.
+ * @param {string} id - Image short ID
+ * @param {string} tag - Image tag (used for display and push pre-population)
+ */
 async function showImageInspect(id, tag) {
   try {
     var d = await apiFetch(API+'/images/'+encodeURIComponent(id)+'/inspect');
@@ -1145,6 +1212,11 @@ async function showImageInspect(id, tag) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+/**
+ * Open the image pull dialog. Validates that the selected registry is in the
+ * server-enforced allowlist before submitting.
+ * @param {string} [prefillImage] - Optional image name to pre-populate
+ */
 function showPullModal(prefillImage) {
   var modal = document.createElement('div'); modal.className = 'modal-bg';
   modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
@@ -1176,6 +1248,10 @@ function showPullModal(prefillImage) {
 }
 
 // ── Volumes ──
+/**
+ * Load and render the volumes list page, showing each volume's name, driver,
+ * mountpoint, and which containers are currently using it.
+ */
 async function loadVolumes() {
   var main = document.getElementById('main');
   main.innerHTML = '<div class="refreshing">Loading volumes...</div>';
@@ -1209,6 +1285,10 @@ async function loadVolumes() {
   } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
 }
 
+/**
+ * Open the create-volume dialog. Validates the name against Docker naming rules
+ * before posting to the API.
+ */
 function showCreateVolumeModal() {
   var modal = document.createElement('div'); modal.className = 'modal-bg';
   modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
@@ -1227,6 +1307,10 @@ function showCreateVolumeModal() {
 }
 
 // ── Networks ──
+/**
+ * Load and render the networks list page, including driver, scope, IPAM config,
+ * and the containers currently attached to each network.
+ */
 async function loadNetworks() {
   var main = document.getElementById('main');
   main.innerHTML = '<div class="refreshing">Loading networks...</div>';
@@ -1300,6 +1384,12 @@ function showCreateNetworkModal() {
   box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
 }
 
+/**
+ * Open the network connect dialog for attaching a running container to `networkId`.
+ * Populates a dropdown with currently running containers and posts the connection.
+ * @param {string} networkId - Network short ID
+ * @param {string} networkName - Network display name (shown in the modal title)
+ */
 function showNetworkConnectModal(networkId, networkName) {
   var modal = document.createElement('div'); modal.className = 'modal-bg';
   modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
