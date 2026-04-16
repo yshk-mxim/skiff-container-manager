@@ -61,6 +61,15 @@ _setup_failures: dict[str, tuple[int, float]] = {}
 _setup_lock = threading.Lock()
 
 
+def _setup_fail(client_ip: str, reason: str) -> None:
+    """Increment per-IP failure counter and emit an audit log entry."""
+    now = time.monotonic()
+    with _setup_lock:
+        count, _ = _setup_failures.get(client_ip, (0, now))
+        _setup_failures[client_ip] = (count + 1, now)
+    log.info("audit.setup_failed", remote=client_ip, reason=reason)
+
+
 # ── Debug ──────────────────────────────────────────────────
 
 @router.get("/debug/threads", dependencies=AUTH, tags=["system"])
@@ -101,9 +110,13 @@ def get_config(request: Request):
 @router.get("/api/setup-state", tags=["setup"])
 def setup_state():
     """Returns configuration state for the setup wizard. No auth required."""
+    if _cfg.api_token:
+        # Minimal response when already configured — avoid leaking tunnel socket paths
+        # to unauthenticated callers on a live server.
+        return {"configured": True, "from_env": _cfg.from_env}
     tunnel_socket = get_tunnel_socket_path()
     return {
-        "configured": bool(_cfg.api_token),
+        "configured": False,
         "from_env": _cfg.from_env,
         "tunnel_active": bool(tunnel_socket and os.path.exists(tunnel_socket)),
         "tunnel_socket": tunnel_socket or TUNNEL_DEFAULT_SOCKET,
@@ -137,21 +150,15 @@ def do_setup(
     if _cfg.api_token:
         raise HTTPException(403, "Already configured")
     if not api_token or len(api_token) < MIN_TOKEN_LENGTH:
-        with _setup_lock:
-            count, _ = _setup_failures.get(client_ip, (0, now))
-            _setup_failures[client_ip] = (count + 1, time.monotonic())
+        _setup_fail(client_ip, "token_too_short")
         raise HTTPException(400, f"api_token must be at least {MIN_TOKEN_LENGTH} characters")
     if not docker_host:
-        with _setup_lock:
-            count, _ = _setup_failures.get(client_ip, (0, now))
-            _setup_failures[client_ip] = (count + 1, time.monotonic())
+        _setup_fail(client_ip, "missing_docker_host")
         raise HTTPException(400, "docker_host is required")
     _dh = docker_host.strip()
     _parsed = urlparse(_dh)
     if _parsed.scheme not in ("unix", "tcp", "npipe"):
-        with _setup_lock:
-            count, _ = _setup_failures.get(client_ip, (0, now))
-            _setup_failures[client_ip] = (count + 1, time.monotonic())
+        _setup_fail(client_ip, "bad_docker_host_scheme")
         raise HTTPException(400, "docker_host must use unix://, tcp://, or npipe:// scheme")
     if _parsed.scheme == "tcp":
         import ipaddress
@@ -159,14 +166,10 @@ def do_setup(
         try:
             ipaddress.ip_address(_host)
         except ValueError:
-            with _setup_lock:
-                count, _ = _setup_failures.get(client_ip, (0, now))
-                _setup_failures[client_ip] = (count + 1, time.monotonic())
+            _setup_fail(client_ip, "bad_docker_host_address")
             raise HTTPException(400, "tcp:// docker_host must specify an IP address, not a hostname") from None
         if not (1 <= (_parsed.port or 0) <= 65535):
-            with _setup_lock:
-                count, _ = _setup_failures.get(client_ip, (0, now))
-                _setup_failures[client_ip] = (count + 1, time.monotonic())
+            _setup_fail(client_ip, "bad_docker_host_port")
             raise HTTPException(400, "tcp:// docker_host must include a valid port")
     # Clear failure counter on successful validation
     with _setup_lock:
@@ -196,9 +199,9 @@ def start_tunnel(
     if not _SSH_TARGET_RE.match(ssh_target):
         raise HTTPException(400, "ssh_target must be user@host")
     _sp_resolved = Path(socket_path).resolve()
-    # /tmp is a symlink to /private/tmp on macOS — check both canonical paths
+    # /tmp is a symlink to /private/tmp on macOS — resolve both for canonical comparison
     _tmp_resolved = Path("/tmp").resolve()  # noqa: S108
-    if not str(_sp_resolved).startswith(str(_tmp_resolved) + "/"):
+    if not _sp_resolved.is_relative_to(_tmp_resolved):
         raise HTTPException(400, "socket_path must resolve to a path under /tmp/")
     try:
         _start_tunnel(ssh_target, socket_path)
@@ -342,7 +345,7 @@ def prune_build_cache(request: Request, client=Depends(docker_client_dep)) -> di
 # ── Audit Log ──────────────────────────────────────────────
 
 @router.get("/api/system/audit-log", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit("20/minute")
+@limiter.limit("5/minute")
 def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_LINES, ge=1)):
     """Return the last N lines of the app audit log, read efficiently without loading the full file."""
     if not AUDIT_LOG_PATH.exists():
@@ -376,7 +379,7 @@ def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_
 
 
 @router.get("/api/system/audit-log/download", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit(_limit(RL_SLOW))
+@limiter.limit("2/minute")
 def download_audit_log(request: Request):
     """Download the full audit log as a JSONL file (streamed to avoid memory spikes)."""
     if not AUDIT_LOG_PATH.exists():

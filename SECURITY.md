@@ -73,6 +73,18 @@ SKIFF is intentionally scoped. Two limitations come up in comparisons with heavi
 
 **Mitigation.** Each instance is a single Python process with no database, so running several in parallel is cheap. Use different `PORT` values or separate reverse proxy routes per host.
 
+### Zero-trust gaps and known design limitations
+
+These limitations are accepted design trade-offs in the current version. Each has a documented mitigation. Security researchers should be aware of them.
+
+| Gap | Impact | Mitigation |
+|---|---|---|
+| Mutable registry allowlist at runtime | POST `/api/setup` can change `ALLOWED_REGISTRIES` from `docker.io` to a malicious registry after configuration | Set `ALLOWED_REGISTRIES` via environment variable; this disables `/api/setup` (`from_env` guard) |
+| Single session token (no token rotation) | Stolen token grants permanent access until server restart | Use a TLS-terminating proxy with short-lived JWTs (oauth2-proxy); keep token secret short and rotate on any suspected leak |
+| All sessions share one token (no per-user invalidation) | Revoking one user's access requires restarting the server | SSO proxy with `X-Forwarded-User` per user and a reverse-proxy–level session revoke |
+| Audit log integrity (append-only file, not tamper-evident) | A compromised process can overwrite the file | Export to a remote SIEM in real time; keep local file as fast buffer only |
+| Compose allowlist validated at submit, not at runtime | A valid image could be replaced by a malicious one between pull and run | Use a private registry with image signing (Notary / cosign); pin images by digest (`image@sha256:...`) |
+
 ---
 
 → See [docs/production-hardening.md](docs/production-hardening.md) for the operator deployment and hardening guide.

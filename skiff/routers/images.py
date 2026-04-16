@@ -133,7 +133,7 @@ async def pull_image(request: Request, image: str, client=Depends(docker_client_
     loop = asyncio.get_running_loop()
     try:
         await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: client.images.pull(image)),
+            loop.run_in_executor(None, client.images.pull, image),
             timeout=IMAGE_PULL_TIMEOUT,
         )
     except TimeoutError as exc:
@@ -172,7 +172,7 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
     loop = asyncio.get_running_loop()
     try:
         output = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: client.images.push(image)),
+            loop.run_in_executor(None, client.images.push, image),
             timeout=IMAGE_PULL_TIMEOUT,
         )
     except TimeoutError as exc:

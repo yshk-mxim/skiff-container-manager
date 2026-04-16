@@ -637,7 +637,7 @@ async def exec_shell(websocket: WebSocket, container_id: str):
         try:
             while True:
                 data = await websocket.receive_text()
-                if len(data) > 65536:
+                if len(data.encode()) > 65536:
                     await websocket.close(code=4008)
                     break
                 log.info("audit.ws_exec_input", container=container_id, remote=ip, cmd_preview=data[:120])

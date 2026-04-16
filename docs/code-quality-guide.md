@@ -116,6 +116,24 @@ The `validate_compose_file` and `run_container` functions are known to exceed th
 - **Subprocess calls** must use an explicit, minimal environment (`PATH`, `DOCKER_HOST`, `HOME`, `SSH_AUTH_SOCK`) — never inherit the full environment.
 - **Auth checks** must use constant-time comparison (`hmac.compare_digest`) for token comparison.
 
+### Documented Security Controls
+
+These are intentional, non-obvious security decisions. Do not remove or weaken them without a documented justification.
+
+| Control | Location | Reason |
+|---|---|---|
+| Registry allowlist case-insensitive match | `skiff/validators.py:validate_image_registry` | Prevent `DOCKER.IO` bypass of `docker.io` allowlist entry |
+| Compose sandbox: `ipc: host` and `ipc: shareable` blocked | `skiff/validators.py:BLOCKED_IPC_MODES` | `shareable` allows containers to read/write each other's IPC namespace |
+| Compose sandbox: host path mounts blocked | `skiff/validators.py:validate_compose_file` | Prevents access to host filesystem via bind-mount |
+| Setup endpoint lockout (3 failures → 429 for 300 s) | `skiff/routers/system.py:_setup_fail` | Mirror of WS auth lockout; prevents insider token-fishing on a running instance |
+| Setup-state minimal response when configured | `skiff/routers/system.py:setup_state` | Avoid leaking tunnel socket paths to unauthenticated callers on live server |
+| Audit log read: 5 req/min; download: 2 req/min | `skiff/routers/system.py` | Prevent high-volume log scraping by a compromised session |
+| DOCKER_HOST HTTP guard (non-localhost) | `skiff/app.py` lifespan | Warn when Docker API is exposed unencrypted over network |
+| WebSocket close 4003 → no reconnect | `skiff/static/app.js` | Session expiry during live WS must not auto-reconnect (would use stale token) |
+| SSH tunnel credentials cleared from sessionStorage after use | `skiff/static/app.js:swConnectTunnel` | `tunnelUser`/`tunnelHost` removed once tunnel is established; no need to retain |
+| WS input size: `len(data.encode()) > 65536` | `skiff/routers/containers.py` | Byte length, not character count; 65536 UTF-8 chars = up to 256 KB |
+| Token input in setup wizard: `type="password"` | `skiff/static/app.js` | Prevents token appearing in clipboard history and screenshots |
+
 ---
 
 ## Supply Chain Policy

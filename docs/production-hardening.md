@@ -242,7 +242,15 @@ A GitHub Actions workflow can automate this — see `.github/workflows/security.
 
 ## 11. Supply Chain Hardening
 
-- **Hash-pinned requirements** — the `requirements.txt` is generated with `pip-compile --generate-hashes`. Install with `pip install --require-hashes -r requirements.txt` to reject tampered packages.
+- **Hash-pinned requirements** — `requirements.txt` is generated with `pip-compile --generate-hashes` and includes SHA-256 hashes for all available wheels (every platform, every Python version) plus source distributions. Because pip-compile queries PyPI for the full set of available distributions, the file is **cross-platform** for pip and uv users on macOS, Linux, and Windows. Install with `pip install --require-hashes -r requirements.txt` to reject tampered packages.
+
+  > **Platform note:** pip and uv both consume the same PyPI hashes. Conda uses a separate package ecosystem with incompatible hashes; conda users should install from conda-forge or use a conda environment file. The hash-pinned `requirements.txt` is not intended for conda.
+
+  To regenerate for a new release:
+  ```bash
+  make deps   # runs pip-compile --generate-hashes
+  ```
+
 - **Dependabot** — automated dependency update PRs (see `.github/dependabot.yml`).
 - **YAML safety** — the compose validator uses `yaml.safe_load` only; `yaml.load` is never called.
 - **Startup version logging** — installed dependency versions are logged to the audit log at startup to aid post-incident forensics.

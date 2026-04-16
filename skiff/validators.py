@@ -67,13 +67,15 @@ def validate_image_registry(image: str) -> None:
     has_registry_host = len(parts) >= 2 and ("." in parts[0] or ":" in parts[0])
     image_registry = parts[0] if has_registry_host else ""
     if not image_registry:
-        if any(r.rstrip("/") == "docker.io" for r in _cfg.allowed_registries):
+        if any(r.rstrip("/").lower() == "docker.io" for r in _cfg.allowed_registries):
             return
         raise HTTPException(
             400, f"Image must include an explicit registry hostname. Allowed: {', '.join(_cfg.allowed_registries)}"
         )
+    image_registry_lower = image_registry.lower()
     if not any(
-        image_registry == r.rstrip("/") or image.startswith(r if r.endswith("/") else r + "/")
+        image_registry_lower == r.rstrip("/").lower()
+        or image.lower().startswith((r if r.endswith("/") else r + "/").lower())
         for r in _cfg.allowed_registries
     ):
         allowed = ', '.join(_cfg.allowed_registries)
@@ -187,6 +189,7 @@ BLOCKED_TRUTHY_KEYS = {
     "cgroup_parent", "dns", "dns_search", "extra_hosts", "tmpfs",
     "uts", "cgroupns_mode", "storage_opt", "device_cgroup_rules",
 }
+BLOCKED_IPC_MODES = {"host", "shareable"}
 BLOCKED_COMPOSE_SERVICE_KEYS = BLOCKED_PRESENCE_KEYS | BLOCKED_TRUTHY_KEYS
 BLOCKED_COMPOSE_TOP_KEYS = {"configs", "secrets"}
 BLOCKED_NETWORK_MODES = {"host", "container", "service"}
@@ -235,8 +238,8 @@ def validate_compose_file(content: bytes) -> dict:
             raise HTTPException(400, f"Service '{svc_name}': pid mode 'host' is not allowed")
 
         ipc_mode = str(svc.get("ipc", ""))
-        if ipc_mode == "host":
-            raise HTTPException(400, f"Service '{svc_name}': ipc mode 'host' is not allowed")
+        if ipc_mode in BLOCKED_IPC_MODES:
+            raise HTTPException(400, f"Service '{svc_name}': ipc mode '{ipc_mode}' is not allowed")
 
         for vol in svc.get("volumes", []):
             vol_str = str(vol) if isinstance(vol, str) else vol.get("source", "") if isinstance(vol, dict) else str(vol)

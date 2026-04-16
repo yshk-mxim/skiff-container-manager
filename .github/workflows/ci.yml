@@ -34,7 +34,7 @@ jobs:
         run: make security
 
       - name: Dependency vulnerability scan
-        run: pip install pip-audit && pip-audit --strict -r requirements.txt
+        run: pip-audit --strict -r requirements.txt
 
       - name: Unit tests + coverage
         run: make coverage
