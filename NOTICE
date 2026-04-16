@@ -8,11 +8,13 @@ MIT License:
 - PyYAML (https://github.com/yaml/pyyaml) — Kirill Simonov and contributors
 - slowapi (https://github.com/laurentS/slowapi) — Laurent Savaete
 
-Apache 2.0 License:
+Apache-2.0 License:
 - Docker SDK for Python (https://github.com/docker/docker-py) — Docker, Inc.
-- Structlog (https://github.com/hynek/structlog) — Hynek Schlawack and contributors
 - python-multipart (https://github.com/Kludex/python-multipart) — Andrew Dunstan and contributors
 - Requests (https://github.com/psf/requests) — Kenneth Reitz and contributors
+
+MIT OR Apache-2.0 License (dual-licensed; you may choose either):
+- Structlog (https://github.com/hynek/structlog) — Hynek Schlawack and contributors
 
 BSD License:
 - Uvicorn (https://github.com/encode/uvicorn) — Tom Christie (BSD-3-Clause)
