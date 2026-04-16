@@ -18,34 +18,33 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-# ── logging_setup MUST be imported first to configure structlog
-# before any other skiff module creates a logger. ──────────────
-import skiff.logging_setup as _logging_setup  # noqa: F401 — side-effect import
-
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+# ── logging_setup MUST be imported first to configure structlog
+# before any other skiff module creates a logger. ──────────────
+import skiff.logging_setup as _logging_setup  # noqa: F401 — side-effect import
 from skiff.config import (
-    BIND_HOST,
     _APP_VERSION,
     _STATIC_DIR,
+    BIND_HOST,
     _cfg,
     limiter,
+)
+from skiff.docker_client import (
+    _invalidate_client,
+    _stop_tunnel,
 )
 from skiff.logging_setup import (
     AuditLogMiddleware,
     SecurityHeadersMiddleware,
     _loop_lag_monitor,
 )
-from skiff.docker_client import (
-    _invalidate_client,
-    _stop_tunnel,
-)
-from skiff.routers import containers, images, volumes, networks, compose, system
+from skiff.routers import compose, containers, images, networks, system, volumes
 
 log = structlog.get_logger(__name__)
 
@@ -150,12 +149,33 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 # ── Backwards-compatible re-exports ───────────────────────
 # These allow tests and external code to continue importing names from skiff.app
 # even though the implementations live in submodules.
+from skiff.auth import (  # noqa: E402, F401
+    AUTH,
+    _check_session_age,
+    _constant_time_compare,
+    _invalidate_session_cache,
+    _session_first_seen,
+    _session_lock,
+    _validate_ws_origin,
+    _validate_ws_token_from_message,
+    _ws_auth_failures,
+    _ws_auth_lock,
+    verify_auth,
+    verify_auth_strict,
+    verify_csrf,
+    ws_keepalive,
+)
 from skiff.config import (  # noqa: E402, F401
-    _Config,
+    _APP_VERSION,
+    _CSP,
+    _GCP_LOG_NAME,
+    _GCP_PROJECT,
+    _PERMISSIONS_POLICY,
+    _RATE_SCALE,
+    _SESSION_CACHE_MAX,
     AUDIT_BACKUP_COUNT,
     AUDIT_LOG_PATH,
     AUDIT_MAX_BYTES,
-    BIND_HOST,
     COMPOSE_DIR,
     CONTAINER_RESTART_TIMEOUT,
     CONTAINER_STATS_TIMEOUT,
@@ -186,8 +206,8 @@ from skiff.config import (  # noqa: E402, F401
     RL_DEFAULT,
     RL_FAST,
     RL_SLOW,
-    SETUP_WINDOW_SECS,
     SESSION_ABS_TIMEOUT,
+    SETUP_WINDOW_SECS,
     TCP_KEEPALIVE_COUNT,
     TCP_KEEPALIVE_IDLE,
     TCP_KEEPALIVE_INTERVAL,
@@ -207,52 +227,18 @@ from skiff.config import (  # noqa: E402, F401
     WS_LOG_TAIL,
     WS_MAX_PER_IP,
     WS_TOKEN_TIMEOUT,
-    _APP_VERSION,
-    _CSP,
-    _GCP_LOG_NAME,
-    _GCP_PROJECT,
-    _PERMISSIONS_POLICY,
-    _RATE_SCALE,
-    _SESSION_CACHE_MAX,
+    _Config,
     _limit,
 )
-from skiff.auth import (  # noqa: E402, F401
-    AUTH,
-    _check_session_age,
-    _constant_time_compare,
-    _invalidate_session_cache,
-    _session_first_seen,
-    _session_lock,
-    _validate_ws_origin,
-    _validate_ws_token_from_message,
-    _ws_auth_failures,
-    _ws_auth_lock,
-    verify_auth,
-    verify_auth_strict,
-    verify_csrf,
-    ws_keepalive,
-)
-from skiff.logging_setup import (  # noqa: E402, F401
-    AuditLogMiddleware,
-    SecurityHeadersMiddleware,
-    _audit_file_sink,
-    _audit_handler,
-    _classify_event,
-    _gcp_logger,
-    _loop_lag_monitor,
-    _make_audit_handler,
-)
 from skiff.docker_client import (  # noqa: E402, F401
-    DOCKER_TRANSIENT,
     _SSH_TARGET_RE,
+    DOCKER_TRANSIENT,
     _build_client,
     _client,
     _client_failed_at,
     _client_last_ping,
     _client_lock,
-    _invalidate_client,
     _start_tunnel,
-    _stop_tunnel,
     _stop_tunnel_locked,
     _tunnel_ctl_sock,
     _tunnel_lock,
@@ -262,7 +248,24 @@ from skiff.docker_client import (  # noqa: E402, F401
     get_client,
     get_tunnel_socket_path,
 )
+from skiff.logging_setup import (  # noqa: E402, F401
+    AuditLogMiddleware,
+    SecurityHeadersMiddleware,
+    _audit_file_sink,
+    _audit_handler,
+    _classify_event,
+    _gcp_logger,
+    _make_audit_handler,
+)
+from skiff.routers.containers import (  # noqa: E402, F401
+    _ws_acquire,
+    _ws_connections,
+    _ws_lock,
+    _ws_release,
+)
 from skiff.validators import (  # noqa: E402, F401
+    _BLOCKED_MOUNT_TARGETS,
+    _ENV_SENSITIVE_RE,
     BLOCKED_COMPOSE_SERVICE_KEYS,
     BLOCKED_COMPOSE_TOP_KEYS,
     BLOCKED_NETWORK_MODES,
@@ -274,8 +277,6 @@ from skiff.validators import (  # noqa: E402, F401
     IMAGE_TAG_RE,
     NETWORK_NAME_RE,
     PROJECT_NAME_RE,
-    _ENV_SENSITIVE_RE,
-    _BLOCKED_MOUNT_TARGETS,
     _get_container,
     _redact_dict,
     _redact_env,
@@ -288,12 +289,6 @@ from skiff.validators import (  # noqa: E402, F401
     validate_image_id,
     validate_image_registry,
     validate_project_name,
-)
-from skiff.routers.containers import (  # noqa: E402, F401
-    _ws_acquire,
-    _ws_connections,
-    _ws_lock,
-    _ws_release,
 )
 
 

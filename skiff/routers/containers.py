@@ -12,12 +12,12 @@ import time
 import structlog
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from starlette.websockets import WebSocket
 
 from skiff.auth import (
     AUTH,
-    _check_session_age,
-    _validate_ws_token_from_message,
     _validate_ws_origin,
+    _validate_ws_token_from_message,
     verify_csrf,
     ws_keepalive,
 )
@@ -38,12 +38,9 @@ from skiff.config import (
     RL_SLOW,
     WS_EXEC_IDLE_TIMEOUT,
     WS_EXEC_RECV_TIMEOUT,
-    WS_KEEPALIVE_INTERVAL,
-    WS_KEEPALIVE_REVALIDATE_EVERY,
     WS_LOG_IDLE_TIMEOUT,
     WS_LOG_TAIL,
     WS_MAX_PER_IP,
-    _cfg,
     _limit,
     limiter,
 )
@@ -55,11 +52,9 @@ from skiff.validators import (
     _redact_env,
     _validate_mount_target,
     safe_docker_call,
-    validate_container_id,
     validate_container_name,
     validate_image_registry,
 )
-from starlette.websockets import WebSocket
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -131,17 +126,17 @@ def run_container(
 
     if ports:
         if len(ports) > MAX_PORT_MAPPINGS:
-            from fastapi import HTTPException  # noqa: PLC0415
+            from fastapi import HTTPException
             raise HTTPException(400, f"Too many port mappings (max {MAX_PORT_MAPPINGS})")
         for cport, hport in ports.items():
             if not re.match(r"^\d{1,5}(/tcp|/udp)?$", str(cport)):
-                from fastapi import HTTPException  # noqa: PLC0415
+                from fastapi import HTTPException
                 raise HTTPException(400, f"Invalid container port format: {str(cport)[:20]}")
             raw_hp = hport
             if isinstance(raw_hp, (list, tuple)) and len(raw_hp) == 2:
                 raw_hp = raw_hp[1]
             if raw_hp is not None:
-                from fastapi import HTTPException  # noqa: PLC0415
+                from fastapi import HTTPException
                 try:
                     hp = int(str(raw_hp).split(":")[-1])
                 except (ValueError, TypeError):
@@ -149,7 +144,7 @@ def run_container(
                 if hp < PRIVILEGED_PORT_THRESHOLD:
                     raise HTTPException(400, f"Host port {hp} is privileged (<{PRIVILEGED_PORT_THRESHOLD})")
 
-    from fastapi import HTTPException  # noqa: PLC0415
+    from fastapi import HTTPException
     if environment:
         for env in environment:
             if "=" not in env or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*=", env):
@@ -285,7 +280,7 @@ def kill_container(
     request: Request, container_id: str, signal: str = "SIGKILL", client=Depends(docker_client_dep)
 ) -> dict:
     """Send a signal to a container (default SIGKILL)."""
-    from fastapi import HTTPException  # noqa: PLC0415
+    from fastapi import HTTPException
     verify_csrf(request)
     if signal not in ("SIGKILL", "SIGTERM", "SIGINT", "SIGHUP"):
         raise HTTPException(400, "Invalid signal")
@@ -377,7 +372,7 @@ def download_container_logs_jsonl(
     client=Depends(docker_client_dep),
 ):
     """Download container logs as JSONL (one JSON object per line with timestamp + message)."""
-    import json  # noqa: PLC0415
+    import json
     container = _get_container(client, container_id)
     kwargs: dict = {"tail": tail, "timestamps": True}
     if since:
@@ -456,8 +451,9 @@ def inspect_container(request: Request, container_id: str, client=Depends(docker
 @limiter.limit(_limit(RL_DEFAULT))
 async def container_stats(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
     """Return real-time CPU, memory, network, and disk I/O stats."""
-    from fastapi import HTTPException  # noqa: PLC0415
-    import asyncio  # noqa: PLC0415
+    import asyncio
+
+    from fastapi import HTTPException
     container = _get_container(client, container_id)
     try:
         loop = asyncio.get_running_loop()

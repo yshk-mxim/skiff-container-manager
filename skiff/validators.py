@@ -13,8 +13,6 @@ from fastapi import HTTPException
 
 from skiff.config import (
     MAX_COMPOSE_SIZE,
-    MAX_VOLUME_NAME_LENGTH,
-    PRIVILEGED_PORT_THRESHOLD,
     _cfg,
 )
 from skiff.docker_client import DOCKER_TRANSIENT, _invalidate_client
