@@ -216,41 +216,48 @@ def _start_tunnel(ssh_target: str) -> None:
 
     _user, _, _host = ssh_target.partition("@")
 
-    # Zero-trust SSH config delivery via an anonymous file descriptor.
+    # Write a temporary SSH config file and pass its path to SSH with -F.
     #
     # Security properties:
-    # - mkstemp creates a file with a random name and mode 0o600 (owner-only).
-    # - os.unlink() is called immediately — the directory entry is removed before
-    #   any other process can observe the name. The file data lives only in the
-    #   kernel page cache; it has NO filesystem path and cannot be accessed by any
-    #   process that does not already hold the file descriptor.
-    # - /dev/fd/N is the cross-platform path for addressing an open fd by number:
-    #   macOS devfs and Linux /proc/self/fd both support this.
-    # - pass_fds=(_conf_fd,) keeps the fd open across fork/exec so the SSH child
-    #   process can open /dev/fd/N to read the config (SSH reads config before the
-    #   -f daemonisation fork, so the fd is guaranteed to still be open).
-    # - The fd is closed in the outer finally block, destroying the last reference
-    #   to the file data.
-    # - No user-controlled data appears in the subprocess command-argument list,
-    #   which eliminates the CodeQL py/command-line-injection (critical) finding.
+    # - mkstemp creates the file with mode 0o600 (owner-read/write only) before
+    #   returning the fd — no other process can open it even during the write.
+    # - The file contains only the validated hostname and username, neither of
+    #   which is a credential. Both values are already visible in the process
+    #   argv (they appear in the ssh command after Host resolution) so a brief
+    #   named existence does not increase the exposure surface.
+    # - The file is deleted in the finally block immediately after subprocess.run
+    #   returns, limiting its on-disk lifetime to the SSH connection attempt.
+    # - No user-controlled data appears in the subprocess command-argument list:
+    #   _conf_path is from mkstemp (server-generated), and "skiff-tunnel-target"
+    #   is a hard-coded Host alias defined inside the config file itself.
     # - Include ~/.ssh/config preserves the user's ProxyJump / IdentityFile settings.
+    #
+    # Note: the previous /dev/fd/N + anonymous-fd approach was broken on macOS.
+    # macOS devfs (fdesc) requires FDs to reference files with live directory
+    # entries; after os.unlink() the entry is gone and open("/dev/fd/N") returns
+    # EBADF. Linux /proc/self/fd/N handles anonymous inodes fine, but macOS does
+    # not. The named-file approach works identically on both platforms.
     _conf_fd, _conf_path = tempfile.mkstemp(suffix=".conf")
     try:
-        os.unlink(_conf_path)  # Remove directory entry immediately — no filesystem artifact
         os.write(_conf_fd, (
             "Include ~/.ssh/config\n"
             "Host skiff-tunnel-target\n"
             f"  Hostname {_host}\n"
             f"  User {_user}\n"
         ).encode())
+        os.close(_conf_fd)
+        _conf_fd = -1
     except Exception:
+        if _conf_fd >= 0:
+            try:
+                os.close(_conf_fd)
+            except OSError:
+                pass
         try:
-            os.close(_conf_fd)
+            os.unlink(_conf_path)
         except OSError:
             pass
         raise
-
-    _conf_fd_path = f"/dev/fd/{_conf_fd}"  # Untainted — derived from mkstemp fd, not user input
 
     try:
         with _tunnel_lock:
@@ -262,7 +269,7 @@ def _start_tunnel(ssh_target: str) -> None:
                     pass
             ctl_sock = f"/tmp/skiff-tunnel-ctl-{os.getpid()}.sock"  # noqa: S108
             cmd = [
-                "ssh", "-F", _conf_fd_path, "-fNM",
+                "ssh", "-F", _conf_path, "-fNM",
                 "-S", ctl_sock,
                 "-o", "ControlPersist=yes",
                 "-o", "StrictHostKeyChecking=accept-new",
@@ -278,7 +285,6 @@ def _start_tunnel(ssh_target: str) -> None:
                     capture_output=True,
                     timeout=TUNNEL_CONNECT_TIMEOUT + 5,
                     check=False,
-                    pass_fds=(_conf_fd,),  # SSH reads config before -f daemonisation fork
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ValueError("SSH connection timed out") from exc
@@ -300,7 +306,7 @@ def _start_tunnel(ssh_target: str) -> None:
             log.info("tunnel.started", target=ssh_target, socket=socket_path)
     finally:
         try:
-            os.close(_conf_fd)
+            os.unlink(_conf_path)
         except OSError:
             pass
 
