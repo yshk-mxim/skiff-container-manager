@@ -194,6 +194,14 @@ def _stop_tunnel_locked() -> None:
 def _start_tunnel(ssh_target: str, socket_path: str) -> None:
     """Start an SSH ControlMaster tunnel. Raises ValueError on failure."""
     global _tunnel_ctl_sock, _tunnel_ssh_target, _tunnel_socket_path
+    # Validate inputs (defense-in-depth — callers also validate)
+    if not _SSH_TARGET_RE.match(ssh_target):
+        raise ValueError("Invalid ssh_target format (expected user@host)")
+    _sp = Path(socket_path).resolve()
+    _tmp = Path("/tmp").resolve()  # noqa: S108
+    if not _sp.is_relative_to(_tmp):
+        raise ValueError("socket_path must resolve to a path under /tmp/")
+    socket_path = str(_sp)  # use canonical resolved path for all subsequent ops
     with _tunnel_lock:
         _stop_tunnel_locked()
         if os.path.exists(socket_path):

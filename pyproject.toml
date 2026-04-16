@@ -27,19 +27,19 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0",
+    "pytest-cov>=7.1.0",
     "hypothesis>=6.0",
     "httpx>=0.27",           # TestClient transport
     "ruff>=0.4",
-    "pip-tools>=7.0",        # make deps: regenerate hash-pinned requirements.txt
-    "pip-audit>=2.0",        # make security: dependency CVE scan
+    "pip-tools>=7.5.3",      # make deps: regenerate hash-pinned requirements.txt
+    "pip-audit>=2.10.0",     # make security: dependency CVE scan
 ]
 e2e = [
     "playwright>=1.40",      # requires `playwright install chromium` after pip install
-    "pytest-playwright>=0.4",
+    "pytest-playwright>=0.7.2",
 ]
 gcp = [
-    "google-cloud-logging>=3.0",   # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
+    "google-cloud-logging>=3.15.0",  # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
 ]
 
 [project.scripts]

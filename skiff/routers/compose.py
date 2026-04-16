@@ -7,13 +7,12 @@ import os
 import subprocess
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from skiff.auth import AUTH, verify_csrf
 from skiff.config import COMPOSE_DIR, DOCKER_BIN, RL_DEFAULT, _cfg, _limit, limiter
 from skiff.docker_client import docker_client_dep
 from skiff.validators import _sanitize_stderr, validate_compose_file, validate_project_name
-from fastapi import Depends
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -54,10 +53,10 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
 
     COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
     project_dir = COMPOSE_DIR / project_name
-    project_dir.mkdir(exist_ok=True)
-    # Prevent symlink-based path traversal
+    # Prevent symlink-based path traversal — check BEFORE any filesystem ops
     if not project_dir.resolve().is_relative_to(COMPOSE_DIR.resolve()):
         raise HTTPException(400, "Invalid project directory")
+    project_dir.mkdir(exist_ok=True)
     compose_path = project_dir / "docker-compose.yml"
 
     if file and file.filename:

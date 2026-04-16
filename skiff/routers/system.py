@@ -22,21 +22,20 @@ from skiff.auth import (
     verify_csrf,
 )
 from skiff.config import (
+    _APP_VERSION,
+    _INDEX_HTML,
+    _LICENSE_FILE,
+    APP_START_MONOTONIC,
+    APP_START_WALL,
     AUDIT_LOG_PATH,
     MAX_AUDIT_LINES,
     MIN_TOKEN_LENGTH,
-    RL_DEFAULT,
     RL_FAST,
     RL_SLOW,
     SETUP_LOCKOUT_SECS,
     SETUP_MAX_ATTEMPTS,
     SETUP_WINDOW_SECS,
     TUNNEL_DEFAULT_SOCKET,
-    APP_START_MONOTONIC,
-    APP_START_WALL,
-    _APP_VERSION,
-    _INDEX_HTML,
-    _LICENSE_FILE,
     _cfg,
     _limit,
     limiter,
@@ -115,11 +114,14 @@ def setup_state():
         # to unauthenticated callers on a live server.
         return {"configured": True, "from_env": _cfg.from_env}
     tunnel_socket = get_tunnel_socket_path()
+    # Validate stored path before any filesystem op (path was user-supplied at tunnel start)
+    import re as _re
+    _ts_safe = bool(tunnel_socket and _re.match(r"^/[a-zA-Z0-9/_.-]+\.sock$", tunnel_socket))
     return {
         "configured": False,
         "from_env": _cfg.from_env,
-        "tunnel_active": bool(tunnel_socket and os.path.exists(tunnel_socket)),
-        "tunnel_socket": tunnel_socket or TUNNEL_DEFAULT_SOCKET,
+        "tunnel_active": bool(_ts_safe and os.path.exists(tunnel_socket)),
+        "tunnel_socket": tunnel_socket if _ts_safe else TUNNEL_DEFAULT_SOCKET,
     }
 
 
@@ -198,6 +200,10 @@ def start_tunnel(
         raise HTTPException(403, "Already configured")
     if not _SSH_TARGET_RE.match(ssh_target):
         raise HTTPException(400, "ssh_target must be user@host")
+    # Validate socket_path format before any Path/filesystem operation
+    import re as _re
+    if not _re.match(r"^/[a-zA-Z0-9/_.-]+\.sock$", socket_path):
+        raise HTTPException(400, "socket_path must be an absolute .sock path")
     _sp_resolved = Path(socket_path).resolve()
     # /tmp is a symlink to /private/tmp on macOS — resolve both for canonical comparison
     _tmp_resolved = Path("/tmp").resolve()  # noqa: S108
@@ -240,8 +246,8 @@ def ready():
             "docker_version": info.get("ServerVersion", "unknown"),
             "containers_running": info.get("ContainersRunning", 0),
         }
-    except Exception as exc:
-        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": str(exc)})
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "Docker engine unreachable"})
 
 
 # ── System Info ────────────────────────────────────────────

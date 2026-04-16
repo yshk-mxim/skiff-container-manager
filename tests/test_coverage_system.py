@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import app as app_module
 import skiff.routers.system as system_module
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 

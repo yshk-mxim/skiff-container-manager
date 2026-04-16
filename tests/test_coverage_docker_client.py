@@ -8,16 +8,15 @@ import pytest
 import requests.exceptions
 from fastapi import HTTPException
 
-import app as app_module
 import skiff.docker_client as docker_client_module
-from skiff.routers.containers import _ws_acquire, _ws_connections, _ws_release
-from skiff.config import WS_MAX_PER_IP
-from skiff.logging_setup import _audit_file_sink
 from app import (
     docker_client_dep,
     get_client,
     safe_docker_call,
 )
+from skiff.config import WS_MAX_PER_IP
+from skiff.logging_setup import _audit_file_sink
+from skiff.routers.containers import _ws_acquire, _ws_connections, _ws_release
 
 # ── get_client: backoff when _client is None ──────────────────────────────────
 

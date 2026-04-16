@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import requests
 import requests.exceptions
@@ -13,14 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from skiff.auth import AUTH, verify_csrf
 from skiff.config import (
     IMAGE_PULL_TIMEOUT,
-    RL_DEFAULT,
-    RL_FAST,
-    RL_SLOW,
     REGISTRY_DESC_MAX,
     REGISTRY_MAX_TAGS,
     REGISTRY_SEARCH_PAGE_SIZE,
     REGISTRY_TIMEOUT,
-    _cfg,
+    RL_DEFAULT,
+    RL_FAST,
+    RL_SLOW,
     _limit,
     limiter,
 )
@@ -181,16 +181,17 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
         raise HTTPException(400, f"Push failed: {exc}") from exc
     # Check for error in streamed output
     if output and '"error"' in output:
-        import json  # noqa: PLC0415
+        push_error: str | None = None
         for line in output.splitlines():
             try:
                 d = json.loads(line)
                 if "error" in d:
-                    raise HTTPException(400, d["error"][:200])
-            except (json.JSONDecodeError, HTTPException):
-                raise
-            except Exception:
+                    push_error = d["error"][:200]
+                    break
+            except json.JSONDecodeError:
                 pass
+        if push_error:
+            raise HTTPException(400, push_error)
     log.info("image.pushed", image=image)
     return {"ok": True, "image": image}
 

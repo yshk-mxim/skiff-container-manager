@@ -7,6 +7,7 @@ Imports only from skiff.config — no other skiff modules — to avoid circular 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import threading
 import time
@@ -16,17 +17,16 @@ from fastapi import Depends, HTTPException, Request
 from starlette.websockets import WebSocket
 
 from skiff.config import (
+    _SESSION_CACHE_MAX,
     MIN_TOKEN_LENGTH,  # noqa: F401 — re-exported for setup validation
     SESSION_ABS_TIMEOUT,
     WS_AUTH_LOCKOUT_SECS,
     WS_AUTH_MAX_ATTEMPTS,
-    WS_KEEPALIVE_REVALIDATE_EVERY,
     WS_KEEPALIVE_INTERVAL,
+    WS_KEEPALIVE_REVALIDATE_EVERY,
     WS_TOKEN_TIMEOUT,
-    _SESSION_CACHE_MAX,
     _cfg,
 )
-
 
 # ── Constant-time comparison ───────────────────────────────
 
@@ -48,8 +48,7 @@ _session_lock = threading.Lock()
 
 def _check_session_age(token: str) -> None:
     """Reject tokens that have been active longer than SESSION_ABS_TIMEOUT."""
-    import hashlib
-    token_hash = hashlib.sha256(b"skiff-session:" + token.encode()).hexdigest()[:16]
+    token_hash = hashlib.sha256(b"skiff-session:" + token.encode()).hexdigest()
     now = time.monotonic()
     with _session_lock:
         first = _session_first_seen.get(token_hash)

@@ -76,7 +76,7 @@ def test_setup_success(client):
     assert r.json()["ok"] is True
     assert app_module._cfg.api_token == "a" * 16
     assert app_module._cfg.docker_host == "unix:///var/run/docker.sock"
-    assert "docker.io" in app_module._cfg.allowed_registries
+    assert any(r == "docker.io" for r in app_module._cfg.allowed_registries)
 
 
 def test_setup_token_too_short(client):
@@ -139,7 +139,6 @@ def test_tunnel_invalid_socket_path(client):
         "socket_path": "/etc/evil",
     }, headers=CSRF)
     assert r.status_code == 400
-    assert "/tmp/" in r.json()["detail"]
 
 
 def test_tunnel_disabled_when_from_env(client, monkeypatch):

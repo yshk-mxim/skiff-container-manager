@@ -13,8 +13,6 @@ import skiff.auth as auth_module
 import skiff.config as config_module
 import skiff.docker_client as docker_client_module
 import skiff.logging_setup as logging_setup_module
-from skiff.routers import compose as compose_module
-from skiff.routers import system as system_module
 from app import (
     _classify_event,
     _limit,
@@ -22,6 +20,8 @@ from app import (
     _validate_ws_origin,
     _validate_ws_token_from_message,
 )
+from skiff.routers import compose as compose_module
+from skiff.routers import system as system_module
 from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── _Config: wildcard ALLOWED_ORIGINS ────────────────────────────────────────
@@ -563,16 +563,21 @@ def test_stop_tunnel_locked_subprocess_exception():
 
 # ── _start_tunnel: OSError on unlink + success path ──────────────────────────
 
-def test_start_tunnel_oserror_on_unlink_swallowed(tmp_path):
+def test_start_tunnel_oserror_on_unlink_swallowed():
     """OSError when unlinking existing socket before tunnel start is swallowed."""
-    sock = tmp_path / "test.sock"
+    import os
+    from pathlib import Path as _Path
+    # Must be under resolved /tmp to pass path validation (macOS: /tmp → /private/tmp)
+    tmp_root = _Path("/tmp").resolve()
+    sock = tmp_root / f"skiff-test-unlink-{os.getpid()}.sock"
+    sock_resolved = sock.resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
     call_count = [0]
 
     def _exists(path):
-        if str(path) == str(sock):
+        if str(path) == str(sock_resolved):
             call_count[0] += 1
             return call_count[0] == 1  # exists on first check (triggers unlink attempt)
         return False
@@ -589,16 +594,21 @@ def test_start_tunnel_oserror_on_unlink_swallowed(tmp_path):
             docker_client_module._start_tunnel("user@host", str(sock))
 
 
-def test_start_tunnel_success(tmp_path):
+def test_start_tunnel_success():
     """_start_tunnel completes successfully when socket appears after SSH starts."""
-    sock = tmp_path / "docker.sock"
+    import os
+    from pathlib import Path as _Path
+    # Must be under resolved /tmp to pass path validation (macOS: /tmp → /private/tmp)
+    tmp_root = _Path("/tmp").resolve()
+    sock = tmp_root / f"skiff-test-success-{os.getpid()}.sock"
+    sock_resolved = sock.resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
     exist_calls = [0]
 
     def _exists(path):
-        if str(path) == str(sock):
+        if str(path) == str(sock_resolved):
             exist_calls[0] += 1
             # First call: no existing socket (skip unlink); second+ call: socket appeared
             return exist_calls[0] >= 2
@@ -613,7 +623,7 @@ def test_start_tunnel_success(tmp_path):
         docker_client_module._start_tunnel("user@host", str(sock))
         # Assertions must be inside the with block before patch restores globals
         assert docker_client_module._tunnel_ssh_target == "user@host"
-        assert docker_client_module._tunnel_socket_path == str(sock)
+        assert docker_client_module._tunnel_socket_path == str(sock_resolved)
 
 
 # ── classify_event: fallthrough to api.request ───────────────────────────────

@@ -7,30 +7,30 @@ structlog is configured before any logger is created.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.handlers
-import os
 import re
 import sys
+import time
 
 import structlog
 from starlette.datastructures import MutableHeaders
 
 from skiff.auth import _constant_time_compare
 from skiff.config import (
+    _CSP,
+    _GCP_LOG_NAME,
+    _GCP_PROJECT,
+    _PERMISSIONS_POLICY,
     AUDIT_BACKUP_COUNT,
     AUDIT_LOG_PATH,
     AUDIT_MAX_BYTES,
     HSTS_HEADER,
     TOKEN_AUDIT_SUFFIX_LEN,
-    _CSP,
-    _GCP_LOG_NAME,
-    _GCP_PROJECT,
-    _PERMISSIONS_POLICY,
     _cfg,
 )
-
 
 # ── Audit log file handler ─────────────────────────────────
 
@@ -77,7 +77,7 @@ if _GCP_PROJECT:
 
 # ── structlog processors ───────────────────────────────────
 
-def _level_to_severity(logger, method_name, event_dict):  # noqa: ARG001
+def _level_to_severity(logger, method_name, event_dict):
     """Map Python log levels to Cloud Logging severity field."""
     level = event_dict.pop("level", method_name)
     severity_map = {
@@ -88,7 +88,7 @@ def _level_to_severity(logger, method_name, event_dict):  # noqa: ARG001
     return event_dict
 
 
-def _audit_file_sink(_, __, event_dict):  # noqa: ARG001
+def _audit_file_sink(_, __, event_dict):
     """Write every log line to the rotating audit JSONL file and optionally GCP Cloud Logging."""
     if _audit_handler is not None:
         line = json.dumps(event_dict) + "\n"
@@ -123,9 +123,6 @@ log = structlog.get_logger(__name__)
 
 
 # ── Loop lag monitor ───────────────────────────────────────
-
-import asyncio
-import time
 
 
 async def _loop_lag_monitor() -> None:
