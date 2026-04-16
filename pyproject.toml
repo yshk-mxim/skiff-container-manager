@@ -39,7 +39,7 @@ e2e = [
     "pytest-playwright>=0.4",
 ]
 gcp = [
-    "google-cloud-logging>=3.0",   # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
+    "google-cloud-logging>=3.15.0",   # optional: GCP Cloud Logging sink (set GOOGLE_CLOUD_PROJECT)
 ]
 
 [project.scripts]
