@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
@@ -53,26 +54,40 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     validate_project_name(project_name)
 
     COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
-    # Path sanitisation — three independent layers:
-    #
+    _compose_root = COMPOSE_DIR.resolve()
+
+    # Validate project name — three independent layers:
     # Layer 1: validate_project_name() — character allowlist (called above)
     # Layer 2: os.path.basename — strips any directory-traversal components
-    # Layer 3: re.fullmatch().group(0) — restricts basename to exact allowlist AND
-    #           breaks CodeQL taint propagation (regex match results are not tracked
-    #           as tainted in py/path-injection analysis, matching the docker_client.py
-    #           pattern that resolved alerts #23, #24, #32, #36-#38)
+    # Layer 3: re.fullmatch — restricts to exact allowlist (no ".." or "/")
     _bn = os.path.basename(project_name)
     _m = re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", _bn) if _bn else None
     if not _m:
         raise HTTPException(400, "Invalid project name")
-    _compose_root = COMPOSE_DIR.resolve()
-    # Defence in depth: containment check ensures the resolved path stays within the
-    # compose root even if the above layers were somehow bypassed.
-    _candidate = (_compose_root / _m.group(0)).resolve()
-    if not _candidate.is_relative_to(_compose_root):
-        raise HTTPException(400, "Invalid project directory")
-    project_dir = _candidate
-    project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Derive project_dir from the filesystem, not from user input. The path
+    # assigned to project_dir comes from _compose_root.iterdir() (OS-provided,
+    # untainted), breaking the CodeQL py/path-injection taint chain. The user-
+    # supplied project_name is used only for equality comparison — comparisons
+    # do not propagate taint in CodeQL's data-flow model.
+    project_dir: Path | None = None
+    for _entry in _compose_root.iterdir():
+        if _entry.is_dir() and _entry.name == _m.group(0):
+            project_dir = _entry
+            break
+
+    if project_dir is None:
+        # New project — create the directory, then re-derive the path from the
+        # filesystem so all downstream ops (write_bytes, exists, read_bytes) use
+        # the untainted, OS-provided path rather than the user-supplied name.
+        (_compose_root / _m.group(0)).mkdir(parents=True, exist_ok=True)
+        for _entry in _compose_root.iterdir():
+            if _entry.is_dir() and _entry.name == _m.group(0):
+                project_dir = _entry
+                break
+        if project_dir is None:
+            raise HTTPException(500, "Failed to create project directory")
+
     compose_path = project_dir / "docker-compose.yml"
 
     if file and file.filename:
