@@ -34,6 +34,12 @@ SKIFF sidesteps all three: it runs as a plain Python process, the socket is forw
 | Agent on container host | Not applicable | Required for remote hosts | None — SSH ControlMaster is the transport |
 | Per-user RBAC | None | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
 
+### Zero trust and cloud workstation environments
+
+Most container management tools assume implicit trust at the network layer — if you can reach the management plane, you can do anything. SKIFF is designed for environments where that assumption doesn't hold. There is no persistent trusted process on the container host: access is established per-session over SSH, authenticated at the identity layer your organisation already controls (IAP, BeyondCorp, SSH certificates, or any OIDC-aware proxy). The registry allowlist and compose sandboxing enforce least-privilege at the API layer regardless of who is connected, and every action is recorded in a structured audit log.
+
+The alternative approaches each carry a cost that matters in this context. Tools that run as a container on the host require `docker.sock` access — which is effectively root on the host — and a persistent management VM that becomes part of your attack surface. Editor plugins that support remote Docker hosts give developers full daemon access with no guardrails: any image from any registry, any compose configuration including privileged containers. SKIFF sits between these: a full-featured browser UI with the registry controls, compose sandboxing, and audit trail that neither approach provides.
+
 ---
 
 ## Features
