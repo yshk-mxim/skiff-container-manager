@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -60,6 +61,33 @@ _cfg = _Config()
 COMPOSE_DIR = Path(os.environ.get("COMPOSE_DIR", "/data/compose"))
 DOCKER_BIN = shutil.which("docker") or "/usr/bin/docker"
 AUDIT_LOG_PATH = Path(os.environ.get("AUDIT_LOG", "/var/log/skiff-audit.jsonl"))
+
+
+def _find_compose_cmd() -> list[str]:
+    """Return the compose command prefix.
+
+    Prefers the Docker Compose v2 plugin (``docker compose``).  Falls back to
+    the standalone ``docker-compose`` binary (either v1 or v2) if the plugin
+    is not available — common with Docker Desktop on macOS/Linux where the two
+    are shipped separately.
+    """
+    docker = DOCKER_BIN
+    try:
+        r = subprocess.run(
+            [docker, "compose", "version"],
+            capture_output=True, timeout=5, check=False,
+        )
+        if r.returncode == 0:
+            return [docker, "compose"]
+    except Exception:  # noqa: BLE001
+        pass
+    standalone = shutil.which("docker-compose")
+    if standalone:
+        return [standalone]
+    return [docker, "compose"]  # best-effort: let the caller surface the error
+
+
+COMPOSE_CMD: list[str] = _find_compose_cmd()
 BIND_HOST = os.environ.get("BIND_HOST", "127.0.0.1")
 
 # ── Application version ────────────────────────────────────

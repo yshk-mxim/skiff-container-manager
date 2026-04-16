@@ -150,6 +150,7 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
+    "ignore::pytest.PytestAssertRewriteWarning",
 ]
 
 [tool.coverage.run]

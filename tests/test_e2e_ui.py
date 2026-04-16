@@ -603,13 +603,8 @@ def test_audit_log_shows_requests(page, live_server):
 
 @pytest.mark.e2e
 def test_engine_unreachable_shows_tunnel_instructions():
-    """
-    TODO: This test requires stopping the SSH tunnel, which is risky in a
-    shared environment. Skipped — test manually by running:
-        pkill -f 'ssh -fNL /tmp/docker.sock'
-    and verifying the banner with tunnel instructions appears.
-    """
-    pytest.skip("Stopping the tunnel is too risky for automated tests")
+    """Implemented at end of file (must run last to avoid breaking session tunnel)."""
+    pytest.skip("see test_engine_unreachable_shows_tunnel_instructions_impl at end of file")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2063,12 +2058,18 @@ def test_network_disconnect_container(page, live_server, docker_client):
         ctr = docker_client.containers.run(
             "alpine", "sleep 600", name=container_name, detach=True
         )
-        try:
-            net.connect(ctr)
-        except Exception:
-            pass  # May already be connected or fail — the UI test still proceeds
+        net.connect(ctr)
+        # Verify connection took effect before navigating to the UI
+        net.reload()
+        if not any(container_name in str(v) for v in net.attrs.get("Containers", {}).values()):
+            pytest.skip(f"Container {container_name!r} did not appear in {net_name!r} after connect")
 
     _nav_to(page, "networks")
+    # Reload to ensure fresh network state is shown
+    page.reload()
+    page.wait_for_selector(".sidebar", timeout=SHORT)
+    page.locator(".sidebar a:has-text('Networks')").click()
+    page.wait_for_selector(f"h2:has-text('Networks')", timeout=MEDIUM)
     page.wait_for_selector(f"text={net_name}", timeout=MEDIUM)
 
     # Look for the Disconnect button in the e2e-net-disc row

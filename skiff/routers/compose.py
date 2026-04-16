@@ -10,7 +10,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from skiff.auth import AUTH, verify_csrf
-from skiff.config import COMPOSE_DIR, DOCKER_BIN, RL_DEFAULT, _cfg, _limit, limiter
+from skiff.config import COMPOSE_CMD, COMPOSE_DIR, RL_DEFAULT, _cfg, _limit, limiter
 from skiff.docker_client import docker_client_dep
 from skiff.validators import _sanitize_stderr, validate_compose_file, validate_project_name
 
@@ -94,7 +94,7 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     minimal_env = {k: v for k, v in minimal_env.items() if v}
     try:
         result = subprocess.run(
-            [DOCKER_BIN, "compose", "-f", str(compose_path), "-p", project_name, "up", "-d"],
+            [*COMPOSE_CMD, "-f", str(compose_path), "-p", project_name, "up", "-d"],
             capture_output=True, text=True, env=minimal_env, timeout=120, check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -123,7 +123,7 @@ def compose_down(request: Request, project_name: str = "dev") -> dict:
     minimal_env = {k: v for k, v in minimal_env.items() if v}
     try:
         result = subprocess.run(
-            [DOCKER_BIN, "compose", "-p", project_name, "down"],
+            [*COMPOSE_CMD, "-p", project_name, "down"],
             capture_output=True, text=True, env=minimal_env, timeout=60, check=False,
         )
     except subprocess.TimeoutExpired as exc:

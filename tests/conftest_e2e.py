@@ -179,6 +179,7 @@ def live_server(ssh_tunnel):
         "ALLOWED_REGISTRIES": E2E_ALLOWED_REGISTRIES,
         "DOCKER_HOST": E2E_DOCKER_HOST,
         "AUDIT_LOG": "/tmp/skiff-e2e-audit.jsonl",
+        "COMPOSE_DIR": "/tmp/skiff-e2e-compose",  # writable; default /data/compose may be read-only
         "ALLOWED_ORIGINS": BASE_URL,
         "RATE_LIMIT_SCALE": "100",  # 100x limits for e2e test suite
     }
