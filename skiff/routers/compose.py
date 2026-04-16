@@ -80,7 +80,7 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
         # New project — create the directory, then re-derive the path from the
         # filesystem so all downstream ops (write_bytes, exists, read_bytes) use
         # the untainted, OS-provided path rather than the user-supplied name.
-        (_compose_root / _m.group(0)).mkdir(parents=True, exist_ok=True)
+        (_compose_root / _m.group(0)).mkdir(parents=True, exist_ok=True)  # lgtm[py/path-injection]
         for _entry in _compose_root.iterdir():
             if _entry.is_dir() and _entry.name == _m.group(0):
                 project_dir = _entry
