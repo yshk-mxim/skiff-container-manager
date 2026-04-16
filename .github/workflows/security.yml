@@ -2,6 +2,7 @@ name: Security Review
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
