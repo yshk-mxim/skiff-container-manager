@@ -2069,7 +2069,7 @@ def test_network_disconnect_container(page, live_server, docker_client):
     page.reload()
     page.wait_for_selector(".sidebar", timeout=SHORT)
     page.locator(".sidebar a:has-text('Networks')").click()
-    page.wait_for_selector(f"h2:has-text('Networks')", timeout=MEDIUM)
+    page.wait_for_selector("h2:has-text('Networks')", timeout=MEDIUM)
     page.wait_for_selector(f"text={net_name}", timeout=MEDIUM)
 
     # Look for the Disconnect button in the e2e-net-disc row

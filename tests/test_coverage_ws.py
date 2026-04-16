@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import app as app_module
 from skiff.routers.containers import exec_shell, run_container, stream_logs
-from tests.conftest import AUTH_CSRF, TOKEN
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,10 +28,10 @@ def _make_ws(disconnect_on_receive: bool = True, yield_before_disconnect: bool =
         if yield_before_disconnect:
             async def _sleep_then_raise():
                 await asyncio.sleep(0.002)  # 2 ms — enough for thread-pool MagicMock calls
-                raise Exception("client disconnect")
+                raise RuntimeError("client disconnect")
             ws.receive_text = _sleep_then_raise
         else:
-            ws.receive_text = AsyncMock(side_effect=Exception("client disconnect"))
+            ws.receive_text = AsyncMock(side_effect=RuntimeError("client disconnect"))
     return ws
 
 
@@ -50,7 +47,7 @@ async def test_stream_logs_idle_timeout_message():
     # the outer loop sees the disconnect.
     async def _sleep_then_raise():
         await asyncio.sleep(0.002)
-        raise Exception("client disconnect")
+        raise RuntimeError("client disconnect")
     ws.receive_text = _sleep_then_raise
 
     mock_container = MagicMock()
@@ -69,7 +66,7 @@ async def test_stream_logs_idle_timeout_message():
         patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
         patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
         # Force wait_for inside read_logs to raise TimeoutError immediately
-        patch("skiff.routers.containers.asyncio.wait_for", side_effect=asyncio.TimeoutError()),
+        patch("skiff.routers.containers.asyncio.wait_for", side_effect=TimeoutError()),
     ):
         mock_re.match.return_value = MagicMock()
         await stream_logs(ws, "abc1234567890123")
@@ -162,7 +159,7 @@ def _make_exec_mock_client(bash_exit_code: int = 0, recv_side_effect=None):
 async def test_exec_shell_bash_detection_exception():
     """Exception during exec_run('which bash') is swallowed; falls back to /bin/sh."""
     ws = _make_ws()
-    client, sock = _make_exec_mock_client()
+    client, _sock = _make_exec_mock_client()
     client.containers.get.return_value.exec_run.side_effect = RuntimeError("exec failed")
 
     with (
@@ -212,11 +209,11 @@ async def test_exec_shell_read_output_data_sent():
 async def test_exec_shell_read_output_idle_timeout():
     """TimeoutError with idle time exceeding WS_EXEC_IDLE_TIMEOUT sends timeout message."""
     ws = _make_ws(yield_before_disconnect=True)
-    client, sock = _make_exec_mock_client()
+    client, _sock = _make_exec_mock_client()
     # Make recv always raise TimeoutError so the idle check triggers
-    sock._sock.recv.side_effect = TimeoutError()
-    sock._sock.settimeout = MagicMock()
-    sock._sock.setblocking = MagicMock()
+    _sock._sock.recv.side_effect = TimeoutError()
+    _sock._sock.settimeout = MagicMock()
+    _sock._sock.setblocking = MagicMock()
 
     with (
         patch("skiff.routers.containers._validate_ws_origin", return_value=True),
@@ -241,8 +238,8 @@ async def test_exec_shell_read_output_idle_timeout():
 async def test_exec_shell_read_output_exception_breaks():
     """Non-Timeout exception from socket recv causes read_output to break."""
     ws = _make_ws(yield_before_disconnect=True)
-    client, sock = _make_exec_mock_client()
-    sock._sock.recv.side_effect = ConnectionResetError("peer reset")
+    client, _sock = _make_exec_mock_client()
+    _sock._sock.recv.side_effect = ConnectionResetError("peer reset")
 
     with (
         patch("skiff.routers.containers._validate_ws_origin", return_value=True),
@@ -266,7 +263,7 @@ async def test_exec_shell_large_input_closes_4008():
     large_payload = "x" * 65537
     ws.receive_text = AsyncMock(side_effect=[large_payload, Exception("done")])
 
-    client, sock = _make_exec_mock_client(recv_side_effect=[b""])
+    client, _sock = _make_exec_mock_client(recv_side_effect=[b""])
 
     with (
         patch("skiff.routers.containers._validate_ws_origin", return_value=True),
@@ -291,7 +288,7 @@ async def test_exec_shell_ws_close_exception_swallowed():
     ws = _make_ws()
     ws.close = AsyncMock(side_effect=RuntimeError("already closed"))
 
-    client, sock = _make_exec_mock_client(recv_side_effect=[b""])
+    client, _sock = _make_exec_mock_client(recv_side_effect=[b""])
 
     with (
         patch("skiff.routers.containers._validate_ws_origin", return_value=True),
@@ -334,7 +331,7 @@ def test_run_container_port_as_tuple(mock_docker):
         result = run_container(
             request=mock_request,
             image="docker.io/library/nginx:latest",
-            ports={"8080/tcp": ("0.0.0.0", "8080")},  # tuple value triggers line 136-137
+            ports={"8080/tcp": ("127.0.0.1", "8080")},  # tuple value triggers line 136-137
             environment=None,
             command=None,
             volumes=None,

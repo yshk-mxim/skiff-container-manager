@@ -11,7 +11,6 @@ from __future__ import annotations
 pytest_plugins = ["tests.conftest_e2e"]
 
 import glob as _glob
-import io
 import os
 import subprocess
 import time
@@ -20,10 +19,10 @@ import pytest
 import requests
 
 from tests.conftest_e2e import (
+    _SOCKET_PATH,
     BASE_URL,
     E2E_SSH_TUNNEL,
     E2E_TOKEN,
-    _SOCKET_PATH,
     _docker_socket_alive,
 )
 
@@ -362,7 +361,7 @@ def test_compose_project_name_field(page, live_server):
 
     project_urls: list[str] = []
 
-    def _capture(req):  # noqa: WPS430
+    def _capture(req):
         if "/compose/up" in req.url:
             project_urls.append(req.url)
 

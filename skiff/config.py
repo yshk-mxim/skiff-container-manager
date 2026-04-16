@@ -79,7 +79,7 @@ def _find_compose_cmd() -> list[str]:
         )
         if r.returncode == 0:
             return [docker, "compose"]
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     standalone = shutil.which("docker-compose")
     if standalone:
