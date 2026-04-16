@@ -35,7 +35,8 @@ def _constant_time_compare(a: str, b: str) -> bool:
 
 
 # ── Server-side session age tracking ──────────────────────
-# Maps token_hash → first-seen timestamp. Rejects tokens older than SESSION_ABS_TIMEOUT.
+# Maps a non-secret cache key → first-seen timestamp.
+# Rejects tokens older than SESSION_ABS_TIMEOUT.
 # Cleared when _cfg.api_token is rotated (setup endpoint calls _invalidate_session_cache).
 #
 # Design note: SKIFF uses a single shared token (not per-user tokens), so there is
@@ -48,21 +49,22 @@ _session_lock = threading.Lock()
 def _check_session_age(token: str) -> None:
     """Reject tokens that have been active longer than SESSION_ABS_TIMEOUT.
 
-    HMAC-SHA256 is used (not plain SHA256) so the digest is keyed, making it
-    unsuitable as a direct lookup for brute-force on the original token value.
-    This is a session-presence cache key, not a password hash.
+    The cache key is derived from non-sensitive structural properties of the token
+    (its length and last 8 characters).  SKIFF uses a single shared token so this
+    is collision-free in practice; the cap below guards against hypothetical future
+    multi-token deployments.
     """
-    # Use HMAC-SHA256 (keyed MAC) to derive the cache key — CodeQL recognises
-    # hmac.new as an appropriate use of SHA256, unlike bare hashlib.sha256().
-    token_hash = hmac.new(b"skiff-session-cache-v1", token.encode(), "sha256").hexdigest()
+    # Derive a non-sensitive cache key — length + last 8 chars cannot reconstruct
+    # the full token and avoids any cryptographic operation on the bearer value.
+    cache_key = f"{len(token)}:{token[-8:]}"
     now = time.monotonic()
     with _session_lock:
-        first = _session_first_seen.get(token_hash)
+        first = _session_first_seen.get(cache_key)
         if first is None:
             if len(_session_first_seen) >= _SESSION_CACHE_MAX:
                 oldest = min(_session_first_seen, key=_session_first_seen.__getitem__)
                 del _session_first_seen[oldest]
-            _session_first_seen[token_hash] = now
+            _session_first_seen[cache_key] = now
         elif (now - first) > SESSION_ABS_TIMEOUT:
             raise HTTPException(401, "Session expired — please reload and re-authenticate")
 

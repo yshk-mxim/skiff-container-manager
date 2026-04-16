@@ -1,6 +1,6 @@
 # SKIFF Container Manager
 
-A lightweight web UI for Docker — works locally on your machine as a Docker Desktop alternative, or remotely over SSH. No agent, no daemon, no installation on the Docker host.
+A lightweight web UI for Docker — works locally on your machine alongside any container runtime, or remotely over SSH. No agent, no daemon, no installation on the Docker host.
 
 Registry allowlists, compose sandboxing, audit logging, WebSocket log streaming, and a browser UI that clears credentials on tab close. No per-seat licensing.
 
@@ -14,7 +14,7 @@ Registry allowlists, compose sandboxing, audit logging, WebSocket log streaming,
 
 ## Why SKIFF?
 
-SKIFF connects to any container daemon that speaks the Docker API — Docker Engine, Podman, Colima, OrbStack, Rancher Desktop, or a remote VM over SSH. It runs as a plain Python process: point it at a local socket for a Docker Desktop replacement, or at an SSH-tunnelled socket for a remote host.
+SKIFF connects to any container daemon that speaks the Docker API — Docker Engine, Podman, Colima, OrbStack, Rancher Desktop, or a remote VM over SSH. It runs as a plain Python process: point it at a local socket for local container management, or at an SSH-tunnelled socket for a remote host.
 
 Most container management UIs run as a container on the container host and reach the daemon by mounting `/var/run/docker.sock`. That works, but it has costs that matter on both laptops and cloud hosts:
 
@@ -24,9 +24,9 @@ Most container management UIs run as a container on the container host and reach
 
 SKIFF sidesteps all three: it runs as a plain Python process, the socket is forwarded over SSH (never mounted anywhere), and there is no idle management server.
 
-| Concern | Docker Desktop | Server-based manager | SKIFF |
+| Concern | Desktop GUI tools | Server-based manager | SKIFF |
 |---|---|---|---|
-| Cost | Free for individuals; commercial license for teams | Dedicated management VM / container | Free, MIT |
+| Cost | Free (personal) or per-seat commercial | Dedicated management VM / container | Free, MIT |
 | API access | GUI only | Yes | Yes — full REST API + audit log |
 | `docker.sock` exposure | Mounted locally | Mounted into a privileged container | Forwarded over SSH — never mounted |
 | Always-on cost | Must be open | Dedicated management VM required | Start when needed; stop when done |
@@ -69,7 +69,7 @@ The alternative approaches each carry a cost that matters in this context. Tools
 
 ## Quick start
 
-### Local use (Docker Desktop / Colima / OrbStack / Rancher Desktop)
+### Local use (Colima / OrbStack / Rancher Desktop / Docker Engine)
 
 ```bash
 git clone https://github.com/yshk-mxim/skiff-container-manager skiff
@@ -91,7 +91,7 @@ cp .env.example .env   # API_TOKEN= and DOCKER_HOST are pre-filled for localhost
 
 | Runtime | `DOCKER_HOST` value |
 |---|---|
-| Docker Desktop (Mac/Win) | `unix:///var/run/docker.sock` |
+| Mac/Win default socket | `unix:///var/run/docker.sock` |
 | Colima | `unix://$HOME/.colima/default/docker.sock` |
 | OrbStack | `unix:///var/run/docker.sock` |
 | Rancher Desktop | `unix://$HOME/.rd/docker.sock` |

@@ -3,9 +3,6 @@
 """Unit tests for the setup wizard endpoints (/api/setup-state, /api/setup, /api/setup/tunnel)."""
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -133,12 +130,16 @@ def test_tunnel_invalid_target(client):
     assert "user@host" in r.json()["detail"]
 
 
-def test_tunnel_invalid_socket_path(client):
+def test_tunnel_extra_fields_ignored(client, monkeypatch):
+    """Unknown fields in the JSON body are silently ignored — server always uses its
+    own constant socket path, so socket_path in the body has no effect."""
+    monkeypatch.setattr(system_module, "_start_tunnel", lambda *_: None)
     r = client.post("/api/setup/tunnel", json={
         "ssh_target": "user@host",
-        "socket_path": "/etc/evil",
+        "socket_path": "/etc/evil",  # ignored — server uses TUNNEL_DEFAULT_SOCKET
     }, headers=CSRF)
-    assert r.status_code == 400
+    # _start_tunnel returns None (no error) → endpoint returns 200, not 400
+    assert r.status_code == 200
 
 
 def test_tunnel_disabled_when_from_env(client, monkeypatch):
@@ -154,26 +155,20 @@ def test_tunnel_disabled_when_configured(client, monkeypatch):
 
 
 def test_tunnel_start_success(client, monkeypatch):
-    # Mock _start_tunnel to create the socket file and update globals
-    def fake_start(ssh_target, socket_path):
-        open(socket_path, "w").close()
-        docker_client_module._tunnel_ctl_sock = "/tmp/fake-ctl.sock"
-        docker_client_module._tunnel_ssh_target = ssh_target
-        docker_client_module._tunnel_socket_path = socket_path
+    # Mock _start_tunnel — it now takes only ssh_target; socket path is internal constant.
+    started = []
+    def fake_start(ssh_target):
+        started.append(ssh_target)
     monkeypatch.setattr(system_module, "_start_tunnel", fake_start)
-    with tempfile.TemporaryDirectory(dir="/tmp") as td:
-        sock = os.path.join(td, "docker.sock")
-        r = client.post("/api/setup/tunnel", json={
-            "ssh_target": "user@myhost",
-            "socket_path": sock,
-        }, headers=CSRF)
+    r = client.post("/api/setup/tunnel", json={"ssh_target": "user@myhost"}, headers=CSRF)
     assert r.status_code == 200
     assert "socket_path" in r.json()
     assert "docker_host" in r.json()
+    assert started[0] == "user@myhost"
 
 
 def test_tunnel_start_failure(client, monkeypatch):
-    def fake_start(ssh_target, socket_path):
+    def fake_start(ssh_target):
         raise ValueError("SSH failed: Connection refused")
     monkeypatch.setattr(system_module, "_start_tunnel", fake_start)
     r = client.post("/api/setup/tunnel", json={"ssh_target": "user@badhost"}, headers=CSRF)

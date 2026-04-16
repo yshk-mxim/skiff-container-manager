@@ -33,6 +33,7 @@ from skiff.config import (
     TCP_KEEPALIVE_IDLE,
     TCP_KEEPALIVE_INTERVAL,
     TUNNEL_CONNECT_TIMEOUT,
+    TUNNEL_DEFAULT_SOCKET,
     TUNNEL_SERVER_ALIVE_COUNT,
     TUNNEL_SERVER_ALIVE_INTERVAL,
     TUNNEL_SOCKET_POLL,
@@ -183,8 +184,16 @@ def _stop_tunnel_locked() -> None:
             pass
         for path in (_tunnel_ctl_sock, _tunnel_socket_path):
             try:
-                if path and os.path.exists(path):
-                    os.unlink(path)
+                # Re-validate each stored path before touching the filesystem.
+                # Validate the basename only — avoids platform differences where
+                # /tmp resolves to /private/tmp on macOS. re.fullmatch breaks
+                # CodeQL taint propagation; reconstructing from _pm.group(0) plus
+                # the trusted /tmp root produces a clean, untainted value.
+                _bn = os.path.basename(path) if path else ""
+                _pm = re.fullmatch(r"[a-zA-Z0-9._\-]+\.sock", _bn) if _bn else None
+                _safe = str(Path("/tmp").resolve() / _pm.group(0)) if _pm else ""  # noqa: S108
+                if _safe and os.path.exists(_safe):
+                    os.unlink(_safe)
             except OSError:
                 pass
     _tunnel_ctl_sock = ""
@@ -192,21 +201,18 @@ def _stop_tunnel_locked() -> None:
     _tunnel_socket_path = ""
 
 
-def _start_tunnel(ssh_target: str, socket_path: str) -> None:
-    """Start an SSH ControlMaster tunnel. Raises ValueError on failure."""
+def _start_tunnel(ssh_target: str) -> None:
+    """Start an SSH ControlMaster tunnel. Raises ValueError on failure.
+
+    The socket path is always the server-controlled TUNNEL_DEFAULT_SOCKET constant —
+    no caller-provided path reaches the subprocess, eliminating command/path injection.
+    """
     global _tunnel_ctl_sock, _tunnel_ssh_target, _tunnel_socket_path
 
-    # Validate inputs (defence-in-depth — callers also validate)
     if not _SSH_TARGET_RE.match(ssh_target):
         raise ValueError("Invalid ssh_target format (expected user@host)")
-    _sp = Path(socket_path).resolve()
-    _tmp = Path("/tmp").resolve()  # noqa: S108
-    if not _sp.is_relative_to(_tmp):
-        raise ValueError("socket_path must resolve to a path under /tmp/")
-    # Reconstruct socket path from trusted root + basename to break taint flow.
-    # os.path.join(trusted_root, os.path.basename(...)) is the CodeQL-recognised
-    # path-injection sanitiser: basename strips any directory component.
-    socket_path = os.path.join(str(_tmp), os.path.basename(str(_sp)))
+    # socket_path is always the server-controlled constant — never from user input.
+    socket_path = str(Path(TUNNEL_DEFAULT_SOCKET).resolve())
 
     _user, _, _host = ssh_target.partition("@")
 

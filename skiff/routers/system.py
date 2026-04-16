@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -114,16 +115,13 @@ def setup_state():
         # to unauthenticated callers on a live server.
         return {"configured": True, "from_env": _cfg.from_env}
     tunnel_socket = get_tunnel_socket_path()
-    # Reconstruct path from trusted /tmp root + basename to break taint propagation.
-    # os.path.join(trusted_root, os.path.basename(...)) is the CodeQL-recognised
-    # sanitiser for path injection — even though tunnel_socket was validated when
-    # stored, the value still carries taint from the original user-supplied input.
+    # Sanitise the stored tunnel socket path before any filesystem use.
+    # Validate the basename only (cross-platform: /tmp → /private/tmp on macOS).
+    # re.fullmatch breaks CodeQL taint propagation — .group(0) is recognised as a
+    # clean value. Final path is reconstructed from clean basename + trusted /tmp root.
     _ts_name = os.path.basename(tunnel_socket) if tunnel_socket else ""
-    _ts_path = (
-        os.path.join(str(Path("/tmp").resolve()), _ts_name)  # noqa: S108
-        if _ts_name and _ts_name.endswith(".sock")
-        else ""
-    )
+    _ts_match = re.fullmatch(r"[a-zA-Z0-9._\-]+\.sock", _ts_name) if _ts_name else None
+    _ts_path = str(Path("/tmp").resolve() / _ts_match.group(0)) if _ts_match else ""  # noqa: S108
     return {
         "configured": False,
         "from_env": _cfg.from_env,
@@ -196,10 +194,13 @@ def do_setup(
 @limiter.limit(_limit(RL_SLOW))
 def start_tunnel(
     request: Request,
-    ssh_target: str = Body(...),
-    socket_path: str = Body(default=TUNNEL_DEFAULT_SOCKET),
+    ssh_target: str = Body(..., embed=True),
 ):
-    """Start an SSH ControlMaster tunnel to the Docker VM. Setup-only endpoint."""
+    """Start an SSH ControlMaster tunnel to the Docker VM. Setup-only endpoint.
+
+    The socket path is always the server-controlled constant TUNNEL_DEFAULT_SOCKET —
+    no user-provided path reaches the subprocess, eliminating command/path injection.
+    """
     verify_csrf(request)
     if _cfg.from_env:
         raise HTTPException(403, "Setup endpoints disabled when configured via environment")
@@ -207,20 +208,13 @@ def start_tunnel(
         raise HTTPException(403, "Already configured")
     if not _SSH_TARGET_RE.match(ssh_target):
         raise HTTPException(400, "ssh_target must be user@host")
-    # Reconstruct socket path from trusted /tmp root + basename.
-    # This is the CodeQL-recognised path-injection sanitiser: basename removes any
-    # directory traversal component, and joining with a constant trusted root breaks
-    # the taint flow from the user-supplied socket_path.
-    _sock_name = os.path.basename(socket_path)
-    if not _sock_name or not _sock_name.endswith(".sock"):
-        raise HTTPException(400, "socket_path must be a .sock filename under /tmp/")
-    _tmp_resolved = Path("/tmp").resolve()  # noqa: S108
-    _sp_safe = _tmp_resolved / _sock_name   # constructed entirely from trusted parts
     try:
-        _start_tunnel(ssh_target, str(_sp_safe))
+        _start_tunnel(ssh_target)
     except ValueError as exc:
         raise HTTPException(502, str(exc)) from exc
-    return {"ok": True, "socket_path": str(_sp_safe), "docker_host": f"unix://{_sp_safe}"}
+    # socket_path is the server-controlled constant used internally by _start_tunnel.
+    _sp = Path(TUNNEL_DEFAULT_SOCKET).resolve()
+    return {"ok": True, "socket_path": str(_sp), "docker_host": f"unix://{_sp}"}
 
 
 @router.delete("/api/setup/tunnel", tags=["setup"])

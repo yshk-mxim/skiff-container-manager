@@ -175,7 +175,7 @@ def test_start_tunnel_timeout():
         patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="timed out"):
-            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_no_ssh_binary():
@@ -186,7 +186,7 @@ def test_start_tunnel_no_ssh_binary():
         patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="ssh binary"):
-            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_nonzero_returncode():
@@ -200,7 +200,7 @@ def test_start_tunnel_nonzero_returncode():
         patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="SSH failed"):
-            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_socket_never_appears():
@@ -216,15 +216,15 @@ def test_start_tunnel_socket_never_appears():
         patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError, match="socket did not appear"):
-            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test-never.sock")
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_existing_socket_unlinked():
-    """If socket already exists, it gets unlinked before starting."""
+    """If the constant socket already exists, it gets unlinked before starting."""
     from pathlib import Path as _Path
-    tmp_root = _Path("/tmp").resolve()
-    sock = tmp_root / f"skiff-test-existing-{os.getpid()}.sock"
-    sock_resolved = sock.resolve()
+
+    from skiff.config import TUNNEL_DEFAULT_SOCKET
+    sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
@@ -245,19 +245,13 @@ def test_start_tunnel_existing_socket_unlinked():
         patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError):  # socket won't appear — that's OK
-            docker_client_module._start_tunnel("user@host", str(sock))
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_invalid_ssh_target():
     """_start_tunnel raises ValueError for ssh_target that fails regex."""
     with pytest.raises(ValueError, match="Invalid ssh_target"):
-        docker_client_module._start_tunnel("not-valid", "/tmp/test.sock")
-
-
-def test_start_tunnel_socket_path_not_under_tmp():
-    """_start_tunnel raises ValueError when socket_path is not under /tmp."""
-    with pytest.raises(ValueError, match="under /tmp"):
-        docker_client_module._start_tunnel("user@host", "/etc/evil.sock")
+        docker_client_module._start_tunnel("not-valid")
 
 
 # ── Session cache eviction when full ─────────────────────────────────────────
@@ -665,10 +659,9 @@ def test_start_tunnel_oserror_on_unlink_swallowed():
     """OSError when unlinking existing socket before tunnel start is swallowed."""
     import os as _os_real
     from pathlib import Path as _Path
-    # Must be under resolved /tmp to pass path validation (macOS: /tmp → /private/tmp)
-    tmp_root = _Path("/tmp").resolve()
-    sock = tmp_root / f"skiff-test-unlink-{_os_real.getpid()}.sock"
-    sock_resolved = sock.resolve()
+
+    from skiff.config import TUNNEL_DEFAULT_SOCKET
+    sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
@@ -699,17 +692,15 @@ def test_start_tunnel_oserror_on_unlink_swallowed():
         patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError):  # socket never appears in poll — that's OK
-            docker_client_module._start_tunnel("user@host", str(sock))
+            docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_success():
     """_start_tunnel completes successfully when socket appears after SSH starts."""
-    import os
     from pathlib import Path as _Path
-    # Must be under resolved /tmp to pass path validation (macOS: /tmp → /private/tmp)
-    tmp_root = _Path("/tmp").resolve()
-    sock = tmp_root / f"skiff-test-success-{os.getpid()}.sock"
-    sock_resolved = sock.resolve()
+
+    from skiff.config import TUNNEL_DEFAULT_SOCKET
+    sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
@@ -728,7 +719,7 @@ def test_start_tunnel_success():
         patch("skiff.docker_client.os.path.exists", side_effect=_exists),
         patch("skiff.docker_client.os.unlink"),
     ):
-        docker_client_module._start_tunnel("user@host", str(sock))
+        docker_client_module._start_tunnel("user@host")
         # Assertions must be inside the with block before patch restores globals
         assert docker_client_module._tunnel_ssh_target == "user@host"
         assert docker_client_module._tunnel_socket_path == str(sock_resolved)

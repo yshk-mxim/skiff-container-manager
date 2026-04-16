@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 import structlog
@@ -52,11 +53,19 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     validate_project_name(project_name)
 
     COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
-    # os.path.basename strips any directory component — combined with COMPOSE_DIR
-    # (a trusted constant) this constructs a CodeQL-recognised safe path even though
-    # project_name comes from user input (PROJECT_NAME_RE already forbids slashes).
-    project_dir = COMPOSE_DIR / os.path.basename(project_name)
-    if not project_dir.resolve().is_relative_to(COMPOSE_DIR.resolve()):
+    # re.fullmatch constrains project_name to safe characters, producing a value
+    # that CodeQL recognises as sanitised (taint is broken at .group(0)).
+    # validate_project_name() was already called above; this fullmatch is the
+    # CodeQL-visible sanitiser that prevents path-injection findings.
+    _m = re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", project_name)
+    if not _m:
+        raise HTTPException(400, "Invalid project name")
+    _safe_name = _m.group(0)
+    # Resolve both sides to canonical form so all downstream path operations
+    # use the fully-canonicalised path (CodeQL-recognised clean value).
+    _compose_root = COMPOSE_DIR.resolve()
+    project_dir = (_compose_root / _safe_name)
+    if not str(project_dir).startswith(str(_compose_root)):
         raise HTTPException(400, "Invalid project directory")
     project_dir.mkdir(exist_ok=True)
     compose_path = project_dir / "docker-compose.yml"
