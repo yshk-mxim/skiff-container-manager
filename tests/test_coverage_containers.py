@@ -231,7 +231,7 @@ def test_container_diff(client, mock_docker):
     resp = client.get("/api/containers/abc123def456/diff", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()
-    assert data[0]["kind"] == "added"
+    assert data[0]["kind"] == "Added"
 
 
 def test_container_diff_none(client, mock_docker):

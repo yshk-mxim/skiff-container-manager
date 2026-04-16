@@ -513,7 +513,7 @@ def container_diff(request: Request, container_id: str, client=Depends(docker_cl
     """Show filesystem changes in a container's writable layer since it was created."""
     container = _get_container(client, container_id)
     changes = safe_docker_call(container.diff) or []
-    kind_map = {0: "modified", 1: "added", 2: "deleted"}
+    kind_map = {0: "Modified", 1: "Added", 2: "Deleted"}
     return [{"path": c.get("Path", ""), "kind": kind_map.get(c.get("Kind", 0), "unknown")} for c in changes]
 
 

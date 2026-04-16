@@ -1132,14 +1132,17 @@ async function loadImages() {
       var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px'; td.textContent = 'No images found'; tr.appendChild(td); tbody.appendChild(tr);
     } else {
       filtered.forEach(function(img) {
+        var imgTags = Array.isArray(img.tags) ? img.tags : (img.tag ? [img.tag] : []);
+        var displayTag = imgTags.length ? imgTags.join(', ') : '<none>';
+        var runTag = imgTags[0] || img.id;
         var tr = document.createElement('tr');
-        var tdTag = document.createElement('td'); tdTag.style.cssText = 'font-size:13px;font-weight:500'; tdTag.textContent = img.tag;
+        var tdTag = document.createElement('td'); tdTag.style.cssText = 'font-size:13px;font-weight:500'; tdTag.textContent = displayTag;
         var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = img.id;
         var tdSize = document.createElement('td'); tdSize.textContent = img.size_mb + ' MB';
         var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(img.created);
         var tdAct = document.createElement('td');
         var bg = document.createElement('div'); bg.className = 'btn-group';
-        bg.append(makeBtn('Inspect', function() { showImageInspect(img.id, img.tag); }), makeBtn('Run', function() { showPage('containers'); showRunModal(img.tag); }, 'btn'), makeActionBtn('Delete', function() { if(!confirm('Delete image '+img.tag+'?'))throw new Error('Cancelled'); return guardedAction('del-img-' + img.id, function() { return apiFetch(API+'/images/'+encodeURIComponent(img.id)+'?force=true',{method:'DELETE'}).then(function(){toast('Image deleted','info');loadImages();}); }); }, 'btn danger', 'Deleting\u2026'));
+        bg.append(makeBtn('Inspect', function() { showImageInspect(img.id, displayTag); }), makeBtn('Run', function() { showPage('containers'); showRunModal(runTag); }, 'btn'), makeActionBtn('Delete', function() { if(!confirm('Delete image '+displayTag+'?'))throw new Error('Cancelled'); return guardedAction('del-img-' + img.id, function() { return apiFetch(API+'/images/'+encodeURIComponent(img.id)+'?force=true',{method:'DELETE'}).then(function(){toast('Image deleted','info');loadImages();}); }); }, 'btn danger', 'Deleting\u2026'));
         tdAct.appendChild(bg);
         tr.append(tdTag, tdId, tdSize, tdCreated, tdAct); tbody.appendChild(tr);
       });
@@ -1152,7 +1155,10 @@ async function loadImages() {
     renderImageTable(allImages);
     imgSearch.oninput = function() {
       var q = imgSearch.value.toLowerCase();
-      var filtered = q ? allImages.filter(function(img) { return img.tag.toLowerCase().includes(q) || img.id.includes(q); }) : allImages;
+      var filtered = q ? allImages.filter(function(img) {
+        var imgTags = Array.isArray(img.tags) ? img.tags : (img.tag ? [img.tag] : []);
+        return imgTags.some(function(t) { return t.toLowerCase().includes(q); }) || img.id.includes(q);
+      }) : allImages;
       renderImageTable(filtered);
     };
   } catch (e) { main.innerHTML = ''; var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: '+e.message; main.appendChild(p); }

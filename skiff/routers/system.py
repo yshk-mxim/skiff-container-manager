@@ -345,7 +345,7 @@ def prune_build_cache(request: Request, client=Depends(docker_client_dep)) -> di
 # ── Audit Log ──────────────────────────────────────────────
 
 @router.get("/api/system/audit-log", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_LINES, ge=1)):
     """Return the last N lines of the app audit log, read efficiently without loading the full file."""
     if not AUDIT_LOG_PATH.exists():
@@ -379,7 +379,7 @@ def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_
 
 
 @router.get("/api/system/audit-log/download", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit("2/minute")
+@limiter.limit(_limit(RL_SLOW))
 def download_audit_log(request: Request):
     """Download the full audit log as a JSONL file (streamed to avoid memory spikes)."""
     if not AUDIT_LOG_PATH.exists():
