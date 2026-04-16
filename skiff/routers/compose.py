@@ -57,16 +57,18 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     #
     # Layer 1: validate_project_name() — character allowlist (called above)
     # Layer 2: os.path.basename — strips any directory-traversal components
-    # Layer 3: re.fullmatch — restricts the basename to the exact allowlist
-    _safe_name = os.path.basename(project_name)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", _safe_name):
+    # Layer 3: re.fullmatch().group(0) — restricts basename to exact allowlist AND
+    #           breaks CodeQL taint propagation (regex match results are not tracked
+    #           as tainted in py/path-injection analysis, matching the docker_client.py
+    #           pattern that resolved alerts #23, #24, #32, #36-#38)
+    _bn = os.path.basename(project_name)
+    _m = re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", _bn) if _bn else None
+    if not _m:
         raise HTTPException(400, "Invalid project name")
     _compose_root = COMPOSE_DIR.resolve()
-    # Resolve the candidate path before any filesystem I/O, then verify containment.
-    # resolve() eliminates symlinks; is_relative_to() is the CodeQL-recognised
-    # path-injection barrier — the mkdir/read/write below can only be reached when
-    # the resolved path is provably within the compose root.
-    _candidate = (_compose_root / _safe_name).resolve()
+    # Defence in depth: containment check ensures the resolved path stays within the
+    # compose root even if the above layers were somehow bypassed.
+    _candidate = (_compose_root / _m.group(0)).resolve()
     if not _candidate.is_relative_to(_compose_root):
         raise HTTPException(400, "Invalid project directory")
     project_dir = _candidate
