@@ -13,7 +13,7 @@ All code must pass `make lint` before merging. The project uses ruff for linting
 ```bash
 make lint        # ruff check skiff/ app.py tests/
 make format      # ruff format + auto-fix
-make security    # bandit-equivalent security rules (S rules)
+make security    # ruff --select S security rules
 make complexity  # cyclomatic complexity check
 ```
 
@@ -118,11 +118,38 @@ The `validate_compose_file` and `run_container` functions are known to exceed th
 
 ---
 
+## Supply Chain Policy
+
+- **Hash-pinned requirements**: `requirements.txt` is generated with `pip-compile --generate-hashes`. Do not edit it manually. To update deps, run `make deps` (regenerates with hashes).
+- **Dependabot PRs**: Dependency update PRs are auto-created weekly. Review and merge within 5 business days for non-breaking updates.
+- **Approved upgrade process**: For major version bumps, run the full test suite and check the package changelog for breaking changes before merging.
+- **No `yaml.load`**: The compose validator must use `yaml.safe_load` only. Any `yaml.load(` call without `Loader=yaml.SafeLoader` is a critical finding.
+
+## Security Scan Requirements
+
+Every PR must pass:
+
+```bash
+make security    # ruff --select S security rules — zero warnings required
+pip-audit --strict -r requirements.txt   # no known CVEs
+```
+
+The GitHub Actions CI workflow runs both automatically. A PR with failing security checks must not be merged.
+
+## Browser Security Conventions
+
+- **sessionStorage only** — never write to `localStorage`. The API token must live in `sessionStorage` so it is cleared when the tab closes.
+- **No hardcoded secrets** — no tokens, no credentials, no API keys in JavaScript source.
+- **Token lifecycle** — the token is stored in `sessionStorage.api_token`. It is cleared on 401, idle timeout, absolute timeout, logout, and tab close. Do not persist it beyond these boundaries.
+- **Input escaping** — all dynamic HTML must be constructed through the `esc()` helper or `textContent` assignment. Never use `innerHTML` with unsanitised input.
+
+---
+
 ## Checklist for PRs
 
 - [ ] `make lint` passes with no warnings.
 - [ ] `make security` passes with no warnings.
-- [ ] `make test-unit` passes (142 tests).
+- [ ] `make test-unit` passes.
 - [ ] All `raise` in `except` blocks use `from exc`.
 - [ ] No new magic numbers without named constants.
 - [ ] Registry allowlist enforced on any new image input.

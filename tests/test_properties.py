@@ -87,7 +87,7 @@ def test_uppercase_project_names_rejected(name):
 
 # ── Image registry ────────────────────────────────────────────────────────────
 
-ALLOWED_PREFIX = "us-docker.pkg.dev/"
+ALLOWED_PREFIX = "docker.io/"
 
 
 @given(st.text(alphabet=string.ascii_letters + string.digits + "/._:-", min_size=1, max_size=50))

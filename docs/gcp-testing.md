@@ -1,5 +1,10 @@
 # Using SKIFF Container Manager on GCP
 
+> **GCP-specific guide.** The API operations below (pull, run, compose, logs, etc.) work on any
+> deployment. The registry examples use GCP Artifact Registry (`us-docker.pkg.dev`). For other
+> registries set `ALLOWED_REGISTRIES` to match your registry prefix (e.g. `docker.io,ghcr.io`).
+> For a local Docker Desktop / Colima quick-start see [local-docker.md](local-docker.md).
+
 A practical guide to day-to-day operations once the app is running on a Cloud Workstation.
 For initial setup and environment variables see [deployment.md](deployment.md).
 
@@ -203,7 +208,7 @@ curl -sf -X POST \
 |---|---|---|
 | 401 | Missing or wrong token | Check `Authorization: Bearer <token>` header |
 | 403 | Missing CSRF header | Add `X-Requested-With: ContainerManager` |
-| 400 (registry) | Image not in `ALLOWED_REGISTRIES` | Use an `us-docker.pkg.dev/…` path |
+| 400 (registry) | Image not in `ALLOWED_REGISTRIES` | Check `ALLOWED_REGISTRIES` in `.env` — image prefix must match |
 | 400 (compose) | Blocked key in compose file | Remove `privileged`, host mounts, `build`, etc. |
 | 503 on `/ready` | SSH tunnel to Docker VM is down | Check `DOCKER_HOST`, SSH key, VM status |
 | 500 on pull | Docker VM can't reach Artifact Registry | Run `gcloud auth configure-docker` on the VM |

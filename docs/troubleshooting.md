@@ -141,6 +141,38 @@ Each project name stores exactly one compose file. If you do not upload a new fi
 
 ---
 
+## 403 on `/api/setup` — "Setup window expired"
+
+The setup wizard is only available within 15 minutes of server start. After that, `POST /api/setup` returns 403.
+
+**Fix:** Restart the server. The 15-minute setup window reopens.
+
+```bash
+systemctl restart skiff@$USER   # or: kill the uvicorn process and re-run ./run.sh
+```
+
+---
+
+## WebSocket closes immediately with code 4003 — "Session expired"
+
+Your session (started when you first entered your token) has exceeded the 8-hour absolute timeout. The server rejected the auth token, and the browser will show a "Session expired" message.
+
+**Fix:** Log out and log back in with your `API_TOKEN`. The session timer resets on re-authentication.
+
+Note: Do NOT try to reconnect the WebSocket manually — the session is expired and reconnect attempts will continue to fail with `4003` until you log in again.
+
+---
+
+## WebSocket auth lockout — connections refused after repeated failures
+
+After 3 failed WebSocket authentication attempts from the same IP, new WebSocket connections are blocked for 5 minutes. This protects against token-guessing attacks.
+
+**Symptoms:** WebSocket connects but closes immediately with a 4003 or auth error, even with the correct token.
+
+**Fix:** Wait 5 minutes for the lockout to expire, then reconnect. If this happens repeatedly with the correct token, check for a clock skew issue or a misbehaving client sending auth messages incorrectly.
+
+---
+
 ## journalctl one-liners
 
 ```bash

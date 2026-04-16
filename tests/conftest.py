@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
+import skiff.docker_client as docker_client_module
 from app import app
 
 TOKEN = "test-secret-token"
@@ -59,9 +60,9 @@ def client(mock_docker: MagicMock) -> Generator[TestClient, None, None]:
     original_token = app_module._cfg.api_token
     app_module._cfg.api_token = TOKEN
     with (
-        patch.object(app_module, "_client", mock_docker),
-        patch.object(app_module, "_client_last_ping", float("inf")),
-        patch("app.get_client", return_value=mock_docker),
+        patch.object(docker_client_module, "_client", mock_docker),
+        patch.object(docker_client_module, "_client_last_ping", float("inf")),
+        patch("skiff.docker_client.get_client", return_value=mock_docker),
     ):
         with TestClient(app, raise_server_exceptions=True) as tc:
             yield tc

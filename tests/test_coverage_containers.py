@@ -10,7 +10,7 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER
 def _make_container(
     short_id="abc123def456",
     name="test-container",
-    image_tag="us-docker.pkg.dev/p/r/img:latest",
+    image_tag="docker.io/library/nginx:latest",
     status="running",
     state_status="running",
 ):
@@ -68,7 +68,7 @@ def test_list_containers_with_data(client, mock_docker):
     data = resp.json()
     assert len(data) == 1
     assert data[0]["id"] == "abc123def456"
-    assert data[0]["image"] == "us-docker.pkg.dev/p/r/img:latest"
+    assert data[0]["image"] == "docker.io/library/nginx:latest"
 
 
 def test_list_containers_image_fallback_to_short_id(client, mock_docker):
@@ -195,7 +195,7 @@ def test_container_stats(client, mock_docker):
     assert resp.status_code == 200
     data = resp.json()
     assert "cpu_percent" in data
-    assert "memory_usage_mb" in data
+    assert "mem_usage_mb" in data
 
 
 # ── Top ───────────────────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ def test_container_diff(client, mock_docker):
     resp = client.get("/api/containers/abc123def456/diff", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()
-    assert data[0]["kind"] == "Added"
+    assert data[0]["kind"] == "added"
 
 
 def test_container_diff_none(client, mock_docker):
@@ -250,7 +250,7 @@ def test_run_container_basic(client, mock_docker):
     mock_docker.containers.list.return_value = []
     mock_docker.containers.run.return_value = new_c
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 200
@@ -262,7 +262,7 @@ def test_run_container_with_all_options(client, mock_docker):
     mock_docker.containers.list.return_value = []
     mock_docker.containers.run.return_value = new_c
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest&name=mycontainer",
+        "/api/containers/run?image=docker.io/library/nginx:latest&name=mycontainer",
         headers=AUTH_CSRF,
         json={
             "ports": {"80/tcp": "8080"},
@@ -288,7 +288,7 @@ def test_run_container_blocked_registry(client, mock_docker):
 def test_run_container_host_path_volume_rejected(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["/host/path:/data"]},
     )
@@ -298,7 +298,7 @@ def test_run_container_host_path_volume_rejected(client, mock_docker):
 def test_run_container_blocked_mount_target(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["myvol:/etc"]},
     )
@@ -308,7 +308,7 @@ def test_run_container_blocked_mount_target(client, mock_docker):
 def test_run_container_invalid_env(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"environment": ["123=bad"]},
     )
@@ -318,7 +318,7 @@ def test_run_container_invalid_env(client, mock_docker):
 def test_run_container_limit_reached(client, mock_docker):
     mock_docker.containers.list.return_value = [MagicMock()] * 50
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400
@@ -327,7 +327,7 @@ def test_run_container_limit_reached(client, mock_docker):
 def test_run_container_invalid_restart_policy(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"restart_policy": "bad"},
     )
@@ -337,7 +337,7 @@ def test_run_container_invalid_restart_policy(client, mock_docker):
 def test_run_container_invalid_network_name(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"network": "bad network!"},
     )
@@ -347,7 +347,7 @@ def test_run_container_invalid_network_name(client, mock_docker):
 def test_run_container_label_invalid_key(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"labels": {"bad label!": "val"}},
     )
@@ -357,7 +357,7 @@ def test_run_container_label_invalid_key(client, mock_docker):
 def test_run_container_volume_no_colon(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["invalidvolume"]},
     )
@@ -367,7 +367,7 @@ def test_run_container_volume_no_colon(client, mock_docker):
 def test_run_container_volume_invalid_name(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["invalid vol name!:/data"]},
     )

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as app_module
+import skiff.routers.system as system_module
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
 # ── System info ───────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ def test_prune_build_cache(client, mock_docker):
 
 def test_audit_log_file_not_exists(client, tmp_path):
     missing = tmp_path / "missing.jsonl"
-    with patch.object(app_module, "AUDIT_LOG_PATH", missing):
+    with patch.object(system_module, "AUDIT_LOG_PATH", missing):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.json() == []
@@ -73,7 +74,7 @@ def test_audit_log_file_exists(client, tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    with patch.object(app_module, "AUDIT_LOG_PATH", log_file):
+    with patch.object(system_module, "AUDIT_LOG_PATH", log_file):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()
@@ -82,7 +83,7 @@ def test_audit_log_file_exists(client, tmp_path):
 
 def test_download_audit_log_not_exists(client, tmp_path):
     missing = tmp_path / "missing.jsonl"
-    with patch.object(app_module, "AUDIT_LOG_PATH", missing):
+    with patch.object(system_module, "AUDIT_LOG_PATH", missing):
         resp = client.get("/api/system/audit-log/download", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.text == ""
@@ -91,7 +92,7 @@ def test_download_audit_log_not_exists(client, tmp_path):
 def test_download_audit_log_exists(client, tmp_path):
     log_file = tmp_path / "audit.jsonl"
     log_file.write_text('{"event":"test"}\n', encoding="utf-8")
-    with patch.object(app_module, "AUDIT_LOG_PATH", log_file):
+    with patch.object(system_module, "AUDIT_LOG_PATH", log_file):
         resp = client.get("/api/system/audit-log/download", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert "event" in resp.text
@@ -135,14 +136,14 @@ def test_health(client):
 
 def test_ready_docker_reachable(client, mock_docker):
     mock_docker.info.return_value = {"ServerVersion": "24.0.7", "ContainersRunning": 1}
-    with patch("app.get_client", return_value=mock_docker):
+    with patch("skiff.routers.system.get_client", return_value=mock_docker):
         resp = client.get("/ready")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ready"
 
 
 def test_ready_docker_unreachable(client):
-    with patch("app.get_client", side_effect=Exception("no docker")):
+    with patch("skiff.routers.system.get_client", side_effect=Exception("no docker")):
         resp = client.get("/ready")
     assert resp.status_code == 503
     assert resp.json()["status"] == "not_ready"

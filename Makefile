@@ -1,4 +1,4 @@
-.PHONY: help lint format security complexity test test-unit coverage clean ci
+.PHONY: help lint format security complexity test test-unit coverage clean ci deps
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -11,10 +11,10 @@ format:  ## Format and auto-fix with ruff
 	ruff check --fix skiff/ app.py tests/
 
 security:  ## Run ruff security rules (bandit equivalent)
-	ruff check --select S --ignore S110,S105,S603,S607 skiff/app.py
+	ruff check --select S --ignore S110,S105,S603,S607 skiff/ app.py
 
 complexity:  ## Check cyclomatic complexity
-	ruff check --select C90,PLR skiff/app.py
+	ruff check --select C90,PLR skiff/ app.py
 
 test:  ## Run all unit tests
 	pytest -v tests/
@@ -37,3 +37,6 @@ ci:  ## CI pipeline — lint + security + unit tests
 	$(MAKE) lint
 	$(MAKE) security
 	$(MAKE) test-unit
+
+deps:  ## Regenerate hash-pinned requirements.txt from pyproject.toml
+	pip-compile --generate-hashes --strip-extras -o requirements.txt pyproject.toml

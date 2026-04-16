@@ -32,7 +32,7 @@ def test_ready_ok(client):
 
 @pytest.mark.unit
 def test_ready_503_when_docker_unreachable(client):
-    with patch("app.get_client", side_effect=docker.errors.DockerException("no connection")):
+    with patch("skiff.routers.system.get_client", side_effect=docker.errors.DockerException("no connection")):
         resp = client.get("/ready")
     assert resp.status_code == 503
     assert resp.json()["status"] == "not_ready"

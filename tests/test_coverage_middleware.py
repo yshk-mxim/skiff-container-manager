@@ -125,7 +125,7 @@ def test_validate_container_name_invalid():
 
 def test_validate_image_registry_allowed():
     # Should not raise for allowed registry
-    validate_image_registry("us-docker.pkg.dev/p/r/img:latest")
+    validate_image_registry("docker.io/library/nginx:latest")
 
 
 def test_validate_image_registry_blocked():
@@ -142,9 +142,10 @@ def test_validate_image_registry_invalid_format():
 
 def test_validate_image_registry_short_name_no_docker_io():
     """Short names (nginx) rejected when docker.io not in allowed list."""
-    with pytest.raises(HTTPException) as exc:
-        validate_image_registry("nginx")
-    assert exc.value.status_code == 400
+    with patch.object(app_module._cfg, "allowed_registries", ["ghcr.io"]):
+        with pytest.raises(HTTPException) as exc:
+            validate_image_registry("nginx")
+        assert exc.value.status_code == 400
 
 
 def test_validate_image_registry_empty_allowed():
@@ -199,7 +200,7 @@ def test_validate_compose_file_blocked_truthy_false_allowed():
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     cap_add: false
 """
     # Should not raise
@@ -212,7 +213,7 @@ def test_validate_compose_volume_dict_format(tmp_path):
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     volumes:
       - source: /host/path
         target: /app

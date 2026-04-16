@@ -636,6 +636,12 @@ function connectLogsWS(id, attempt, allLines, viewer) {
   ws.onclose = function(evt) {
     if (ws !== viewer._ws) return;  // stale socket closed, ignore
     if (evt.code === 1000) return;  // clean close (navigation away or disconnect)
+    if (evt.code === 4003) {        // session expired — do not reconnect
+      allLines.push('\n[Session expired — please log in again]\n');
+      viewer.textContent = allLines.join('');
+      toast('Session expired — please log in again', 'error');
+      return;
+    }
     if (document.getElementById('log-output')) {
       allLines.push('\n[Reconnecting in '+(delay/1000)+'s...]\n');
       viewer.textContent += '\n[Reconnecting in '+(delay/1000)+'s...]\n';
@@ -699,6 +705,11 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
   ws.onclose = function(evt) {
     if (isClosed()) { term.textContent += '\r\n[Session ended]'; return; }
     if (evt.code === 1000) return;  // clean close
+    if (evt.code === 4003) {        // session expired — do not reconnect
+      term.textContent += '\r\n[Session expired — please log in again]';
+      toast('Session expired — please log in again', 'error');
+      return;
+    }
     if (document.getElementById('term-output')) {
       term.textContent += '\r\n[Reconnecting in ' + (delay / 1000) + 's...]\r\n';
       setTimeout(function() { connectExecWS(id, attempt + 1, term, input, el, isClosed, setClosed); }, delay);
@@ -1719,8 +1730,9 @@ function showSetupWizard(state) {
         '<input id="sw-host" type="hidden"/>' +
         '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">API TOKEN</label>' +
         '<div style="display:flex;gap:8px;margin-bottom:16px;">' +
-          '<input id="sw-token" type="text" readonly style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:13px;font-family:monospace;outline:none;" placeholder="Click Generate \u2192"/>' +
+          '<input id="sw-token" type="password" readonly style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:13px;font-family:monospace;outline:none;" placeholder="Click Generate \u2192"/>' +
           '<button id="sw-gen-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Generate</button>' +
+          '<button id="sw-copy-btn" style="background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:10px 14px;cursor:pointer;font-size:13px;white-space:nowrap;">Copy</button>' +
         '</div>' +
         '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">ALLOWED REGISTRIES <span style="color:#64748b;font-weight:400;">(comma-separated, empty = allow all)</span></label>' +
         '<input id="sw-regs" type="text" value="" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:24px;outline:none;" placeholder="docker.io,ghcr.io,us-docker.pkg.dev/my-project/"/>' +
@@ -1739,6 +1751,15 @@ function showSetupWizard(state) {
     document.getElementById('sw-tunnel-btn').addEventListener('click', swConnectTunnel);
     document.getElementById('sw-gen-btn').addEventListener('click', function() {
         document.getElementById('sw-token').value = Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    });
+    document.getElementById('sw-copy-btn').addEventListener('click', function() {
+        var val = document.getElementById('sw-token').value;
+        if (!val) { return; }
+        navigator.clipboard.writeText(val).then(function() {
+            var btn = document.getElementById('sw-copy-btn');
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+        });
     });
     document.getElementById('sw-btn-save').addEventListener('click', function() { swSubmit(true); });
     document.getElementById('sw-btn-session').addEventListener('click', function() { swSubmit(false); });
@@ -1793,6 +1814,9 @@ async function swConnectTunnel() {
             statusEl.style.color = '#4ade80';
             statusEl.textContent = '\u2713 Tunnel active \u2014 ' + d.socket_path;
             document.getElementById('sw-host').value = d.docker_host;
+            // Clear tunnel credentials — they have served their purpose
+            sessionStorage.removeItem('tunnelUser');
+            sessionStorage.removeItem('tunnelHost');
         }
     } catch (e) {
         statusEl.style.color = '#f87171';

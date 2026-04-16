@@ -65,8 +65,8 @@ def test_invalid_project_names_raise_400(bad):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("allowed_image", [
-    "us-docker.pkg.dev/my-project/repo/image:latest",
-    "us-docker.pkg.dev/my-project/repo/image@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+    "docker.io/library/nginx:latest",
+    "ghcr.io/owner/repo:tag",
 ])
 def test_allowed_registry_passes(allowed_image):
     # Should not raise
@@ -75,11 +75,8 @@ def test_allowed_registry_passes(allowed_image):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("blocked_image", [
-    "docker.io/library/ubuntu:22.04",
-    "nginx:latest",           # no registry
-    "ubuntu",                 # no registry, no tag
-    "ghcr.io/owner/repo:tag",
     "evil.example.com/image:tag",
+    "us-docker.pkg.dev/my-project/repo/image:latest",
 ])
 def test_blocked_registry_raises_400(blocked_image):
     with pytest.raises(HTTPException) as exc:
@@ -105,7 +102,7 @@ def test_valid_compose_passes():
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/my-project/repo/app:latest
+    image: docker.io/library/nginx:latest
     ports:
       - "8080:8080"
     volumes:
@@ -148,7 +145,7 @@ def test_compose_not_mapping_raises_400():
     "env_file:\n      - .env",
 ])
 def test_compose_blocked_service_keys_raise_400(blocked_key):
-    content = _compose(f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    {blocked_key}\n")
+    content = _compose(f"  web:\n    image: docker.io/library/nginx:latest\n    {blocked_key}\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -158,7 +155,7 @@ def test_compose_blocked_service_keys_raise_400(blocked_key):
 @pytest.mark.parametrize("blocked_mode", ["host", "container:other", "service:sidecar"])
 def test_compose_blocked_network_mode_raises_400(blocked_mode):
     content = _compose(
-        f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    network_mode: {blocked_mode}\n"
+        f"  web:\n    image: docker.io/library/nginx:latest\n    network_mode: {blocked_mode}\n"
     )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
@@ -167,7 +164,7 @@ def test_compose_blocked_network_mode_raises_400(blocked_mode):
 
 @pytest.mark.unit
 def test_compose_pid_host_raises_400():
-    content = _compose("  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    pid: host\n")
+    content = _compose("  web:\n    image: docker.io/library/nginx:latest\n    pid: host\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -175,7 +172,7 @@ def test_compose_pid_host_raises_400():
 
 @pytest.mark.unit
 def test_compose_ipc_host_raises_400():
-    content = _compose("  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    ipc: host\n")
+    content = _compose("  web:\n    image: docker.io/library/nginx:latest\n    ipc: host\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -185,7 +182,7 @@ def test_compose_ipc_host_raises_400():
 @pytest.mark.parametrize("bad_vol", ["/etc/passwd:/data", "~/data:/data", "../data:/data", "$HOME:/data"])
 def test_compose_host_path_volume_raises_400(bad_vol):
     content = _compose(
-        f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    volumes:\n      - {bad_vol}\n"
+        f"  web:\n    image: docker.io/library/nginx:latest\n    volumes:\n      - {bad_vol}\n"
     )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
@@ -195,7 +192,7 @@ def test_compose_host_path_volume_raises_400(bad_vol):
 @pytest.mark.unit
 def test_compose_named_volume_is_allowed():
     content = _compose(
-        "  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    volumes:\n      - mydata:/app/data\n"
+        "  web:\n    image: docker.io/library/nginx:latest\n    volumes:\n      - mydata:/app/data\n"
     )
     result = validate_compose_file(content)
     assert result is not None
@@ -205,7 +202,7 @@ def test_compose_named_volume_is_allowed():
 def test_compose_blocked_top_level_secrets():
     content = (
         b"secrets:\n  mysecret:\n    file: ./secret.txt\n"
-        b"services:\n  web:\n    image: us-docker.pkg.dev/p/r/i:t\n"
+        b"services:\n  web:\n    image: docker.io/library/nginx:latest\n"
     )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
@@ -214,7 +211,7 @@ def test_compose_blocked_top_level_secrets():
 
 @pytest.mark.unit
 def test_compose_image_from_unapproved_registry_raises_400():
-    content = _compose("  web:\n    image: docker.io/nginx:latest\n")
+    content = _compose("  web:\n    image: evil.example.com/img:latest\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400

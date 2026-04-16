@@ -24,7 +24,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 make test-unit
 
-# E2e tests (needs Docker tunnel + browser)
+# E2e tests (needs Docker daemon accessible + browser)
 pip install -e .[dev,e2e]
 playwright install chromium
 make test-e2e
@@ -52,7 +52,7 @@ API_TOKEN="" DOCKER_HOST="ssh://dev@docker-vm" uvicorn skiff.app:app --reload --
 ```bash
 make lint        # ruff check
 make format      # ruff format + auto-fix
-make security    # bandit-equivalent security rules
+make security    # ruff --select S security rules
 make test-unit   # fast unit tests, no Docker required
 ```
 

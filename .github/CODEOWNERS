@@ -1,0 +1,4 @@
+# Require review for all CI/security workflow changes, and dependency files
+/.github/           @yshk-mxim
+/pyproject.toml     @yshk-mxim
+/requirements.txt   @yshk-mxim

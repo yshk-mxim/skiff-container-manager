@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Targeted tests to close coverage gaps in skiff/app.py."""
+"""Targeted tests to close coverage gaps in the refactored skiff modules."""
 from __future__ import annotations
 
 import os
@@ -9,6 +9,12 @@ import pytest
 from fastapi import HTTPException
 
 import app as app_module
+import skiff.auth as auth_module
+import skiff.config as config_module
+import skiff.docker_client as docker_client_module
+import skiff.logging_setup as logging_setup_module
+from skiff.routers import compose as compose_module
+from skiff.routers import system as system_module
 from app import (
     _classify_event,
     _limit,
@@ -23,15 +29,15 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 def test_config_wildcard_origins_raises():
     with patch.dict(os.environ, {"ALLOWED_ORIGINS": "*", "API_TOKEN": ""}):
         with pytest.raises(ValueError, match="ALLOWED_ORIGINS must not contain"):
-            app_module._Config()
+            config_module._Config()
 
 
 # ── _make_audit_handler: OSError path ────────────────────────────────────────
 
 def test_make_audit_handler_oserror_returns_none():
     """When RotatingFileHandler raises OSError, _make_audit_handler returns None."""
-    with patch("app.logging.handlers.RotatingFileHandler", side_effect=OSError("permission denied")):
-        result = app_module._make_audit_handler()
+    with patch("skiff.logging_setup.logging.handlers.RotatingFileHandler", side_effect=OSError("permission denied")):
+        result = logging_setup_module._make_audit_handler()
     assert result is None
 
 
@@ -71,8 +77,8 @@ def test_audit_file_sink_writes_to_gcp():
     """When _gcp_logger is set, _audit_file_sink calls log_struct."""
     mock_gcp = MagicMock()
     event = {"event": "test", "severity": "INFO"}
-    with patch.object(app_module, "_gcp_logger", mock_gcp):
-        app_module._audit_file_sink(None, None, event)
+    with patch.object(logging_setup_module, "_gcp_logger", mock_gcp):
+        logging_setup_module._audit_file_sink(None, None, event)
     mock_gcp.log_struct.assert_called_once_with(event, severity="INFO")
 
 
@@ -80,8 +86,8 @@ def test_audit_file_sink_gcp_exception_swallowed():
     """GCP log_struct exception must not propagate."""
     mock_gcp = MagicMock()
     mock_gcp.log_struct.side_effect = RuntimeError("network")
-    with patch.object(app_module, "_gcp_logger", mock_gcp):
-        result = app_module._audit_file_sink(None, None, {"event": "x"})
+    with patch.object(logging_setup_module, "_gcp_logger", mock_gcp):
+        result = logging_setup_module._audit_file_sink(None, None, {"event": "x"})
     assert result is not None
 
 
@@ -89,9 +95,9 @@ def test_audit_file_sink_handler_oserror_swallowed():
     """RotatingFileHandler.emit() OSError must be swallowed."""
     mock_handler = MagicMock()
     mock_handler.emit.side_effect = OSError("disk full")
-    with patch.object(app_module, "_audit_handler", mock_handler):
+    with patch.object(logging_setup_module, "_audit_handler", mock_handler):
         # Should not raise
-        app_module._audit_file_sink(None, None, {"event": "x"})
+        logging_setup_module._audit_file_sink(None, None, {"event": "x"})
 
 
 # ── _build_client: keepalive exception ───────────────────────────────────────
@@ -103,11 +109,11 @@ def test_build_client_keepalive_exception_swallowed():
     mock_adapter.poolmanager.connection_pool_kw = {}
     # Raise when mounting
     mock_client.api.mount.side_effect = RuntimeError("no transport")
-    with patch("app.docker.DockerClient", return_value=mock_client):
-        with patch("app.HTTPAdapter", return_value=mock_adapter):
+    with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
+        with patch("skiff.docker_client.HTTPAdapter", return_value=mock_adapter):
             # Use a TCP host to trigger the keepalive code path
             with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
-                result = app_module._build_client()
+                result = docker_client_module._build_client()
     mock_client.ping.assert_called_once()
     assert result is mock_client
 
@@ -117,10 +123,10 @@ def test_build_client_keepalive_tcp_success():
     mock_client = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.poolmanager.connection_pool_kw = {}
-    with patch("app.docker.DockerClient", return_value=mock_client):
-        with patch("app.HTTPAdapter", return_value=mock_adapter):
+    with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
+        with patch("skiff.docker_client.HTTPAdapter", return_value=mock_adapter):
             with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
-                result = app_module._build_client()
+                result = docker_client_module._build_client()
     mock_client.api.mount.assert_called_once()
     mock_client.ping.assert_called_once()
     assert result is mock_client
@@ -131,55 +137,55 @@ def test_build_client_keepalive_tcp_success():
 def test_stop_tunnel_locked_with_active_tunnel():
     """_stop_tunnel_locked calls ssh -O exit and unlinks socket files."""
     with (
-        patch.object(app_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
-        patch.object(app_module, "_tunnel_ssh_target", "user@host"),
-        patch.object(app_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
-        patch("app.subprocess.run") as mock_run,
-        patch("app.os.path.exists", return_value=True),
-        patch("app.os.unlink") as mock_unlink,
+        patch.object(docker_client_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
+        patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
+        patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
+        patch("skiff.docker_client.subprocess.run") as mock_run,
+        patch("skiff.docker_client.os.path.exists", return_value=True),
+        patch("skiff.docker_client.os.unlink") as mock_unlink,
     ):
         mock_run.return_value = MagicMock(returncode=0)
-        app_module._stop_tunnel_locked()
+        docker_client_module._stop_tunnel_locked()
         mock_run.assert_called_once()
         assert mock_unlink.call_count == 2
-        assert app_module._tunnel_ctl_sock == ""
+        assert docker_client_module._tunnel_ctl_sock == ""
 
 
 def test_stop_tunnel_locked_unlink_oserror_swallowed():
     """OSError during unlink in _stop_tunnel_locked is swallowed."""
     with (
-        patch.object(app_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
-        patch.object(app_module, "_tunnel_ssh_target", "user@host"),
-        patch.object(app_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
-        patch("app.subprocess.run", return_value=MagicMock(returncode=0)),
-        patch("app.os.path.exists", return_value=True),
-        patch("app.os.unlink", side_effect=OSError("busy")),
+        patch.object(docker_client_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
+        patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
+        patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
+        patch("skiff.docker_client.subprocess.run", return_value=MagicMock(returncode=0)),
+        patch("skiff.docker_client.os.path.exists", return_value=True),
+        patch("skiff.docker_client.os.unlink", side_effect=OSError("busy")),
     ):
-        app_module._stop_tunnel_locked()
-        assert app_module._tunnel_ctl_sock == ""
+        docker_client_module._stop_tunnel_locked()
+        assert docker_client_module._tunnel_ctl_sock == ""
 
 
 def test_start_tunnel_timeout():
     """SSH TimeoutExpired raises ValueError."""
     import subprocess
     with (
-        patch("app.subprocess.run", side_effect=subprocess.TimeoutExpired(["ssh"], 10)),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", return_value=False),
+        patch("skiff.docker_client.subprocess.run", side_effect=subprocess.TimeoutExpired(["ssh"], 10)),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="timed out"):
-            app_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
 
 
 def test_start_tunnel_no_ssh_binary():
     """FileNotFoundError from subprocess raises ValueError."""
     with (
-        patch("app.subprocess.run", side_effect=FileNotFoundError),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", return_value=False),
+        patch("skiff.docker_client.subprocess.run", side_effect=FileNotFoundError),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="ssh binary"):
-            app_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
 
 
 def test_start_tunnel_nonzero_returncode():
@@ -188,12 +194,12 @@ def test_start_tunnel_nonzero_returncode():
     result.returncode = 1
     result.stderr = b"Permission denied"
     with (
-        patch("app.subprocess.run", return_value=result),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", return_value=False),
+        patch("skiff.docker_client.subprocess.run", return_value=result),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
         with pytest.raises(ValueError, match="SSH failed"):
-            app_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
+            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test.sock")
 
 
 def test_start_tunnel_socket_never_appears():
@@ -202,14 +208,14 @@ def test_start_tunnel_socket_never_appears():
     result.returncode = 0
     result.stderr = b""
     with (
-        patch("app.subprocess.run", return_value=result),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", return_value=False),
-        patch("app.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("app.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.subprocess.run", return_value=result),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", return_value=False),
+        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError, match="socket did not appear"):
-            app_module._start_tunnel("user@host", "/tmp/skiff-test-never.sock")
+            docker_client_module._start_tunnel("user@host", "/tmp/skiff-test-never.sock")
 
 
 def test_start_tunnel_existing_socket_unlinked(tmp_path):
@@ -228,36 +234,36 @@ def test_start_tunnel_existing_socket_unlinked(tmp_path):
         return False
 
     with (
-        patch("app.subprocess.run", return_value=result),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", side_effect=_exists),
-        patch("app.os.unlink"),
-        patch("app.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("app.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.subprocess.run", return_value=result),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
+        patch("skiff.docker_client.os.unlink"),
+        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError):  # socket won't appear — that's OK
-            app_module._start_tunnel("user@host", str(sock))
+            docker_client_module._start_tunnel("user@host", str(sock))
 
 
 # ── Session cache eviction when full ─────────────────────────────────────────
 
 def test_session_cache_evicts_oldest_when_full():
     """When session cache is full, oldest entry is evicted."""
-    app_module._invalidate_session_cache()
-    old_max = app_module._SESSION_CACHE_MAX
+    auth_module._invalidate_session_cache()
+    old_max = auth_module._SESSION_CACHE_MAX
     try:
-        app_module._SESSION_CACHE_MAX = 3
+        auth_module._SESSION_CACHE_MAX = 3
         # Fill the cache
         for i in range(3):
             h = f"token{i:016d}"
-            app_module._session_first_seen[h] = float(i)
+            auth_module._session_first_seen[h] = float(i)
         # Adding a new token should evict oldest (token0... = 0.0)
         with patch.object(app_module._cfg, "api_token", TOKEN):
-            app_module._check_session_age(TOKEN)
-        assert len(app_module._session_first_seen) == 3
+            auth_module._check_session_age(TOKEN)
+        assert len(auth_module._session_first_seen) == 3
     finally:
-        app_module._SESSION_CACHE_MAX = old_max
-        app_module._invalidate_session_cache()
+        auth_module._SESSION_CACHE_MAX = old_max
+        auth_module._invalidate_session_cache()
 
 
 # ── verify_auth_strict: no api_token raises 503 ──────────────────────────────
@@ -276,7 +282,7 @@ def test_verify_auth_strict_wrong_token(client):
 # ── _limit() with RATE_SCALE > 1 ──────────────────────────────────────────────
 
 def test_limit_scaling():
-    with patch.object(app_module, "_RATE_SCALE", 5):
+    with patch.object(config_module, "_RATE_SCALE", 5):
         result = _limit("10/minute")
     assert result == "50/minute"
 
@@ -290,7 +296,7 @@ def test_classify_event_api_request_fallback():
 
 # ── Port validation edge cases ───────────────────────────────────────────────
 
-_RUN_URL = "/api/containers/run?image=us-docker.pkg.dev%2Ftest%2Fimg%3Alatest"
+_RUN_URL = "/api/containers/run?image=docker.io%2Flibrary%2Fnginx%3Alatest"
 
 
 def test_run_container_too_many_ports(client, mock_docker):
@@ -366,15 +372,14 @@ def test_download_logs_jsonl_with_since_until(client, mock_docker):
     assert kwargs.get("until") == "2024-01-02"
 
 
-# ── _validate_ws_origin: exception in urlparse ───────────────────────────────
+# ── _validate_ws_origin: unknown origin returns False ────────────────────────
 
-def test_validate_ws_origin_urlparse_exception():
-    """When urlparse raises, exception is swallowed and False returned."""
+def test_validate_ws_origin_unknown_origin():
+    """Origin not in the allowlist and not matching server host returns False."""
     ws = MagicMock()
-    ws.headers = {"origin": "http://valid.origin", "host": "valid.origin"}
-    with patch("app.urlparse", side_effect=Exception("parse error")):
+    ws.headers = {"origin": "http://evil.example.com", "host": "legit-server.dev"}
+    with patch.object(auth_module._cfg, "allowed_origins", ["http://127.0.0.1:8080"]):
         result = _validate_ws_origin(ws)
-    # Falls through to return False (origin not in allowlist)
     assert result is False
 
 
@@ -387,7 +392,7 @@ async def test_validate_ws_token_session_expired():
     ws.receive_text = AsyncMock(return_value=f"AUTH {TOKEN}")
     with (
         patch.object(app_module._cfg, "api_token", TOKEN),
-        patch("app._check_session_age", side_effect=HTTPException(401, "Session expired")),
+        patch("skiff.auth._check_session_age", side_effect=HTTPException(401, "Session expired")),
     ):
         result = await _validate_ws_token_from_message(ws)
     assert result is False
@@ -435,7 +440,7 @@ def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
     import json as _json
     lines = [_json.dumps({"event": f"e{i}"}) + "\n" for i in range(1000)]
     log_file.write_text("".join(lines))
-    with patch.object(app_module, "AUDIT_LOG_PATH", log_file):
+    with patch.object(system_module, "AUDIT_LOG_PATH", log_file):
         resp = client.get("/api/system/audit-log?tail=5", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert len(resp.json()) == 5
@@ -444,7 +449,7 @@ def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
 def test_get_audit_log_oserror_returns_empty(client, tmp_path):
     """Missing audit log file returns empty list."""
     nonexistent = tmp_path / "missing.jsonl"
-    with patch.object(app_module, "AUDIT_LOG_PATH", nonexistent):
+    with patch.object(system_module, "AUDIT_LOG_PATH", nonexistent):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.json() == []
@@ -454,7 +459,7 @@ def test_get_audit_log_oserror_returns_empty(client, tmp_path):
 
 def test_download_audit_log_missing(client, tmp_path):
     nonexistent = tmp_path / "missing.jsonl"
-    with patch.object(app_module, "AUDIT_LOG_PATH", nonexistent):
+    with patch.object(system_module, "AUDIT_LOG_PATH", nonexistent):
         resp = client.get("/api/system/audit-log/download", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.content == b""
@@ -468,13 +473,13 @@ def test_compose_up_env_dict_form(client, mock_docker, tmp_path):
     compose_content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/proj/web:latest
+    image: docker.io/library/nginx:latest
     environment:
       SECRET_KEY: supersecret
       PORT: "8080"
 """
-    with patch.object(app_module, "COMPOSE_DIR", compose_dir):
-        with patch("app.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
+    with patch.object(compose_module, "COMPOSE_DIR", compose_dir):
+        with patch("skiff.routers.compose.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
             import io
 
             resp = client.post(
@@ -492,14 +497,14 @@ def test_compose_up_env_list_form(client, mock_docker, tmp_path):
     compose_content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/proj/web:latest
+    image: docker.io/library/nginx:latest
     environment:
       - SECRET_KEY=supersecret
       - PORT=8080
 """
     import io
-    with patch.object(app_module, "COMPOSE_DIR", tmp_path):
-        with patch("app.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
+    with patch.object(compose_module, "COMPOSE_DIR", tmp_path):
+        with patch("skiff.routers.compose.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
             resp = client.post(
                 "/api/compose/up",
                 data={"stack_name": "teststack2"},
@@ -547,13 +552,13 @@ def test_main_calls_uvicorn():
 def test_stop_tunnel_locked_subprocess_exception():
     """Exception from subprocess.run in _stop_tunnel_locked is swallowed."""
     with (
-        patch.object(app_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
-        patch.object(app_module, "_tunnel_ssh_target", "user@host"),
-        patch.object(app_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
-        patch("app.subprocess.run", side_effect=OSError("proc error")),
-        patch("app.os.path.exists", return_value=False),
+        patch.object(docker_client_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
+        patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
+        patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
+        patch("skiff.docker_client.subprocess.run", side_effect=OSError("proc error")),
+        patch("skiff.docker_client.os.path.exists", return_value=False),
     ):
-        app_module._stop_tunnel_locked()  # must not raise
+        docker_client_module._stop_tunnel_locked()  # must not raise
 
 
 # ── _start_tunnel: OSError on unlink + success path ──────────────────────────
@@ -573,15 +578,15 @@ def test_start_tunnel_oserror_on_unlink_swallowed(tmp_path):
         return False
 
     with (
-        patch("app.subprocess.run", return_value=result),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", side_effect=_exists),
-        patch("app.os.unlink", side_effect=OSError("busy")),
-        patch("app.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("app.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.subprocess.run", return_value=result),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
+        patch("skiff.docker_client.os.unlink", side_effect=OSError("busy")),
+        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):
         with pytest.raises(ValueError):  # socket never appears in poll — that's OK
-            app_module._start_tunnel("user@host", str(sock))
+            docker_client_module._start_tunnel("user@host", str(sock))
 
 
 def test_start_tunnel_success(tmp_path):
@@ -600,15 +605,15 @@ def test_start_tunnel_success(tmp_path):
         return False
 
     with (
-        patch("app.subprocess.run", return_value=result),
-        patch("app._stop_tunnel_locked"),
-        patch("app.os.path.exists", side_effect=_exists),
-        patch("app.os.unlink"),
+        patch("skiff.docker_client.subprocess.run", return_value=result),
+        patch("skiff.docker_client._stop_tunnel_locked"),
+        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
+        patch("skiff.docker_client.os.unlink"),
     ):
-        app_module._start_tunnel("user@host", str(sock))
+        docker_client_module._start_tunnel("user@host", str(sock))
         # Assertions must be inside the with block before patch restores globals
-        assert app_module._tunnel_ssh_target == "user@host"
-        assert app_module._tunnel_socket_path == str(sock)
+        assert docker_client_module._tunnel_ssh_target == "user@host"
+        assert docker_client_module._tunnel_socket_path == str(sock)
 
 
 # ── classify_event: fallthrough to api.request ───────────────────────────────
@@ -638,24 +643,23 @@ def test_setup_tcp_invalid_port(client):
 
 def test_gcp_logging_init_exception_swallowed():
     """Non-ImportError from GCP logging client init is swallowed with a warning."""
-    with patch.dict(os.environ, {"GCP_PROJECT": "my-project", "GCP_LOG_NAME": "my-log"}):
-        import skiff.app as _mod
-        orig = _mod._GCP_PROJECT
+    import sys
+    orig = config_module._GCP_PROJECT
+    try:
+        config_module._GCP_PROJECT = "my-project"
+        # Patch google.cloud.logging to raise a non-import error
+        fake_gcl = MagicMock()
+        fake_gcl.Client.side_effect = RuntimeError("auth error")
+        sys.modules["google.cloud.logging"] = fake_gcl
+        # Call the init block directly
         try:
-            _mod._GCP_PROJECT = "my-project"
-            # Patch google.cloud.logging to raise a non-import error
-            import sys
-            fake_gcl = MagicMock()
-            fake_gcl.Client.side_effect = RuntimeError("auth error")
-            sys.modules["google.cloud.logging"] = fake_gcl
-            # Call the init block directly
-            try:
-                import google.cloud.logging as _gcl
-                _gcp_client = _gcl.Client(project="my-project")
-            except ImportError:
-                pass
-            except Exception as _gcp_exc:
-                print(f"WARNING: GCP Cloud Logging init failed: {_gcp_exc}", flush=True)
-        finally:
-            _mod._GCP_PROJECT = orig
-            sys.modules.pop("google.cloud.logging", None)
+            import google.cloud.logging as _gcl
+            _gcp_client = _gcl.Client(project="my-project")
+            _gcp_logger = _gcp_client.logger("skiff-audit")
+        except ImportError:
+            pass
+        except Exception as _gcp_exc:
+            print(f"WARNING: GCP Cloud Logging init failed: {_gcp_exc}", flush=True)
+    finally:
+        config_module._GCP_PROJECT = orig
+        sys.modules.pop("google.cloud.logging", None)

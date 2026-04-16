@@ -55,7 +55,7 @@ export DOCKER_VM_HOST="docker-vm.internal"
 |---|---|---|
 | `API_TOKEN` | _(none)_ | Yes |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Yes (set to tunnel socket) |
-| `ALLOWED_REGISTRIES` | `us-docker.pkg.dev/` | Recommended |
+| `ALLOWED_REGISTRIES` | `docker.io,ghcr.io` | Recommended |
 | `ALLOWED_ORIGINS` | `http://127.0.0.1:8080` | Yes (set to your workstation URL) |
 | `BIND_HOST` | `127.0.0.1` | No |
 | `PORT` | `8080` | No |
@@ -69,7 +69,7 @@ export DOCKER_VM_HOST="docker-vm.internal"
 ## Security Checklist
 
 - [ ] `API_TOKEN` is set and not empty.
-- [ ] `ALLOWED_REGISTRIES` is scoped to your project (e.g., `us-docker.pkg.dev/my-project/`).
+- [ ] `ALLOWED_REGISTRIES` is scoped to the registries your project actually uses (e.g., `ghcr.io/myorg/`).
 - [ ] `ALLOWED_ORIGINS` is set to the actual Cloud Workstation URL (wildcards `*` are rejected at startup).
 - [ ] `AUDIT_LOG` is set to a writable path or the default `/var/log/skiff-audit.jsonl` is writable.
 - [ ] SSH key for `DOCKER_HOST` is restricted to the Docker VM only.

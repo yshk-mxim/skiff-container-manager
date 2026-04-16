@@ -7,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import skiff.app as app_module
-from skiff.app import _classify_event, app
+import skiff.auth as auth_module
+from skiff.app import app
+from skiff.logging_setup import _classify_event
 
 AUTH = {"Authorization": "Bearer testtoken1234567890"}
 CSRF = {"X-Requested-With": "ContainerManager"}
@@ -77,7 +79,7 @@ def test_session_rejected_after_timeout(client, monkeypatch):
     client.get("/api/containers", headers=AUTH)
 
     # Fast-forward past the absolute timeout
-    monkeypatch.setattr(app_module, "SESSION_ABS_TIMEOUT", -1)
+    monkeypatch.setattr(auth_module, "SESSION_ABS_TIMEOUT", -1)
 
     r = client.get("/api/containers", headers=AUTH)
     assert r.status_code == 401
@@ -88,11 +90,11 @@ def test_session_rejected_after_timeout(client, monkeypatch):
 def test_session_cache_cleared_on_reconfigure(client, monkeypatch):
     # Seed a session
     client.get("/api/containers", headers=AUTH)
-    assert TOKEN[:16] in str(app_module._session_first_seen) or len(app_module._session_first_seen) > 0
+    assert TOKEN[:16] in str(auth_module._session_first_seen) or len(auth_module._session_first_seen) > 0
 
     # Clearing the cache (token rotation simulation)
-    app_module._invalidate_session_cache()
-    assert len(app_module._session_first_seen) == 0
+    auth_module._invalidate_session_cache()
+    assert len(auth_module._session_first_seen) == 0
 
 
 # ── X-Forwarded-User logged ────────────────────────────────────────────────

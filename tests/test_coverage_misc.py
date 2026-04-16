@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import app as app_module
+import skiff.docker_client as docker_client_module
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
 # ── list_containers: image exception branch ───────────────────────────────────
@@ -38,7 +39,7 @@ def test_run_container_with_command(client, mock_docker):
     mock_docker.containers.list.return_value = []
     mock_docker.containers.run.return_value = new_c
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"command": "echo hello"},
     )
@@ -56,7 +57,7 @@ def test_run_container_with_labels(client, mock_docker):
     mock_docker.containers.list.return_value = []
     mock_docker.containers.run.return_value = new_c
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"labels": {"app": "myapp", "version": "1.0"}},
     )
@@ -66,7 +67,7 @@ def test_run_container_with_labels(client, mock_docker):
 def test_run_container_label_value_too_long(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"labels": {"mykey": "x" * 4097}},
     )
@@ -142,7 +143,7 @@ def test_compose_stacks_stopped_status(client, mock_docker):
 def test_pull_image_timeout(client, mock_docker):
     with patch("asyncio.wait_for", side_effect=TimeoutError("timeout")):
         resp = client.post(
-            "/api/images/pull?image=us-docker.pkg.dev/p/r/img:latest",
+            "/api/images/pull?image=docker.io/library/nginx:latest",
             headers=AUTH_CSRF,
         )
     assert resp.status_code == 504
@@ -153,7 +154,7 @@ def test_pull_image_timeout(client, mock_docker):
 def test_push_image_timeout(client, mock_docker):
     with patch("asyncio.wait_for", side_effect=TimeoutError("timeout")):
         resp = client.post(
-            "/api/images/push?image=us-docker.pkg.dev/p/r/img:latest",
+            "/api/images/push?image=docker.io/library/nginx:latest",
             headers=AUTH_CSRF,
         )
     assert resp.status_code == 504
@@ -163,7 +164,7 @@ def test_push_image_api_error(client, mock_docker):
     import docker.errors
     mock_docker.images.push.side_effect = docker.errors.APIError("push failed")
     resp = client.post(
-        "/api/images/push?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/push?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400
@@ -191,10 +192,10 @@ def test_get_client_stale_close_exception():
     mock_new.ping.return_value = True
 
     with (
-        patch.object(app_module, "_client", mock_client),
-        patch.object(app_module, "_client_last_ping", 0.0),
-        patch.object(app_module, "_client_failed_at", 0.0),
-        patch("app._build_client", return_value=mock_new),
+        patch.object(docker_client_module, "_client", mock_client),
+        patch.object(docker_client_module, "_client_last_ping", 0.0),
+        patch.object(docker_client_module, "_client_failed_at", 0.0),
+        patch("skiff.docker_client._build_client", return_value=mock_new),
     ):
         result = app_module.get_client()
         assert result is mock_new
@@ -363,7 +364,7 @@ def test_push_image_non_json_output(client, mock_docker):
     """Push output with non-JSON lines should be silently ignored."""
     mock_docker.images.push.return_value = "this is not json\n"
     resp = client.post(
-        "/api/images/push?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/push?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 200
@@ -381,10 +382,10 @@ def test_compose_up_symlink_traversal(client, tmp_path):
     (tmp_path / "compose").mkdir()
     link_target.symlink_to(outside)
 
-    with patch("app.COMPOSE_DIR", tmp_path / "compose"):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path / "compose"):
         # The symlink "evil" resolves to outside compose dir
         import io
-        valid_content = b"services:\n  web:\n    image: us-docker.pkg.dev/p/r/img:latest\n"
+        valid_content = b"services:\n  web:\n    image: docker.io/library/nginx:latest\n"
         resp = client.post(
             "/api/compose/up?project_name=evil",
             headers=AUTH_CSRF,

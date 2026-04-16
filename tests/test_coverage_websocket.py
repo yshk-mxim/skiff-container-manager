@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import app as app_module
+import skiff.docker_client as docker_client_module
 from app import _invalidate_client, _validate_ws_origin, _validate_ws_token_from_message
 from tests.conftest import AUTH_HEADER, TOKEN
 
@@ -100,26 +101,26 @@ async def test_validate_ws_token_exception_returns_false():
 def test_invalidate_client_closes_and_nones():
     mock_client = MagicMock()
     with (
-        patch.object(app_module, "_client", mock_client),
-        patch.object(app_module, "_client_last_ping", 999.0),
+        patch.object(docker_client_module, "_client", mock_client),
+        patch.object(docker_client_module, "_client_last_ping", 999.0),
     ):
         _invalidate_client()
         mock_client.close.assert_called_once()
-        assert app_module._client is None
-        assert app_module._client_last_ping == 0.0
+        assert docker_client_module._client is None
+        assert docker_client_module._client_last_ping == 0.0
 
 
 def test_invalidate_client_close_exception_swallowed():
     mock_client = MagicMock()
     mock_client.close.side_effect = Exception("close failed")
-    with patch.object(app_module, "_client", mock_client):
+    with patch.object(docker_client_module, "_client", mock_client):
         # Should not raise
         _invalidate_client()
-        assert app_module._client is None
+        assert docker_client_module._client is None
 
 
 def test_invalidate_client_none_client():
-    with patch.object(app_module, "_client", None):
+    with patch.object(docker_client_module, "_client", None):
         # Should not raise
         _invalidate_client()
 
@@ -172,7 +173,7 @@ def test_build_client_calls_ping():
     """_build_client creates a DockerClient and pings it."""
     from app import _build_client
     mock_client = MagicMock()
-    with patch("app.docker.DockerClient", return_value=mock_client):
+    with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
         result = _build_client()
         mock_client.ping.assert_called_once()
         assert result is mock_client
@@ -185,8 +186,8 @@ def test_get_client_existing_ping_success():
     mock_client = MagicMock()
     mock_client.ping.return_value = True
     with (
-        patch.object(app_module, "_client", mock_client),
-        patch.object(app_module, "_client_last_ping", 0.0),  # very stale
+        patch.object(docker_client_module, "_client", mock_client),
+        patch.object(docker_client_module, "_client_last_ping", 0.0),  # very stale
     ):
         result = app_module.get_client()
         mock_client.ping.assert_called_once()

@@ -11,7 +11,7 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER
 def _make_container(
     short_id="abc123def",
     name="my-service",
-    image_tag="us-docker.pkg.dev/p/r/i:t",
+    image_tag="docker.io/library/nginx:latest",
     status="running",
     state_status="running",
     ports=None,
@@ -142,7 +142,7 @@ def test_logs_tail_too_large_clamped(client, mock_docker):
 def test_run_container_blocked_registry(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=docker.io/nginx:latest",
+        "/api/containers/run?image=evil.example.com/img:latest",
         headers=AUTH_CSRF,
         json={},
     )
@@ -153,7 +153,7 @@ def test_run_container_blocked_registry(client, mock_docker):
 def test_run_container_host_path_volume_blocked(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["/etc:/etc"]},
     )
@@ -164,7 +164,7 @@ def test_run_container_host_path_volume_blocked(client, mock_docker):
 def test_run_container_invalid_env_format(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"environment": ["NOEQUALSIGN"]},
     )
@@ -175,7 +175,7 @@ def test_run_container_invalid_env_format(client, mock_docker):
 def test_run_container_invalid_restart_policy(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"restart_policy": "never"},
     )
@@ -187,7 +187,7 @@ def test_run_container_limit_enforced(client, mock_docker):
     """Returns 400 when container count is at MAX_CONTAINERS (50)."""
     mock_docker.containers.list.return_value = [MagicMock()] * 50
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={},
     )
@@ -203,7 +203,7 @@ def test_run_container_success(client, mock_docker):
     new_container.status = "created"
     mock_docker.containers.run.return_value = new_container
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t&name=myapp",
+        "/api/containers/run?image=docker.io/library/nginx:latest&name=myapp",
         headers=AUTH_CSRF,
         json={},
     )

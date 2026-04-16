@@ -10,6 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import skiff.app as app_module
+import skiff.docker_client as docker_client_module
+import skiff.routers.system as system_module
 from skiff.app import app
 
 CSRF = {"X-Requested-With": "ContainerManager"}
@@ -22,9 +24,9 @@ def reset_config(monkeypatch):
     monkeypatch.setattr(app_module._cfg, "from_env", False)
     monkeypatch.setattr(app_module._cfg, "docker_host", "unix:///var/run/docker.sock")
     monkeypatch.setattr(app_module._cfg, "allowed_registries", [])
-    monkeypatch.setattr(app_module, "_tunnel_ctl_sock", "")
-    monkeypatch.setattr(app_module, "_tunnel_ssh_target", "")
-    monkeypatch.setattr(app_module, "_tunnel_socket_path", "")
+    monkeypatch.setattr(docker_client_module, "_tunnel_ctl_sock", "")
+    monkeypatch.setattr(docker_client_module, "_tunnel_ssh_target", "")
+    monkeypatch.setattr(docker_client_module, "_tunnel_socket_path", "")
     yield
 
 
@@ -156,10 +158,10 @@ def test_tunnel_start_success(client, monkeypatch):
     # Mock _start_tunnel to create the socket file and update globals
     def fake_start(ssh_target, socket_path):
         open(socket_path, "w").close()
-        app_module._tunnel_ctl_sock = "/tmp/fake-ctl.sock"
-        app_module._tunnel_ssh_target = ssh_target
-        app_module._tunnel_socket_path = socket_path
-    monkeypatch.setattr(app_module, "_start_tunnel", fake_start)
+        docker_client_module._tunnel_ctl_sock = "/tmp/fake-ctl.sock"
+        docker_client_module._tunnel_ssh_target = ssh_target
+        docker_client_module._tunnel_socket_path = socket_path
+    monkeypatch.setattr(system_module, "_start_tunnel", fake_start)
     with tempfile.TemporaryDirectory(dir="/tmp") as td:
         sock = os.path.join(td, "docker.sock")
         r = client.post("/api/setup/tunnel", json={
@@ -174,16 +176,16 @@ def test_tunnel_start_success(client, monkeypatch):
 def test_tunnel_start_failure(client, monkeypatch):
     def fake_start(ssh_target, socket_path):
         raise ValueError("SSH failed: Connection refused")
-    monkeypatch.setattr(app_module, "_start_tunnel", fake_start)
+    monkeypatch.setattr(system_module, "_start_tunnel", fake_start)
     r = client.post("/api/setup/tunnel", json={"ssh_target": "user@badhost"}, headers=CSRF)
     assert r.status_code == 502
     assert "SSH" in r.json()["detail"]
 
 
 def test_tunnel_stop(client, monkeypatch):
-    monkeypatch.setattr(app_module, "_tunnel_socket_path", "/tmp/fake.sock")
+    monkeypatch.setattr(docker_client_module, "_tunnel_socket_path", "/tmp/fake.sock")
     stop_called = []
-    monkeypatch.setattr(app_module, "_stop_tunnel", lambda: stop_called.append(True))
+    monkeypatch.setattr(system_module, "_stop_tunnel", lambda: stop_called.append(True))
     r = client.delete("/api/setup/tunnel", headers=CSRF)
     assert r.status_code == 200
     assert stop_called
@@ -192,7 +194,7 @@ def test_tunnel_stop(client, monkeypatch):
 def test_setup_state_reflects_tunnel(client, monkeypatch, tmp_path):
     sock = tmp_path / "docker.sock"
     sock.touch()
-    monkeypatch.setattr(app_module, "_tunnel_socket_path", str(sock))
+    monkeypatch.setattr(docker_client_module, "_tunnel_socket_path", str(sock))
     r = client.get("/api/setup-state")
     assert r.json()["tunnel_active"] is True
 

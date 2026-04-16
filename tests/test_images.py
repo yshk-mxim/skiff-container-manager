@@ -7,7 +7,7 @@ import pytest
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
 
-def _make_image(tag="us-docker.pkg.dev/p/r/app:latest", short_id="sha256:abc123", size=100_000_000):
+def _make_image(tag="docker.io/library/nginx:latest", short_id="sha256:abc123", size=100_000_000):
     img = MagicMock()
     img.tags = [tag]
     img.short_id = short_id
@@ -33,21 +33,21 @@ def test_list_images(client, mock_docker):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
-    assert data[0]["tag"] == "us-docker.pkg.dev/p/r/app:latest"
+    assert "docker.io/library/nginx:latest" in data[0]["tags"]
     assert data[0]["size_mb"] == pytest.approx(100_000_000 / 1024 / 1024, abs=0.1)
 
 
 @pytest.mark.unit
 def test_list_allowed_images_filters_by_registry(client, mock_docker):
-    allowed = _make_image("us-docker.pkg.dev/p/r/app:latest")
-    blocked = _make_image("docker.io/library/nginx:latest")
-    blocked.tags = ["docker.io/library/nginx:latest"]
+    allowed = _make_image("docker.io/library/nginx:latest")
+    blocked = _make_image("evil.example.com/img:latest")
+    blocked.tags = ["evil.example.com/img:latest"]
     mock_docker.images.list.return_value = [allowed, blocked]
     resp = client.get("/api/images/allowed", headers=AUTH_HEADER)
     assert resp.status_code == 200
     tags = [i["tag"] for i in resp.json()]
-    assert "us-docker.pkg.dev/p/r/app:latest" in tags
-    assert "docker.io/library/nginx:latest" not in tags
+    assert "docker.io/library/nginx:latest" in tags
+    assert "evil.example.com/img:latest" not in tags
 
 
 @pytest.mark.unit
@@ -72,7 +72,7 @@ def test_delete_image_invalid_id_returns_400(client, bad_id):
 @pytest.mark.unit
 def test_pull_image_blocked_registry(client):
     resp = client.post(
-        "/api/images/pull?image=docker.io/nginx:latest",
+        "/api/images/pull?image=evil.example.com/img:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400
@@ -81,7 +81,7 @@ def test_pull_image_blocked_registry(client):
 @pytest.mark.unit
 def test_push_image_blocked_registry(client):
     resp = client.post(
-        "/api/images/push?image=docker.io/nginx:latest",
+        "/api/images/push?image=evil.example.com/img:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400

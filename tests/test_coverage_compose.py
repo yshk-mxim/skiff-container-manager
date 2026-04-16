@@ -8,20 +8,20 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER
 VALID_COMPOSE = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
 """
 
 BLOCKED_COMPOSE_PRIVILEGED = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     privileged: true
 """
 
 BLOCKED_COMPOSE_HOST_VOLUME = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     volumes:
       - /host/path:/data
 """
@@ -29,7 +29,7 @@ services:
 BLOCKED_COMPOSE_NETWORK_MODE = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     network_mode: host
 """
 
@@ -65,8 +65,8 @@ def test_list_compose_stacks_with_data(client, mock_docker):
 
 def test_compose_up_success(client, tmp_path):
     with (
-        patch("app.COMPOSE_DIR", tmp_path),
-        patch("app.subprocess.run") as mock_run,
+        patch("skiff.routers.compose.COMPOSE_DIR", tmp_path),
+        patch("skiff.routers.compose.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="done", stderr="")
         resp = client.post(
@@ -83,8 +83,8 @@ def test_compose_up_existing_file(client, tmp_path):
     project_dir.mkdir()
     (project_dir / "docker-compose.yml").write_bytes(VALID_COMPOSE)
     with (
-        patch("app.COMPOSE_DIR", tmp_path),
-        patch("app.subprocess.run") as mock_run,
+        patch("skiff.routers.compose.COMPOSE_DIR", tmp_path),
+        patch("skiff.routers.compose.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         resp = client.post(
@@ -95,7 +95,7 @@ def test_compose_up_existing_file(client, tmp_path):
 
 
 def test_compose_up_no_file_no_existing(client, tmp_path):
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -104,7 +104,7 @@ def test_compose_up_no_file_no_existing(client, tmp_path):
 
 
 def test_compose_up_blocked_key(client, tmp_path):
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -114,7 +114,7 @@ def test_compose_up_blocked_key(client, tmp_path):
 
 
 def test_compose_up_host_volume(client, tmp_path):
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -124,7 +124,7 @@ def test_compose_up_host_volume(client, tmp_path):
 
 
 def test_compose_up_network_mode_host(client, tmp_path):
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -135,8 +135,8 @@ def test_compose_up_network_mode_host(client, tmp_path):
 
 def test_compose_up_subprocess_failure(client, tmp_path):
     with (
-        patch("app.COMPOSE_DIR", tmp_path),
-        patch("app.subprocess.run") as mock_run,
+        patch("skiff.routers.compose.COMPOSE_DIR", tmp_path),
+        patch("skiff.routers.compose.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -153,8 +153,8 @@ def test_compose_up_subprocess_failure(client, tmp_path):
 
 def test_compose_up_subprocess_failure_no_stderr(client, tmp_path):
     with (
-        patch("app.COMPOSE_DIR", tmp_path),
-        patch("app.subprocess.run") as mock_run,
+        patch("skiff.routers.compose.COMPOSE_DIR", tmp_path),
+        patch("skiff.routers.compose.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         resp = client.post(
@@ -168,8 +168,8 @@ def test_compose_up_subprocess_failure_no_stderr(client, tmp_path):
 def test_compose_up_timeout(client, tmp_path):
     import subprocess
     with (
-        patch("app.COMPOSE_DIR", tmp_path),
-        patch("app.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=120)),
+        patch("skiff.routers.compose.COMPOSE_DIR", tmp_path),
+        patch("skiff.routers.compose.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=120)),
     ):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
@@ -182,7 +182,7 @@ def test_compose_up_timeout(client, tmp_path):
 # ── Compose down ──────────────────────────────────────────────────────────────
 
 def test_compose_down_success(client):
-    with patch("app.subprocess.run") as mock_run:
+    with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="down", stderr="")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 200
@@ -190,14 +190,14 @@ def test_compose_down_success(client):
 
 
 def test_compose_down_failure(client):
-    with patch("app.subprocess.run") as mock_run:
+    with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="/some/path: not found")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 400
 
 
 def test_compose_down_no_stderr(client):
-    with patch("app.subprocess.run") as mock_run:
+    with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 400
@@ -205,7 +205,7 @@ def test_compose_down_no_stderr(client):
 
 def test_compose_down_timeout(client):
     import subprocess
-    with patch("app.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=60)):
+    with patch("skiff.routers.compose.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=60)):
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 504
 
@@ -219,9 +219,9 @@ secrets:
     file: ./mysecret.txt
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
 """
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -234,10 +234,10 @@ def test_compose_pid_host_blocked(client, tmp_path):
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     pid: host
 """
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -250,10 +250,10 @@ def test_compose_ipc_host_blocked(client, tmp_path):
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     ipc: host
 """
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,
@@ -266,11 +266,11 @@ def test_compose_cap_add_blocked(client, tmp_path):
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/img:latest
+    image: docker.io/library/nginx:latest
     cap_add:
       - NET_ADMIN
 """
-    with patch("app.COMPOSE_DIR", tmp_path):
+    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path):
         resp = client.post(
             "/api/compose/up?project_name=myproject",
             headers=AUTH_CSRF,

@@ -45,7 +45,7 @@ Returns non-secret server configuration for the UI. Requires authentication.
 **Response**
 ```json
 {
-  "allowed_registries": ["us-docker.pkg.dev/my-project/"],
+  "allowed_registries": ["docker.io", "ghcr.io"],
   "docker_vm_host": "docker-vm.internal",
   "docker_host": "unix:///tmp/docker.sock"
 }
@@ -100,7 +100,7 @@ List all containers (running and stopped).
 {
   "id": "abc123",
   "name": "my-service",
-  "image": "us-docker.pkg.dev/project/repo/image:tag",
+  "image": "docker.io/library/nginx:latest",
   "status": "running",
   "state": "running",
   "health": "healthy",
@@ -198,13 +198,13 @@ Real-time resource usage snapshot.
 ```json
 {
   "cpu_percent": 1.23,
-  "memory_usage_mb": 128.5,
-  "memory_limit_mb": 2048.0,
-  "memory_percent": 6.27,
+  "mem_usage_mb": 128.5,
+  "mem_limit_mb": 2048.0,
+  "mem_percent": 6.27,
   "net_rx_mb": 0.01,
   "net_tx_mb": 0.00,
-  "disk_read_mb": 0.00,
-  "disk_write_mb": 0.01
+  "blk_read_mb": 0.00,
+  "blk_write_mb": 0.01
 }
 ```
 
@@ -221,9 +221,25 @@ Show filesystem changes in a container since it was created.
 ### `WS /ws/logs/{id}`
 Stream container logs in real time.
 
-**Handshake**: after connecting, send `AUTH <token>` as the first text message. If `API_TOKEN` is unset, no auth message is required.
+**Handshake protocol:**
+1. Client opens the WebSocket connection.
+2. Client sends `AUTH <token>` as the first plain-text message.
+3. Server acknowledges with `AUTH_OK` (or closes with `4003` on failure).
+4. Server streams log lines as text frames.
+5. Client sends a NUL byte (`\x00`) as a keepalive every 30 seconds to prevent idle timeout.
 
-The server streams log lines as text frames. Closes with code `4003` on auth failure, `4000` on invalid container ID. Sends an idle-timeout message after 5 minutes of no new logs.
+If `API_TOKEN` is unset on the server, the `AUTH` step is skipped.
+
+**Close codes:**
+
+| Code | Meaning |
+|---|---|
+| `4000` | Invalid container ID |
+| `4003` | Auth failure (wrong token or session expired) |
+| `4429` | Too many concurrent WebSocket connections from this IP |
+| `1000` | Normal closure (logs ended or server shutdown) |
+
+**Idle timeout:** The server closes the connection after 5 minutes of no new log output.
 
 ---
 
@@ -232,9 +248,16 @@ The server streams log lines as text frames. Closes with code `4003` on auth fai
 ### `WS /ws/exec/{id}`
 Open an interactive shell inside a container.
 
-**Handshake**: same as log streaming — send `AUTH <token>` first.
+**Handshake protocol:**
+1. Client opens the WebSocket connection.
+2. Client sends `AUTH <token>` as the first plain-text message.
+3. Server acknowledges with `AUTH_OK` (or closes with `4003` on failure).
+4. Stdin/stdout flow as plain text frames.
+5. Client sends a NUL byte (`\x00`) as a keepalive every 30 seconds.
 
-After auth, send terminal input as text frames and receive terminal output as text frames. The session closes after 10 minutes of inactivity.
+**Close codes:** same as log streaming above.
+
+**Inactivity timeout:** Session closes after 10 minutes of no input.
 
 ---
 
@@ -379,15 +402,16 @@ All errors return JSON:
 {"detail": "Error message"}
 ```
 
-Common status codes:
+Common status codes and example `detail` strings:
 
-| Code | Meaning |
-|---|---|
-| 400 | Bad request (validation error, Docker API error) |
-| 401 | Missing or invalid API token |
-| 403 | Missing `X-Requested-With` header |
-| 404 | Container, image, volume, or network not found |
-| 409 | Conflict (container already started/stopped) |
-| 429 | Rate limit exceeded |
-| 503 | Docker Engine unreachable |
-| 504 | Operation timed out |
+| Code | Meaning | Example `detail` |
+|---|---|---|
+| 400 | Bad request (validation error, Docker API error) | `"Image not in allowed registries"` |
+| 401 | Missing or invalid API token | `"Invalid or missing token"` |
+| 403 | Missing `X-Requested-With` header or setup window expired | `"CSRF check failed"` |
+| 404 | Container, image, volume, or network not found | `"Not found"` |
+| 409 | Conflict (container already started/stopped) | `"Container already running"` |
+| 422 | Malformed request body or query params | `"value is not a valid integer"` |
+| 429 | Rate limit exceeded | `"Rate limit exceeded"` |
+| 503 | Docker Engine unreachable | `"Container engine unavailable"` |
+| 504 | Operation timed out | `"Operation timed out"` |

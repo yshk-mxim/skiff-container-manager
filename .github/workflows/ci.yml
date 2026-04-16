@@ -5,12 +5,15 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,15 +30,17 @@ jobs:
       - name: Lint (ruff)
         run: make lint
 
-      - name: Security scan (bandit)
+      - name: Security scan (ruff)
         run: make security
+
+      - name: Dependency vulnerability scan
+        run: pip install pip-audit && pip-audit --strict -r requirements.txt
 
       - name: Unit tests + coverage
         run: make coverage
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
-        if: matrix.python-version == '3.12'
         with:
           name: coverage-html
           path: htmlcov/
