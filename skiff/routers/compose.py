@@ -53,19 +53,20 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     validate_project_name(project_name)
 
     COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
-    # re.fullmatch constrains project_name to safe characters, producing a value
-    # that CodeQL recognises as sanitised (taint is broken at .group(0)).
-    # validate_project_name() was already called above; this fullmatch is the
-    # CodeQL-visible sanitiser that prevents path-injection findings.
-    _m = re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", project_name)
+    # Two-stage path sanitisation — mirrors the pattern used in docker_client.py
+    # which CodeQL accepts for py/path-injection:
+    #
+    # Stage 1: os.path.basename — the CodeQL-recognised path-injection sanitiser.
+    #   Strips any directory-traversal components so the result is a flat name.
+    # Stage 2: re.fullmatch — enforces the exact character allowlist on the
+    #   already-safe basename, producing the final clean value via .group(0).
+    _safe_name = os.path.basename(project_name)
+    _m = re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,63}", _safe_name)
     if not _m:
         raise HTTPException(400, "Invalid project name")
-    _safe_name = _m.group(0)
-    # Resolve both sides to canonical form so all downstream path operations
-    # use the fully-canonicalised path (CodeQL-recognised clean value).
     _compose_root = COMPOSE_DIR.resolve()
-    project_dir = (_compose_root / _safe_name)
-    if not str(project_dir).startswith(str(_compose_root)):
+    project_dir = _compose_root / _m.group(0)
+    if not str(project_dir).startswith(str(_compose_root) + os.sep):
         raise HTTPException(400, "Invalid project directory")
     project_dir.mkdir(exist_ok=True)
     compose_path = project_dir / "docker-compose.yml"
