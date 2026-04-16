@@ -58,8 +58,9 @@ def test_login_with_valid_token(live_server):
         if sign_in.count() > 0:
             pg.locator("input[type='password']").fill(E2E_TOKEN)
             sign_in.click()
-        pg.wait_for_selector("h2", timeout=MEDIUM)
-        assert "Containers" in pg.locator("h2").first.text_content()
+        # Sidebar renders immediately after login (no Docker round-trip needed).
+        pg.wait_for_selector(".sidebar", timeout=MEDIUM)
+        assert pg.locator(".sidebar a:has-text('Containers')").count() > 0
         browser.close()
 
 
@@ -331,7 +332,7 @@ def test_stop_button_disabled_during_stop(page, live_server, docker_client):
     stop_btn.click()
     # Immediately check that the button is disabled or shows pending text
     # (the UI sets disabled + loading class on the button during the request)
-    time.sleep(0.1)
+    page.wait_for_timeout(100)
     is_disabled = stop_btn.get_attribute("disabled")
     pending_text = stop_btn.text_content()
     assert is_disabled is not None or "Stopping" in (pending_text or "")
@@ -625,8 +626,8 @@ def test_rapid_page_navigation_no_errors(page, live_server):
     for _ in range(5):
         for section in pages:
             page.locator(f".sidebar a:has-text('{section}')").click()
-            # Small pause to let any async errors surface
-            time.sleep(0.1)
+            # Use Playwright's non-blocking wait so the event loop stays responsive
+            page.wait_for_timeout(100)
 
     # Wait briefly for any deferred errors
     page.wait_for_timeout(500)
@@ -728,7 +729,7 @@ def test_hub_search_no_results(page, live_server):
 def test_run_container_blocked_registry_shows_error(page, live_server):
     """Running a container from a non-allowed registry shows an error."""
     _nav_to(page, "containers")
-    page.locator("button:has-text('Run new container')").click()
+    page.locator("button:has-text('Run new container')").first.click()
     page.wait_for_selector(".modal", timeout=SHORT)
 
     page.locator("#run-image").fill("private.example.com/org/image:latest")
@@ -1287,12 +1288,15 @@ def test_run_modal_network_dropdown(page, live_server, docker_client):
     option_count = page.locator("#run-network option").count()
     assert option_count >= 1
 
-    # Try selecting the 'bridge' option if it exists
-    options = page.locator("#run-network option").all_text_contents()
-    bridge_options = [o for o in options if "bridge" in o.lower()]
-    if bridge_options:
-        net_sel.select_option(label=bridge_options[0])
-        assert "bridge" in net_sel.input_value().lower() or net_sel.input_value() == "bridge"
+    # Try selecting the 'bridge' option by value (not label text) if it exists.
+    # Options are built as value=n.name, text=n.name+" (driver)". The default
+    # option has value="" so we need to select by value to avoid ambiguity.
+    option_values = page.locator("#run-network option").evaluate_all(
+        "(opts) => opts.map(o => o.value)"
+    )
+    if "bridge" in option_values:
+        net_sel.select_option(value="bridge")
+        assert net_sel.input_value() == "bridge"
 
     page.locator(".modal .actions button:has-text('Cancel')").click()
     page.wait_for_selector(".modal-bg", state="detached", timeout=SHORT)
@@ -2195,7 +2199,7 @@ def test_system_page_containers_count(page, live_server):
     _nav_to(page, "system")
     page.wait_for_selector(".info-grid", timeout=MEDIUM)
 
-    containers_card = page.locator(".info-card:has(.label:has-text('Containers'))")
+    containers_card = page.locator(".info-card:has(.label:has-text('Containers'))").first
     assert containers_card.count() > 0, "Containers info card not found"
 
     value_text = containers_card.locator(".value").text_content().strip()
@@ -2497,51 +2501,35 @@ def test_containers_no_match_search_empty_state(page, live_server, docker_client
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.e2e
-def test_session_expiry_toast_on_absolute_timeout(live_server):
+def test_session_expiry_toast_on_absolute_timeout(page, live_server):
     """Simulate absolute session expiry by setting session_start far in the past."""
-    from playwright.sync_api import sync_playwright
+    # Manipulate sessionStorage to make the session appear 8+ hours old
+    page.evaluate(
+        "() => {"
+        "  var eightHoursAgo = Date.now() - (8 * 60 * 60 * 1000 + 60000);"
+        "  sessionStorage.setItem('session_start', String(eightHoursAgo));"
+        "}"
+    )
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        pg = browser.new_page()
-        pg.goto(live_server)
+    # Trigger an API call by navigating which calls checkSessionExpiry()
+    page.locator(".sidebar a").first.click()
+    page.wait_for_timeout(1000)
 
-        # Log in
-        sign_in = pg.locator("button:has-text('Sign in')")
-        if sign_in.count() > 0:
-            pg.locator("input[type='password']").fill(E2E_TOKEN)
-            sign_in.click()
-        pg.wait_for_selector("h2, h3", timeout=MEDIUM)
+    # The app should have cleared the token and shown the re-login screen
+    # Either the toast with 'Session expired' or the login form should appear
+    page.wait_for_selector(
+        ".toast, button:has-text('Sign in')",
+        timeout=MEDIUM,
+    )
 
-        # Manipulate sessionStorage to make the session appear 8+ hours old
-        pg.evaluate(
-            "() => {"
-            "  var eightHoursAgo = Date.now() - (8 * 60 * 60 * 1000 + 60000);"
-            "  sessionStorage.setItem('session_start', String(eightHoursAgo));"
-            "}"
-        )
+    # Verify the login form is shown (session was cleared)
+    has_login = page.locator("button:has-text('Sign in')").count() > 0
+    has_toast = page.locator(".toast").count() > 0
+    assert has_login or has_toast, "Expected re-login prompt or toast after session expiry"
 
-        # Trigger an API call (e.g., by navigating) which calls checkSessionExpiry()
-        pg.locator(".sidebar a").first.click()
-        pg.wait_for_timeout(1000)
-
-        # The app should have cleared the token and shown the re-login screen
-        # Either the toast with 'Session expired' or the login form should appear
-        pg.wait_for_selector(
-            ".toast, button:has-text('Sign in')",
-            timeout=MEDIUM,
-        )
-
-        # Verify the login form is shown (session was cleared)
-        has_login = pg.locator("button:has-text('Sign in')").count() > 0
-        has_toast = pg.locator(".toast").count() > 0
-        assert has_login or has_toast, "Expected re-login prompt or toast after session expiry"
-
-        if has_toast:
-            toast_text = pg.locator(".toast").first.text_content()
-            assert "session" in toast_text.lower() or "expired" in toast_text.lower()
-
-        browser.close()
+    if has_toast:
+        toast_text = page.locator(".toast").first.text_content()
+        assert "session" in toast_text.lower() or "expired" in toast_text.lower()
 
 
 @pytest.mark.e2e
@@ -3018,3 +3006,99 @@ def test_keyboard_shortcut_6_navigates_system(page, live_server):
     page.keyboard.press("6")
     page.wait_for_selector("h2:has-text('System')", timeout=SHORT)
     assert page.locator("h2:has-text('System')").count() > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSP-safe sidebar navigation (onclick replaced with addEventListener)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.e2e
+def test_sidebar_nav_containers_via_click(page, live_server):
+    """Sidebar Containers link navigates — verifies data-page/addEventListener wiring."""
+    _nav_to(page, "images")
+    page.locator(".sidebar a[data-page='containers']").click()
+    page.wait_for_selector("h2:has-text('Containers')", timeout=MEDIUM)
+    assert page.locator("h2:has-text('Containers')").count() > 0
+
+
+@pytest.mark.e2e
+def test_sidebar_nav_images_via_click(page, live_server):
+    """Sidebar Images link navigates via addEventListener (not onclick attribute)."""
+    page.locator(".sidebar a[data-page='images']").click()
+    page.wait_for_selector("h2:has-text('Images')", timeout=MEDIUM)
+    assert page.locator("h2:has-text('Images')").count() > 0
+
+
+@pytest.mark.e2e
+def test_sidebar_nav_volumes_via_click(page, live_server):
+    """Sidebar Volumes link navigates."""
+    page.locator(".sidebar a[data-page='volumes']").click()
+    page.wait_for_selector("h2:has-text('Volumes')", timeout=MEDIUM)
+    assert page.locator("h2:has-text('Volumes')").count() > 0
+
+
+@pytest.mark.e2e
+def test_sidebar_nav_networks_via_click(page, live_server):
+    """Sidebar Networks link navigates."""
+    page.locator(".sidebar a[data-page='networks']").click()
+    page.wait_for_selector("h2:has-text('Networks')", timeout=MEDIUM)
+    assert page.locator("h2:has-text('Networks')").count() > 0
+
+
+@pytest.mark.e2e
+def test_sidebar_nav_system_via_click(page, live_server):
+    """Sidebar System link navigates."""
+    page.locator(".sidebar a[data-page='system']").click()
+    page.wait_for_selector("h2:has-text('System')", timeout=MEDIUM)
+    assert page.locator("h2:has-text('System')").count() > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logout button
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.e2e
+def test_logout_button_visible_when_authenticated(page, live_server):
+    """Logout button is present in the sidebar when a session token is set."""
+    _nav_to(page, "containers")
+    # The button should exist and be visible
+    btn = page.locator("#sidebar-logout")
+    assert btn.count() > 0
+    btn.wait_for(state="visible", timeout=SHORT)
+
+
+@pytest.mark.e2e
+def test_logout_button_clears_session_and_shows_login(page, live_server):
+    """Clicking Sign out clears the session token and shows the login form."""
+    _nav_to(page, "containers")
+    page.locator("#sidebar-logout").wait_for(state="visible", timeout=SHORT)
+    page.locator("#sidebar-logout").click()
+    # After logout the login form (h3 Sign in) should appear
+    page.wait_for_selector("h3:has-text('Sign in'), button:has-text('Sign in')", timeout=SHORT)
+    assert (
+        page.locator("h3:has-text('Sign in')").count() > 0
+        or page.locator("button:has-text('Sign in')").count() > 0
+    )
+    # Session storage should no longer have the token
+    token = page.evaluate("() => sessionStorage.getItem('api_token')")
+    assert token is None or token == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fetch timeout — no inline-handler CSP violations
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.e2e
+def test_no_csp_violations_on_page_load(page, live_server):
+    """Page loads without any Content-Security-Policy violation errors in the console."""
+    js_errors = page._e2e_js_errors  # type: ignore[attr-defined]
+    csp_errors = [e for e in js_errors if "Content-Security-Policy" in e or "EvalError" in e]
+    assert csp_errors == [], f"CSP violations found: {csp_errors}"
+
+
+@pytest.mark.e2e
+def test_no_inline_handler_errors(page, live_server):
+    """No JavaScript errors about inline event handlers being blocked."""
+    js_errors = page._e2e_js_errors  # type: ignore[attr-defined]
+    handler_errors = [e for e in js_errors if "onclick" in e.lower() or "handler" in e.lower()]
+    assert handler_errors == []

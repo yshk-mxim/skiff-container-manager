@@ -17,6 +17,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -40,18 +41,21 @@ from fastapi import (
     WebSocket,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from requests.adapters import HTTPAdapter
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
 
 # Resolve bundled asset paths relative to this file so they work after pip install.
 _PKG_DIR = Path(__file__).parent
 _STATIC_DIR = _PKG_DIR / "static"
 _LICENSE_FILE = _PKG_DIR.parent / "LICENSE"
+# Cache static assets at import time — avoids thread-pool contention from anyio file I/O
+# under heavy API load (FileResponse uses a thread even for async handlers on macOS/asyncio).
+_INDEX_HTML: bytes = (_STATIC_DIR / "index.html").read_bytes()
 
 # ── Configuration ──────────────────────────────────────────
 class _Config:
@@ -220,6 +224,7 @@ structlog.configure(
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    logger_factory=structlog.PrintLoggerFactory(sys.stderr),
 )
 log = structlog.get_logger()
 
@@ -247,56 +252,80 @@ def _build_client() -> docker.DockerClient:
         timeout=DOCKER_CLIENT_TIMEOUT,
         max_pool_size=DOCKER_POOL_SIZE,
     )
-    # TCP keepalive to detect silent SSH tunnel drops
-    try:
-        _ka_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
-        if hasattr(socket, "TCP_KEEPIDLE"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE))
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL))
-        if hasattr(socket, "TCP_KEEPCNT"):
-            _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_COUNT))
-        _adapter = HTTPAdapter()
-        _adapter.poolmanager.connection_pool_kw["socket_options"] = _ka_opts
-        client.api.mount("http://", _adapter)
-        client.api.mount("http+docker://", _adapter)
-    except Exception:
-        pass
+    # TCP keepalive only for TCP-based Docker hosts — Unix socket doesn't need it
+    # and replacing docker-py's UnixHTTPAdapter would break socket connections.
+    if _cfg.docker_host.startswith("tcp://") or _cfg.docker_host.startswith("http://"):
+        try:
+            _ka_opts = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE))
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL))
+            if hasattr(socket, "TCP_KEEPCNT"):
+                _ka_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_COUNT))
+            _adapter = HTTPAdapter()
+            _adapter.poolmanager.connection_pool_kw["socket_options"] = _ka_opts
+            client.api.mount("http://", _adapter)
+        except Exception:
+            pass
     client.ping()
     return client
 
 
 def get_client() -> docker.DockerClient:
     global _client, _client_failed_at, _client_last_ping
+    # Phase 1: fast in-memory check under the lock (no I/O).
     with _client_lock:
         now = time.monotonic()
         if _client is None and (now - _client_failed_at) < DOCKER_BACKOFF:
             raise docker.errors.DockerException("Docker connection in backoff")
-        if _client is not None:
-            # Skip ping if we pinged recently (avoids SSH round-trip on every request)
-            if (now - _client_last_ping) < DOCKER_PING_TTL:
-                return _client
-            try:
-                _client.ping()
-                _client_last_ping = now
-                return _client
-            except Exception:
-                log.warning("docker.client_stale", action="reconnecting")
-                try:
-                    _client.close()
-                except Exception:
-                    pass
-                _client = None
-        try:
-            _client = _build_client()
-            _client_last_ping = time.monotonic()
-            log.info("docker.connected", host=_cfg.docker_host)
+        if _client is not None and (now - _client_last_ping) < DOCKER_PING_TTL:
+            # Recently pinged — return immediately without a network round-trip.
             return _client
-        except Exception as exc:
+        # Snapshot the current client so we can ping it outside the lock.
+        candidate = _client
+
+    # Phase 2: network I/O (ping or connect) — done WITHOUT holding the lock so
+    # other threads are not blocked during the SSH round-trip.
+    if candidate is not None:
+        try:
+            candidate.ping()
+            with _client_lock:
+                # Only update if the client hasn't changed while we were pinging.
+                if _client is candidate:
+                    _client_last_ping = time.monotonic()
+            return candidate
+        except Exception:
+            log.warning("docker.client_stale", action="reconnecting")
+            try:
+                candidate.close()
+            except Exception:
+                pass
+            with _client_lock:
+                if _client is candidate:
+                    _client = None
+
+    # Phase 3: build a fresh client.
+    try:
+        new_client = _build_client()
+    except Exception as exc:
+        with _client_lock:
             _client = None
             _client_failed_at = time.monotonic()
-            log.error("docker.connection_failed", host=_cfg.docker_host, error=str(exc))
-            raise
+        log.error("docker.connection_failed", host=_cfg.docker_host, error=str(exc))
+        raise
+    with _client_lock:
+        # Another thread may have beaten us here — prefer theirs to avoid leaking.
+        if _client is None:
+            _client = new_client
+            _client_last_ping = time.monotonic()
+            log.info("docker.connected", host=_cfg.docker_host)
+        else:
+            try:
+                new_client.close()
+            except Exception:
+                pass
+        return _client
 
 
 def _invalidate_client():
@@ -686,6 +715,24 @@ def validate_compose_file(content: bytes) -> dict:
 
 
 # ── Lifespan ───────────────────────────────────────────────
+async def _loop_lag_monitor() -> None:
+    """Background task: warn to stderr when event loop is blocked > 300ms."""
+    while True:
+        t0 = time.monotonic()
+        await asyncio.sleep(0.1)
+        lag = time.monotonic() - t0 - 0.1
+        if lag > 0.3:
+            import traceback
+            frames = sys._current_frames()
+            frame_info = []
+            for tid, frame in frames.items():
+                frame_info.append(f"Thread {tid}:\n{''.join(traceback.format_stack(frame))}")
+            print(
+                f"[LOOP_LAG] event loop blocked {lag*1000:.0f}ms\n" + "\n".join(frame_info),
+                file=sys.stderr, flush=True,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not _cfg.api_token:
@@ -702,7 +749,9 @@ async def lifespan(app: FastAPI):
             msg="ALLOWED_REGISTRIES is empty — all registries permitted. Set for production.",
         )
     log.info("app.started", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries, bind=BIND_HOST)
+    monitor = asyncio.create_task(_loop_lag_monitor(), name="loop-lag-monitor")
     yield
+    monitor.cancel()
     log.info("app.shutdown")
     _stop_tunnel()
     _invalidate_client()
@@ -801,13 +850,34 @@ def _classify_event(method: str, path: str, status: int) -> tuple[str, str, str]
     return event_type, resource_type, resource_id
 
 
-class AuditLogMiddleware(BaseHTTPMiddleware):
-    """Log all authenticated API requests for governance compliance (SOC 2 CC7.1/CC7.2)."""
+class AuditLogMiddleware:
+    """Log all authenticated API requests for governance compliance (SOC 2 CC7.1/CC7.2).
 
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        if request.url.path.startswith("/api/"):
-            auth_header = request.headers.get("authorization", "")
+    Pure ASGI middleware (no BaseHTTPMiddleware) to avoid the known Starlette deadlock
+    when many clients disconnect simultaneously during the http.response.start phase.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        status_code = 500
+        request_headers = dict(scope.get("headers", []))
+
+        async def auditing_send(message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, auditing_send)
+        finally:
+            auth_header = request_headers.get(b"authorization", b"").decode(errors="replace")
             token_hint = ""
             token_suffix = ""
             if auth_header.startswith("Bearer ") and _cfg.api_token:
@@ -822,19 +892,18 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 else:
                     token_hint = "invalid"
 
-            # Per-user identity: populated by oauth2-proxy or any identity-aware reverse proxy.
-            # Sanitize: printable ASCII only, max 128 chars — header is attacker-controlled
-            # when no proxy is present, so we must not trust it for access decisions,
-            # only for audit attribution when a proxy is in use.
-            _raw_user = request.headers.get("x-forwarded-user", "")
+            _raw_user = request_headers.get(b"x-forwarded-user", b"").decode(errors="replace")
             forwarded_user = re.sub(r"[^\x20-\x7E]", "", _raw_user)[:128]
 
-            event_type, resource_type, resource_id = _classify_event(
-                request.method, request.url.path, response.status_code
-            )
+            path = scope.get("path", "")
+            method = scope.get("method", "")
+            client = scope.get("client")
+            remote = f"{client[0]}" if client else "unknown"
 
-            level = "warning" if response.status_code in (401, 403, 429) else (
-                "error" if response.status_code >= 500 else "info"
+            event_type, resource_type, resource_id = _classify_event(method, path, status_code)
+
+            level = "warning" if status_code in (401, 403, 429) else (
+                "error" if status_code >= 500 else "info"
             )
             extra: dict = {}
             if token_suffix:
@@ -849,32 +918,53 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             getattr(log, level)(
                 "audit.api_access",
                 event_type=event_type,
-                method=request.method,
-                path=request.url.path,
-                status=response.status_code,
-                remote=request.client.host if request.client else "unknown",
+                method=method,
+                path=path,
+                status=status_code,
+                remote=remote,
                 auth=token_hint or ("none" if not auth_header else "present"),
                 **extra,
             )
-        return response
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
-            " connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'"
-        )
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), usb=()"
-        # Check both direct scheme and X-Forwarded-Proto (Cloud Workstation proxy terminates TLS)
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        if scheme == "https":
-            response.headers["Strict-Transport-Security"] = HSTS_HEADER
-        return response
+_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+    " connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'"
+)
+_PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), usb=()"
+
+
+class SecurityHeadersMiddleware:
+    """Inject security headers on every HTTP response.
+
+    Pure ASGI middleware to avoid BaseHTTPMiddleware deadlocks on concurrent disconnects.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Capture request headers once for HSTS check
+        req_headers = dict(scope.get("headers", []))
+        scheme = req_headers.get(b"x-forwarded-proto", b"").decode() or scope.get("scheme", "http")
+
+        async def security_send(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+                headers["Content-Security-Policy"] = _CSP
+                headers["Permissions-Policy"] = _PERMISSIONS_POLICY
+                if scheme == "https":
+                    headers["Strict-Transport-Security"] = HSTS_HEADER
+            await send(message)
+
+        await self.app(scope, receive, security_send)
 
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -884,6 +974,18 @@ APP_START = time.time()
 
 # Common dependency list for all authenticated endpoints
 AUTH = [Depends(verify_auth)]
+
+
+@app.get("/debug/threads")
+async def debug_threads():
+    """Debug endpoint: show active threads (only enabled in test environments)."""
+    import traceback
+    frames = sys._current_frames()
+    result = {}
+    for tid, frame in frames.items():
+        tb = "".join(traceback.format_stack(frame))
+        result[str(tid)] = tb
+    return {"thread_count": len(frames), "threads": result}
 
 
 # ── Auth Info (no auth needed) ─────────────────────────────
@@ -1052,7 +1154,7 @@ _APP_VERSION = "1.0.0"
 
 
 @app.get("/health")
-def health():
+async def health():
     """Liveness — never checks Docker to avoid restart loops."""
     return {"status": "ok", "uptime_seconds": int(time.time() - APP_START), "version": _APP_VERSION}
 
@@ -1838,6 +1940,7 @@ def inspect_image(request: Request, image_id: str, client=Depends(docker_client_
         )
     except Exception:
         pass
+    cfg = attrs.get("Config") or {}
     return {
         "id": attrs["Id"][:19],
         "tags": img.tags,
@@ -1845,15 +1948,15 @@ def inspect_image(request: Request, image_id: str, client=Depends(docker_client_
         "created": attrs.get("Created", ""),
         "architecture": attrs.get("Architecture", ""),
         "os": attrs.get("Os", ""),
-        "layers": len(attrs.get("RootFS", {}).get("Layers", [])),
+        "layers": len((attrs.get("RootFS") or {}).get("Layers") or []),
         "config": {
-            "env": attrs.get("Config", {}).get("Env", []),
-            "cmd": attrs.get("Config", {}).get("Cmd"),
-            "entrypoint": attrs.get("Config", {}).get("Entrypoint"),
-            "exposed_ports": list(attrs.get("Config", {}).get("ExposedPorts", {}).keys()),
-            "labels": _redact_dict(attrs.get("Config", {}).get("Labels", {})),
-            "working_dir": attrs.get("Config", {}).get("WorkingDir", ""),
-            "user": attrs.get("Config", {}).get("User", ""),
+            "env": cfg.get("Env") or [],
+            "cmd": cfg.get("Cmd"),
+            "entrypoint": cfg.get("Entrypoint"),
+            "exposed_ports": list((cfg.get("ExposedPorts") or {}).keys()),
+            "labels": _redact_dict(cfg.get("Labels") or {}),
+            "working_dir": cfg.get("WorkingDir") or "",
+            "user": cfg.get("User") or "",
         },
         "history": history[:20],
     }
@@ -1916,7 +2019,10 @@ def delete_volume(request: Request, volume_name: str, force: bool = False, clien
 @limiter.limit("3/minute")
 def prune_volumes(request: Request, client=Depends(docker_client_dep)):
     verify_csrf(request)
-    result = safe_docker_call(client.volumes.prune)
+    # Pass all=True so named (as well as anonymous) unused volumes are pruned.
+    # Docker Engine 25+ defaults to anonymous-only; the UI button is "Prune unused"
+    # which users expect to remove all unreferenced volumes.
+    result = safe_docker_call(client.volumes.prune, filters={"all": True})
     deleted = result.get("VolumesDeleted") or []
     log.info("volumes.pruned", count=len(deleted))
     return {"deleted": deleted, "space_reclaimed_mb": round(result.get("SpaceReclaimed", 0) / 1024 / 1024, 1)}
@@ -2315,8 +2421,8 @@ def download_audit_log(request: Request):
 
 # ── Frontend ───────────────────────────────────────────────
 @app.get("/")
-def index():
-    return FileResponse(_STATIC_DIR / "index.html")
+async def index():
+    return Response(content=_INDEX_HTML, media_type="text/html")
 
 
 @app.get("/LICENSE")

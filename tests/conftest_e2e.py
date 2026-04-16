@@ -160,6 +160,19 @@ def ssh_tunnel():
 @pytest.fixture(scope="session")
 def live_server(ssh_tunnel):
     """Start uvicorn on E2E_PORT, yield base URL, teardown after session."""
+    # Kill any stale server holding the port from a previous interrupted run
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{E2E_PORT}"],
+            capture_output=True, text=True, check=False,
+        )
+        for pid in result.stdout.split():
+            subprocess.run(["kill", "-9", pid], check=False, capture_output=True)
+        if result.stdout.strip():
+            time.sleep(0.5)
+    except Exception:
+        pass
+
     env = {
         **os.environ,
         "API_TOKEN": E2E_TOKEN,
@@ -169,11 +182,12 @@ def live_server(ssh_tunnel):
         "ALLOWED_ORIGINS": BASE_URL,
         "RATE_LIMIT_SCALE": "100",  # 100x limits for e2e test suite
     }
+    _stderr_log = open("/tmp/skiff-e2e-server.stderr", "w")  # noqa: SIM115
     proc = subprocess.Popen(
         ["uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(E2E_PORT)],
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=_stderr_log,
     )
 
     # Poll /health until it responds (up to 15s)
@@ -203,37 +217,68 @@ def live_server(ssh_tunnel):
         proc.kill()
 
 
-# ── Playwright page ─────────────────────────────────────────────────────────
+# ── Playwright browser (one process for the whole session) ──────────────────
 
-@pytest.fixture()
-def page(live_server):
-    """Headless Chromium page, logged in and ready at the containers view."""
+@pytest.fixture(scope="session")
+def browser(live_server):  # noqa: F811 — shadows playwright's own `browser` name
+    """Single headless Chromium process reused across all tests."""
     if sync_playwright is None:
         pytest.skip("playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")
 
+    pw = sync_playwright().start()
+    b = pw.chromium.launch(headless=True)
+    yield b
+    b.close()
+    pw.stop()
+
+
+# ── Playwright page ─────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def page(browser, live_server):
+    """Fresh browser context + page for each test, logged in and ready."""
+    # Fast pre-flight: verify server responds to HTTP before launching Playwright.
+    # A 3s failure here is a server-side bug, not a Playwright timeout.
+    deadline = time.time() + 3
+    while True:
+        try:
+            r = requests.get(f"{live_server}/health", timeout=1)
+            if r.status_code == 200:
+                break
+        except Exception:
+            pass
+        if time.time() > deadline:
+            pytest.fail(f"Server at {live_server} did not respond to /health within 3s — server may be hung")
+        time.sleep(0.1)
+
     js_errors: list[str] = []
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        context = browser.new_context()
-        pg = context.new_page()
-        pg.on("pageerror", lambda err: js_errors.append(str(err)))
+    context = browser.new_context(
+        # Enforce a short connection timeout so stalled requests fail fast instead of
+        # holding Playwright open against a hung server.
+    )
+    pg = context.new_page()
+    # 5s navigation timeout: goto() takes ~1s normally; >5s means the server is stuck.
+    pg.set_default_navigation_timeout(5_000)
+    pg.set_default_timeout(10_000)
+    pg.on("pageerror", lambda err: js_errors.append(str(err)))
 
-        pg.goto(live_server)
-        # Wait for the page to render — either login form or main content
-        pg.wait_for_selector("button:has-text('Sign in'), h2, h3", timeout=15_000)
-        sign_in = pg.locator("button:has-text('Sign in')")
-        if sign_in.count() > 0:
-            pg.locator("input[type='password']").fill(E2E_TOKEN)
-            sign_in.click()
-            # After login, wait for main content (h2) or Docker-unreachable state (h3)
-            pg.wait_for_selector("h2, h3", timeout=15_000)
+    pg.goto(live_server, wait_until="domcontentloaded")
+    # Wait for login form OR the authenticated sidebar.
+    # Do NOT wait for h2 — it's rendered only after the Docker API responds,
+    # so it's slow under load and causes fixture timeouts under threadpool pressure.
+    pg.wait_for_selector("button:has-text('Sign in'), .sidebar", timeout=10_000)
+    sign_in = pg.locator("button:has-text('Sign in')")
+    if sign_in.count() > 0:
+        pg.locator("input[type='password']").fill(E2E_TOKEN)
+        sign_in.click()
+        # Sidebar renders immediately after login — no Docker round-trip required.
+        pg.wait_for_selector(".sidebar", timeout=10_000)
 
-        pg._e2e_js_errors = js_errors  # type: ignore[attr-defined]
-        yield pg
+    pg._e2e_js_errors = js_errors  # type: ignore[attr-defined]
+    yield pg
 
-        context.close()
-        browser.close()
+    context.close()
 
 
 # ── Docker client for setup/teardown ────────────────────────────────────────

@@ -93,17 +93,15 @@ def test_setup_wizard_has_ssh_and_local_tabs(setup_page):
 
 def test_setup_wizard_local_tab_switches_panel(setup_page):
     setup_page.locator("button:has-text('Local / Custom')").click()
-    setup_page.wait_for_timeout(300)
-    assert setup_page.locator("#sw-host-custom").is_visible()
+    setup_page.locator("#sw-host-custom").wait_for(state="visible", timeout=3_000)
     assert not setup_page.locator("#sw-ssh-target").is_visible()
 
 
 def test_setup_wizard_ssh_tab_restores(setup_page):
     setup_page.locator("button:has-text('Local / Custom')").click()
-    setup_page.wait_for_timeout(200)
+    setup_page.locator("#sw-host-custom").wait_for(state="visible", timeout=3_000)
     setup_page.locator("button:has-text('SSH Tunnel')").click()
-    setup_page.wait_for_timeout(200)
-    assert setup_page.locator("#sw-ssh-target").is_visible()
+    setup_page.locator("#sw-ssh-target").wait_for(state="visible", timeout=3_000)
 
 
 # ── Token generation ───────────────────────────────────────────────────────
@@ -133,8 +131,7 @@ def test_submit_without_token_shows_error(setup_page):
 
 
 def test_submit_with_short_token_shows_error(setup_page):
-    setup_page.locator("#sw-token").fill("short")
-    # make it editable
+    # Make input editable, then fill with a short token
     setup_page.evaluate("document.getElementById('sw-token').removeAttribute('readonly')")
     setup_page.locator("#sw-token").fill("tooshort")
     setup_page.locator("button:has-text('Continue (session only)')").click()
@@ -142,31 +139,19 @@ def test_submit_with_short_token_shows_error(setup_page):
     assert setup_page.locator("#sw-error").is_visible()
 
 
-# ── Session-only flow ──────────────────────────────────────────────────────
-
-def test_session_only_setup_completes(setup_page, unconfigured_server):
-    """Complete setup via session-only path and verify main app loads."""
-    # Switch to local tab to avoid needing real Docker
-    setup_page.locator("button:has-text('Local / Custom')").click()
-    setup_page.wait_for_timeout(200)
-    setup_page.locator("#sw-host-custom").fill("unix:///var/run/docker.sock")
-    setup_page.locator("button:has-text('Generate')").click()
-    setup_page.locator("button:has-text('Continue (session only)')").click()
-    # After setup, page reloads — should show main app or Docker-unreachable state
-    setup_page.wait_for_selector("h2, h3", timeout=15_000)
-    # Wizard should be gone
-    assert setup_page.locator("text=First-run setup").count() == 0
-
-
 # ── SSH tunnel connect ─────────────────────────────────────────────────────
 
 def test_tunnel_connect_invalid_target_shows_error(setup_page):
-    """Entering a bad SSH target shows an error status."""
+    """Entering a bad SSH target (missing @) shows a validation error status."""
     setup_page.locator("#sw-ssh-target").fill("notvalid")
     setup_page.locator("button:has-text('Connect')").click()
-    setup_page.wait_for_timeout(500)
-    status = setup_page.locator("#sw-tunnel-status")
-    assert "✗" in status.inner_text() or "Enter" in status.inner_text()
+    # Wait for fetch to complete — status changes from 'Connecting…' to error
+    setup_page.wait_for_function(
+        "() => !document.getElementById('sw-tunnel-status').textContent.includes('Connecting')",
+        timeout=10_000,
+    )
+    status_text = setup_page.locator("#sw-tunnel-status").inner_text()
+    assert "✗" in status_text or "must be" in status_text
 
 
 @pytest.mark.skipif(not E2E_SSH_TUNNEL_TARGET, reason="E2E_SSH_TUNNEL_TARGET not set")
@@ -179,3 +164,19 @@ def test_tunnel_connect_real_ssh(setup_page):
     assert "✓" in status.inner_text()
     host_val = setup_page.evaluate("document.getElementById('sw-host').value")
     assert host_val.startswith("unix://")
+
+
+# ── Session-only flow (runs last — configures the server in session memory) ─
+
+def test_session_only_setup_completes(setup_page, unconfigured_server):
+    """Complete setup via session-only path and verify main app loads."""
+    # Switch to local tab to avoid needing real Docker
+    setup_page.locator("button:has-text('Local / Custom')").click()
+    setup_page.locator("#sw-host-custom").wait_for(state="visible", timeout=3_000)
+    setup_page.locator("#sw-host-custom").fill("unix:///var/run/docker.sock")
+    setup_page.locator("button:has-text('Generate')").click()
+    setup_page.locator("button:has-text('Continue (session only)')").click()
+    # After setup, page reloads — should show main app or Docker-unreachable state
+    setup_page.wait_for_selector("h2, h3", timeout=15_000)
+    # Wizard should be gone
+    assert setup_page.locator("text=First-run setup").count() == 0

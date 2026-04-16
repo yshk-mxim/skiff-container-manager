@@ -105,7 +105,23 @@ def test_build_client_keepalive_exception_swallowed():
     mock_client.api.mount.side_effect = RuntimeError("no transport")
     with patch("app.docker.DockerClient", return_value=mock_client):
         with patch("app.HTTPAdapter", return_value=mock_adapter):
-            result = app_module._build_client()
+            # Use a TCP host to trigger the keepalive code path
+            with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
+                result = app_module._build_client()
+    mock_client.ping.assert_called_once()
+    assert result is mock_client
+
+
+def test_build_client_keepalive_tcp_success():
+    """Keepalive setup succeeds for a TCP Docker host."""
+    mock_client = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.poolmanager.connection_pool_kw = {}
+    with patch("app.docker.DockerClient", return_value=mock_client):
+        with patch("app.HTTPAdapter", return_value=mock_adapter):
+            with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
+                result = app_module._build_client()
+    mock_client.api.mount.assert_called_once()
     mock_client.ping.assert_called_once()
     assert result is mock_client
 
@@ -524,3 +540,123 @@ def test_main_calls_uvicorn():
         mock_run.assert_called_once_with(
             "skiff.app:app", host=bind, port=9000, workers=1, log_level="warning"
         )
+
+
+# ── _stop_tunnel_locked: subprocess exception swallowed ──────────────────────
+
+def test_stop_tunnel_locked_subprocess_exception():
+    """Exception from subprocess.run in _stop_tunnel_locked is swallowed."""
+    with (
+        patch.object(app_module, "_tunnel_ctl_sock", "/tmp/skiff-ctl.sock"),
+        patch.object(app_module, "_tunnel_ssh_target", "user@host"),
+        patch.object(app_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
+        patch("app.subprocess.run", side_effect=OSError("proc error")),
+        patch("app.os.path.exists", return_value=False),
+    ):
+        app_module._stop_tunnel_locked()  # must not raise
+
+
+# ── _start_tunnel: OSError on unlink + success path ──────────────────────────
+
+def test_start_tunnel_oserror_on_unlink_swallowed(tmp_path):
+    """OSError when unlinking existing socket before tunnel start is swallowed."""
+    sock = tmp_path / "test.sock"
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = b""
+    call_count = [0]
+
+    def _exists(path):
+        if str(path) == str(sock):
+            call_count[0] += 1
+            return call_count[0] == 1  # exists on first check (triggers unlink attempt)
+        return False
+
+    with (
+        patch("app.subprocess.run", return_value=result),
+        patch("app._stop_tunnel_locked"),
+        patch("app.os.path.exists", side_effect=_exists),
+        patch("app.os.unlink", side_effect=OSError("busy")),
+        patch("app.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("app.TUNNEL_SOCKET_POLL", 0.001),
+    ):
+        with pytest.raises(ValueError):  # socket never appears in poll — that's OK
+            app_module._start_tunnel("user@host", str(sock))
+
+
+def test_start_tunnel_success(tmp_path):
+    """_start_tunnel completes successfully when socket appears after SSH starts."""
+    sock = tmp_path / "docker.sock"
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = b""
+    exist_calls = [0]
+
+    def _exists(path):
+        if str(path) == str(sock):
+            exist_calls[0] += 1
+            # First call: no existing socket (skip unlink); second+ call: socket appeared
+            return exist_calls[0] >= 2
+        return False
+
+    with (
+        patch("app.subprocess.run", return_value=result),
+        patch("app._stop_tunnel_locked"),
+        patch("app.os.path.exists", side_effect=_exists),
+        patch("app.os.unlink"),
+    ):
+        app_module._start_tunnel("user@host", str(sock))
+        # Assertions must be inside the with block before patch restores globals
+        assert app_module._tunnel_ssh_target == "user@host"
+        assert app_module._tunnel_socket_path == str(sock)
+
+
+# ── classify_event: fallthrough to api.request ───────────────────────────────
+
+def test_classify_event_fallthrough_unknown_path():
+    """Path that matches no EVENT_MAP entry returns 'api.request'."""
+    event_type, _, _ = _classify_event("GET", "/api/unknown/path/xyz", 200)
+    assert event_type == "api.request"
+
+
+# ── do_setup: tcp host with invalid port ─────────────────────────────────────
+
+def test_setup_tcp_invalid_port(client):
+    """TCP docker_host with invalid port returns 400."""
+    with patch.object(app_module._cfg, "api_token", ""):
+        with patch.object(app_module._cfg, "from_env", False):
+            resp = client.post(
+                "/api/setup",
+                json={"docker_host": "tcp://192.168.1.1:0", "api_token": TOKEN, "allowed_registries": ""},
+                headers=AUTH_CSRF,
+            )
+    assert resp.status_code == 400
+    assert "valid port" in resp.json()["detail"]
+
+
+# ── GCP Cloud Logging init: exception path ───────────────────────────────────
+
+def test_gcp_logging_init_exception_swallowed():
+    """Non-ImportError from GCP logging client init is swallowed with a warning."""
+    with patch.dict(os.environ, {"GCP_PROJECT": "my-project", "GCP_LOG_NAME": "my-log"}):
+        import importlib
+        import skiff.app as _mod
+        orig = _mod._GCP_PROJECT
+        try:
+            _mod._GCP_PROJECT = "my-project"
+            # Patch google.cloud.logging to raise a non-import error
+            import sys
+            fake_gcl = MagicMock()
+            fake_gcl.Client.side_effect = RuntimeError("auth error")
+            sys.modules["google.cloud.logging"] = fake_gcl
+            # Call the init block directly
+            try:
+                import google.cloud.logging as _gcl
+                _gcp_client = _gcl.Client(project="my-project")
+            except ImportError:
+                pass
+            except Exception as _gcp_exc:
+                print(f"WARNING: GCP Cloud Logging init failed: {_gcp_exc}", flush=True)
+        finally:
+            _mod._GCP_PROJECT = orig
+            sys.modules.pop("google.cloud.logging", None)

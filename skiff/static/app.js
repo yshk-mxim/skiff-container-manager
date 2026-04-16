@@ -63,11 +63,24 @@ function setToken(t) {
   resetIdleTimer();
 }
 
+// Track all active WebSockets so they can all be closed on session end / tunnel drop
+var _activeWS = new Set();
+function registerWS(ws) {
+  _activeWS.add(ws);
+  ws.addEventListener('close', function() { _activeWS.delete(ws); });
+  return ws;
+}
+function closeAllWS() {
+  _activeWS.forEach(function(ws) { try { ws.close(1000, 'session ended'); } catch(e) {} });
+  _activeWS.clear();
+}
+
 function sessionCleanup() {
-  // Close any open WebSocket, clear refresh timer, remove modals
-  clearInterval(refreshTimer);
+  // Close all open WebSockets, clear refresh timers, remove modals
+  clearAllIntervals();
+  closeAllWS();
   var main = document.getElementById('main');
-  if (main && main._ws) { try { main._ws.close(); } catch(e) {} main._ws = null; }
+  if (main) main._ws = null;
   document.querySelectorAll('.modal-bg').forEach(function(m) { m.remove(); });
   _refreshInFlight = false;
 }
@@ -152,6 +165,7 @@ function showLogin() {
 }
 
 // ── Fetch wrapper ──
+var FETCH_TIMEOUT_MS = 30000;
 async function apiFetch(url, opts) {
   if (checkSessionExpiry()) throw new Error('Session expired');
   opts = opts || {};
@@ -159,8 +173,25 @@ async function apiFetch(url, opts) {
   var t = getToken();
   if (t) headers['Authorization'] = 'Bearer ' + t;
   if (opts.headers) Object.assign(headers, opts.headers);
-  const res = await fetch(url, Object.assign({}, opts, { headers: headers }));
-  if (res.status === 503) { setDockerStatus(false, 'Container engine unreachable'); throw new Error('Container engine unreachable'); }
+  // Abort after FETCH_TIMEOUT_MS to prevent hanging requests
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, opts._timeout || FETCH_TIMEOUT_MS);
+  var fetchOpts = Object.assign({}, opts, { headers: headers, signal: controller.signal });
+  delete fetchOpts._timeout;
+  var res;
+  try {
+    res = await fetch(url, fetchOpts);
+  } catch(e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') throw new Error('Request timed out — check your connection');
+    throw new Error('Network error — server may be unreachable');
+  }
+  clearTimeout(timeoutId);
+  if (res.status === 503) {
+    setDockerStatus(false, 'Container engine unreachable');
+    closeAllWS();  // close open terminals/log streams — tunnel may have dropped
+    throw new Error('Container engine unreachable');
+  }
   if (res.status === 401) { sessionStorage.removeItem('api_token'); toast('Authentication failed — check your API token', 'error'); showLogin(); throw new Error('Authentication required'); }
   if (res.status === 429) { throw new Error('Rate limited — please wait a moment and try again'); }
   if (!res.ok) { const err = await res.json().catch(function() { return { detail: res.statusText }; }); throw new Error(err.detail || 'Request failed'); }
@@ -292,13 +323,13 @@ async function loadContainers() {
       copyNote.textContent = 'Click the command to copy it, then run it in your terminal. After the tunnel is open, reload this page.';
       form.appendChild(copyNote);
       errDiv.appendChild(form);
+      main.appendChild(errDiv);
       function updateCmd() {
-        var u = document.getElementById('tunnel-user').value.trim() || 'user';
-        var h = document.getElementById('tunnel-host').value.trim() || 'docker-host';
+        var u = form.querySelector('#tunnel-user').value.trim() || 'user';
+        var h = form.querySelector('#tunnel-host').value.trim() || 'docker-host';
         sessionStorage.setItem('tunnelUser', u); sessionStorage.setItem('tunnelHost', h);
         cmdPre.textContent = 'ssh -fNL /tmp/docker.sock:/var/run/docker.sock ' + u + '@' + h;
       }
-      updateCmd();
       form.querySelector('#tunnel-user').addEventListener('input', updateCmd);
       form.querySelector('#tunnel-host').addEventListener('input', updateCmd);
       cmdPre.addEventListener('click', function() {
@@ -307,7 +338,7 @@ async function loadContainers() {
           setTimeout(function() { cmdPre.style.outline = ''; }, 1200);
         });
       });
-      main.appendChild(errDiv);
+      updateCmd();
     }
     clearInterval(refreshTimer);
     refreshTimer = managedInterval(loadContainers, 5000);
@@ -540,8 +571,6 @@ function showLogsContent(id, name) {
             s.textContent = p;
             viewer.appendChild(s);
           });
-        } else {
-          viewer.appendChild(document.createTextNode(line));
         }
       });
     } catch(e) { /* invalid regex, ignore */ }
@@ -559,16 +588,22 @@ function connectLogsWS(id, attempt, allLines, viewer) {
     return;
   }
   var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
-  var ws = new WebSocket(wsUrl('/ws/logs/' + id));
+  // Close any previous WS stored on the log viewer to avoid duplicates
+  if (viewer._ws) { try { viewer._ws.close(1000, 'reconnecting'); } catch(e) {} }
+  var ws = registerWS(new WebSocket(wsUrl('/ws/logs/' + id)));
+  viewer._ws = ws;
   ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { allLines.push('\n[Reconnected]\n'); viewer.textContent = allLines.join(''); } };
   ws.onmessage = function(e) {
+    if (ws !== viewer._ws) return;  // discard messages from stale sockets
     allLines.push(e.data);
     if (allLines.length > MAX_LOG_LINES) { allLines.splice(0, allLines.length - MAX_LOG_LINES); viewer.textContent = allLines.join(''); }
     else { viewer.textContent += e.data; }
     viewer.scrollTop = viewer.scrollHeight;
   };
   ws.onerror = function() { allLines.push('\n[Connection error]'); viewer.textContent += '\n[Connection error]'; };
-  ws.onclose = function() {
+  ws.onclose = function(evt) {
+    if (ws !== viewer._ws) return;  // stale socket closed, ignore
+    if (evt.code === 1000) return;  // clean close (navigation away or disconnect)
     if (document.getElementById('log-output')) {
       allLines.push('\n[Reconnecting in '+(delay/1000)+'s...]\n');
       viewer.textContent += '\n[Reconnecting in '+(delay/1000)+'s...]\n';
@@ -604,23 +639,28 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
     return;
   }
   var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
-  var ws = new WebSocket(wsUrl('/ws/exec/' + id));
+  // Close any previous WS to avoid duplicate connections
+  var prevWs = document.getElementById('main') && document.getElementById('main')._ws;
+  if (prevWs && prevWs.readyState < WebSocket.CLOSING) {
+    try { prevWs.close(1000, 'reconnecting'); } catch(e) {}
+  }
+  var ws = registerWS(new WebSocket(wsUrl('/ws/exec/' + id)));
+  document.getElementById('main')._ws = ws;
   ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { term.textContent += '\r\n[Reconnected]\r\n'; } };
-  ws.onmessage = function(e) { term.textContent += e.data; term.scrollTop = term.scrollHeight; };
+  ws.onmessage = function(e) {
+    if (isClosed()) return;
+    term.textContent += e.data; term.scrollTop = term.scrollHeight;
+  };
   ws.onerror = function() { term.textContent += '\r\n[Connection error]'; };
-  ws.onclose = function() {
-    if (!isClosed() && document.getElementById('term-output')) {
+  ws.onclose = function(evt) {
+    if (isClosed()) { term.textContent += '\r\n[Session ended]'; return; }
+    if (evt.code === 1000) return;  // clean close
+    if (document.getElementById('term-output')) {
       term.textContent += '\r\n[Reconnecting in ' + (delay / 1000) + 's...]\r\n';
       setTimeout(function() { connectExecWS(id, attempt + 1, term, input, el, isClosed, setClosed); }, delay);
-    } else if (!isClosed()) {
-      term.textContent += '\r\n[Session ended]';
-      var btn = makeBtn('Reconnect shell', function() { setClosed(false); connectExecWS(id, 0, term, input, el, isClosed, setClosed); }, 'btn primary');
-      btn.style.marginTop = '8px';
-      el.appendChild(btn);
     }
   };
   input.onkeydown = function(e) { if (e.key === 'Enter') { if (ws.readyState === WebSocket.OPEN) { ws.send(input.value + '\n'); } input.value = ''; } };
-  document.getElementById('main')._ws = ws;
 }
 
 // ── Inspect ──
@@ -1560,6 +1600,8 @@ function showSetupWizard(state) {
     const tunnelActive = !!(state && state.tunnel_active);
 
     // Build the card using a static HTML template — no server data interpolated
+    // Note: no inline onclick handlers — CSP script-src 'self' blocks them.
+    // Event listeners are attached via addEventListener after appending to DOM.
     wrap.innerHTML =
       '<div style="background:#1e293b;border-radius:12px;padding:40px;width:520px;max-width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
@@ -1568,14 +1610,14 @@ function showSetupWizard(state) {
         '</div>' +
         '<p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>' +
         '<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">' +
-          '<button id="sw-tab-tunnel" onclick="swSetMode(\'tunnel\')" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>' +
-          '<button id="sw-tab-local" onclick="swSetMode(\'local\')" style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>' +
+          '<button id="sw-tab-tunnel" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>' +
+          '<button id="sw-tab-local" style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>' +
         '</div>' +
         '<div id="sw-panel-tunnel">' +
           '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host</span></label>' +
           '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
             '<input id="sw-ssh-target" type="text" style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;outline:none;" placeholder="dev@my-docker-vm"/>' +
-            '<button id="sw-tunnel-btn" onclick="swConnectTunnel()" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>' +
+            '<button id="sw-tunnel-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>' +
           '</div>' +
           '<div id="sw-tunnel-status" style="font-size:12px;margin-bottom:16px;min-height:18px;"></div>' +
         '</div>' +
@@ -1588,18 +1630,28 @@ function showSetupWizard(state) {
         '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">API TOKEN</label>' +
         '<div style="display:flex;gap:8px;margin-bottom:16px;">' +
           '<input id="sw-token" type="text" readonly style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:13px;font-family:monospace;outline:none;" placeholder="Click Generate \u2192"/>' +
-          '<button onclick="document.getElementById(\'sw-token\').value=Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b=>b.toString(16).padStart(2,\'0\')).join(\'\')" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Generate</button>' +
+          '<button id="sw-gen-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Generate</button>' +
         '</div>' +
         '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">ALLOWED REGISTRIES <span style="color:#64748b;font-weight:400;">(comma-separated, empty = allow all)</span></label>' +
         '<input id="sw-regs" type="text" value="" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:24px;outline:none;" placeholder="docker.io,ghcr.io,us-docker.pkg.dev/my-project/"/>' +
         '<div id="sw-error" style="display:none;color:#f87171;font-size:13px;margin-bottom:16px;"></div>' +
         '<div style="display:flex;gap:12px;">' +
-          '<button onclick="swSubmit(true)" style="flex:1;background:#0d9488;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Save .env &amp; Continue</button>' +
-          '<button onclick="swSubmit(false)" style="flex:1;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Continue (session only)</button>' +
+          '<button id="sw-btn-save" style="flex:1;background:#0d9488;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Save .env &amp; Continue</button>' +
+          '<button id="sw-btn-session" style="flex:1;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Continue (session only)</button>' +
         '</div>' +
         '<p style="color:#475569;font-size:11px;text-align:center;margin:16px 0 0;">"Session only" keeps config in server memory. "Save .env" downloads a config file for next time.</p>' +
       '</div>';
     document.body.appendChild(wrap);
+
+    // Attach event listeners (CSP blocks inline onclick handlers)
+    document.getElementById('sw-tab-tunnel').addEventListener('click', function() { swSetMode('tunnel'); });
+    document.getElementById('sw-tab-local').addEventListener('click', function() { swSetMode('local'); });
+    document.getElementById('sw-tunnel-btn').addEventListener('click', swConnectTunnel);
+    document.getElementById('sw-gen-btn').addEventListener('click', function() {
+        document.getElementById('sw-token').value = Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    });
+    document.getElementById('sw-btn-save').addEventListener('click', function() { swSubmit(true); });
+    document.getElementById('sw-btn-session').addEventListener('click', function() { swSubmit(false); });
 
     // Set server-supplied values safely via DOM properties (never via innerHTML interpolation)
     const hostInput = document.getElementById('sw-host');
@@ -1618,8 +1670,8 @@ function showSetupWizard(state) {
 
 function swSetMode(mode) {
     const isTunnel = mode === 'tunnel';
-    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? '' : 'none';
-    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : '';
+    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? 'block' : 'none';
+    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : 'block';
     document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : 'transparent';
     document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#94a3b8';
     document.getElementById('sw-tab-local').style.background = isTunnel ? 'transparent' : '#0d9488';
@@ -1708,6 +1760,30 @@ async function swSubmit(saveEnv) {
     location.reload();
 }
 
+// ── Sidebar nav wiring (CSP-safe: no inline onclick) ──
+document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
+  a.addEventListener('click', function() { showPage(a.getAttribute('data-page')); });
+});
+
+// ── Logout button ──
+(function() {
+  var logoutBtn = document.getElementById('sidebar-logout');
+  if (!logoutBtn) return;
+  function syncLogout() {
+    logoutBtn.style.display = getToken() ? 'block' : 'none';
+  }
+  logoutBtn.addEventListener('click', function() {
+    sessionStorage.clear();
+    sessionCleanup();
+    syncLogout();
+    showLogin();
+  });
+  // Show/hide on token changes by re-checking periodically and on visibility
+  document.addEventListener('visibilitychange', syncLogout);
+  setInterval(syncLogout, 2000);
+  syncLogout();
+})();
+
 // ── Init ──
 (async function() {
   if (await checkSetupState()) return;
@@ -1715,6 +1791,9 @@ async function swSubmit(saveEnv) {
     var cfg = await fetch(API+'/auth-required').then(function(r){return r.json();});
     if (cfg.required && !getToken()) { showLogin(); return; }
   } catch(e) { /* server down, try loading anyway */ }
+  // Show logout button now that we know auth is needed
+  var logoutBtn = document.getElementById('sidebar-logout');
+  if (logoutBtn && getToken()) logoutBtn.style.display = 'block';
   // Fetch app config (docker_vm_host, docker_host, etc.) for context-aware UI
   var _appConfig = null;
   try {
