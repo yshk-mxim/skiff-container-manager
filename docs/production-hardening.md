@@ -137,8 +137,40 @@ AUDIT_LOG=/var/log/skiff-audit.jsonl
 ```
 
 **Ship to a log aggregator:**
-- **Loki + Grafana** (open source): tail the JSONL file with Promtail or Alloy
-- **ELK / OpenSearch**: use Filebeat to tail and forward
+
+- **Loki + Grafana** (open source): tail the JSONL file with **Grafana Alloy** (the current agent).
+  Promtail reached EOL on **March 2, 2026** — do not use it for new deployments.
+  Alloy requires an explicit JSON pipeline stage to promote fields to labels; without it,
+  `{event_type="auth.denied"}` LogQL queries will not work:
+  ```alloy
+  loki.source.file "skiff_audit" {
+    targets = [{ __path__ = "/var/log/skiff-audit.jsonl" }]
+    forward_to = [loki.process.parse_json.receiver]
+  }
+  loki.process "parse_json" {
+    stage.json {
+      expressions = { event_type = "", status = "", remote = "" }
+    }
+    stage.labels {
+      values = { event_type = "", status = "" }
+    }
+    forward_to = [loki.write.default.receiver]
+  }
+  ```
+
+- **Elasticsearch / ELK**: use Filebeat to tail and forward. Filebeat is actively maintained by Elastic and connects natively to Elasticsearch.
+
+- **OpenSearch**: use **Fluent Bit** with the `opensearch` output plugin (added in Fluent Bit 1.9, current version 3.x). Do NOT use Filebeat — Filebeat 7.13+ explicitly rejects connections to non-Elastic endpoints and is functionally incompatible with OpenSearch.
+  ```ini
+  [OUTPUT]
+      Name            opensearch
+      Match           *
+      Host            your-opensearch-host
+      Port            9200
+      Index           skiff-audit
+      Type            _doc
+      tls             On
+  ```
 
 **Cloud-specific (optional):**
 - **GCP Cloud Logging** — install the optional dep and set the project:
@@ -148,19 +180,52 @@ AUDIT_LOG=/var/log/skiff-audit.jsonl
   export GCP_LOG_NAME=skiff-audit   # optional, default: skiff-audit
   ```
   SKIFF dual-writes every log entry to Cloud Logging alongside the local file and stdout.
+  The `google-cloud-logging` v3.x library auto-detects the GCP resource from the
+  environment (GKE, Cloud Run, GCE, etc.); `GOOGLE_CLOUD_PROJECT` overrides the project.
 
 **Useful `event_type` values for alerting:**
 
-| Event type | Description |
-|---|---|
-| `auth.denied` | 401/403 response — failed or missing token |
-| `rate_limit.exceeded` | 429 response |
-| `container.run` | New container started |
-| `container.action` | Start/stop/restart/kill on existing container |
-| `compose.deployed` | Compose stack brought up |
-| `image.pull` | Image pulled from registry |
-| `audit.log_read` | Audit log accessed |
-| `setup.configured` | Server configured via setup wizard |
+| Event type | Priority | Description |
+|---|---|---|
+| `auth.denied` | Critical | 401/403 response — failed or missing token |
+| `rate_limit.exceeded` | High | 429 response — automated tooling signal |
+| `container.run` | High | New container started |
+| `container.action` | Medium | Start/stop/restart/kill on existing container |
+| `compose.deployed` | Medium | Compose stack brought up |
+| `image.pull` | Medium | Image pulled from registry |
+| `audit.log_read` | Low | Audit log accessed |
+| `setup.configured` | Info | Server configured via setup wizard |
+
+**The most important alert — co-occurrence of rate limiting and auth failure from the same IP:**
+An attacker who hits the rate limiter first, then pivots to auth attempts just under the threshold, is the canonical automated-credential-stuffing pattern.
+
+Splunk SPL:
+```spl
+index=skiff event_type IN ("rate_limit.exceeded", "auth.denied") earliest=-10m
+| stats countif(event_type="auth.denied")   as auth_denied,
+        countif(event_type="rate_limit.exceeded") as rate_limited
+  by remote
+| where auth_denied > 5 AND rate_limited > 0
+```
+
+Microsoft Sentinel KQL:
+```kql
+SkiffAuditLogs
+| where event_type in ("auth.denied", "rate_limit.exceeded")
+| where TimeGenerated > ago(10m)
+| summarize AuthDenied    = countif(event_type == "auth.denied"),
+            RateLimited   = countif(event_type == "rate_limit.exceeded")
+  by remote
+| where AuthDenied > 5 and RateLimited > 0
+```
+
+Simple `auth.denied` threshold (brute force from single IP, 10+ failures in 5 min):
+```spl
+index=skiff event_type="auth.denied"
+| bin _time span=5m
+| stats count as denied by _time, remote
+| where denied >= 10
+```
 
 ---
 
