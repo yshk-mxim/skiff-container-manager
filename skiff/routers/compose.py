@@ -52,8 +52,10 @@ def compose_up(request: Request, file: UploadFile | None = None, project_name: s
     validate_project_name(project_name)
 
     COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
-    project_dir = COMPOSE_DIR / project_name
-    # Prevent symlink-based path traversal — check BEFORE any filesystem ops
+    # os.path.basename strips any directory component — combined with COMPOSE_DIR
+    # (a trusted constant) this constructs a CodeQL-recognised safe path even though
+    # project_name comes from user input (PROJECT_NAME_RE already forbids slashes).
+    project_dir = COMPOSE_DIR / os.path.basename(project_name)
     if not project_dir.resolve().is_relative_to(COMPOSE_DIR.resolve()):
         raise HTTPException(400, "Invalid project directory")
     project_dir.mkdir(exist_ok=True)

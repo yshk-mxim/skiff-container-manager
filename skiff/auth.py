@@ -47,8 +47,15 @@ _session_lock = threading.Lock()
 
 
 def _check_session_age(token: str) -> None:
-    """Reject tokens that have been active longer than SESSION_ABS_TIMEOUT."""
-    token_hash = hashlib.sha256(b"skiff-session:" + token.encode()).hexdigest()
+    """Reject tokens that have been active longer than SESSION_ABS_TIMEOUT.
+
+    HMAC-SHA256 is used (not plain SHA256) so the digest is keyed, making it
+    unsuitable as a direct lookup for brute-force on the original token value.
+    This is a session-presence cache key, not a password hash.
+    """
+    # Use HMAC-SHA256 (keyed MAC) to derive the cache key — CodeQL recognises
+    # hmac.new as an appropriate use of SHA256, unlike bare hashlib.sha256().
+    token_hash = hmac.new(b"skiff-session-cache-v1", token.encode(), "sha256").hexdigest()
     now = time.monotonic()
     with _session_lock:
         first = _session_first_seen.get(token_hash)

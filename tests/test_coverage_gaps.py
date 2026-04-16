@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -218,17 +219,19 @@ def test_start_tunnel_socket_never_appears():
             docker_client_module._start_tunnel("user@host", "/tmp/skiff-test-never.sock")
 
 
-def test_start_tunnel_existing_socket_unlinked(tmp_path):
+def test_start_tunnel_existing_socket_unlinked():
     """If socket already exists, it gets unlinked before starting."""
-    sock = tmp_path / "test.sock"
-    sock.touch()
+    from pathlib import Path as _Path
+    tmp_root = _Path("/tmp").resolve()
+    sock = tmp_root / f"skiff-test-existing-{os.getpid()}.sock"
+    sock_resolved = sock.resolve()
     result = MagicMock()
     result.returncode = 0
     result.stderr = b""
     call_count = [0]
 
     def _exists(path):
-        if str(path) == str(sock):
+        if str(path) == str(sock_resolved):
             call_count[0] += 1
             return call_count[0] == 1  # exists first time (unlink), not after
         return False
@@ -243,6 +246,18 @@ def test_start_tunnel_existing_socket_unlinked(tmp_path):
     ):
         with pytest.raises(ValueError):  # socket won't appear — that's OK
             docker_client_module._start_tunnel("user@host", str(sock))
+
+
+def test_start_tunnel_invalid_ssh_target():
+    """_start_tunnel raises ValueError for ssh_target that fails regex."""
+    with pytest.raises(ValueError, match="Invalid ssh_target"):
+        docker_client_module._start_tunnel("not-valid", "/tmp/test.sock")
+
+
+def test_start_tunnel_socket_path_not_under_tmp():
+    """_start_tunnel raises ValueError when socket_path is not under /tmp."""
+    with pytest.raises(ValueError, match="under /tmp"):
+        docker_client_module._start_tunnel("user@host", "/etc/evil.sock")
 
 
 # ── Session cache eviction when full ─────────────────────────────────────────
@@ -383,6 +398,27 @@ def test_validate_ws_origin_unknown_origin():
     assert result is False
 
 
+def test_validate_ws_origin_empty_allowed_origins():
+    """Empty allowed_origins list → allow all (no restrictions configured)."""
+    ws = MagicMock()
+    ws.headers = {}
+    with patch.object(auth_module._cfg, "allowed_origins", []):
+        result = _validate_ws_origin(ws)
+    assert result is True
+
+
+def test_validate_ws_origin_urlparse_exception():
+    """urlparse exception in origin host comparison returns False."""
+    ws = MagicMock()
+    ws.headers = {"origin": "http://some-origin.com", "host": "server"}
+    with (
+        patch.object(auth_module._cfg, "allowed_origins", ["http://other.com"]),
+        patch("skiff.auth.urlparse", side_effect=ValueError("parse error")),
+    ):
+        result = _validate_ws_origin(ws)
+    assert result is False
+
+
 # ── _validate_ws_token_from_message: session expired ─────────────────────────
 
 @pytest.mark.asyncio
@@ -396,6 +432,68 @@ async def test_validate_ws_token_session_expired():
     ):
         result = await _validate_ws_token_from_message(ws)
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_validate_ws_token_lockout_active():
+    """Per-IP lockout (not yet expired) returns False immediately."""
+    ws = AsyncMock()
+    ws.client = MagicMock()
+    ws.client.host = "10.99.1.1"
+    auth_module._ws_auth_failures["10.99.1.1"] = (config_module.WS_AUTH_MAX_ATTEMPTS, time.monotonic())
+    try:
+        with patch.object(app_module._cfg, "api_token", TOKEN):
+            result = await _validate_ws_token_from_message(ws)
+        assert result is False
+    finally:
+        auth_module._ws_auth_failures.pop("10.99.1.1", None)
+
+
+@pytest.mark.asyncio
+async def test_validate_ws_token_lockout_expired():
+    """Expired lockout entry is cleared and auth proceeds normally."""
+    ws = AsyncMock()
+    ws.client = MagicMock()
+    ws.client.host = "10.99.1.2"
+    ws.receive_text = AsyncMock(return_value=f"AUTH {TOKEN}")
+    # Failure older than WS_AUTH_LOCKOUT_SECS (300 s)
+    auth_module._ws_auth_failures["10.99.1.2"] = (99, time.monotonic() - 400)
+    try:
+        with patch.object(app_module._cfg, "api_token", TOKEN):
+            result = await _validate_ws_token_from_message(ws)
+        assert result is True
+        assert "10.99.1.2" not in auth_module._ws_auth_failures
+    finally:
+        auth_module._ws_auth_failures.pop("10.99.1.2", None)
+
+
+# ── ws_keepalive: exception branches ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ws_keepalive_http_exception_closes_4003():
+    """Session expiry during keepalive closes WS with code 4003 and exits loop."""
+    ws = AsyncMock()
+    with (
+        patch("skiff.auth.asyncio.sleep", new_callable=AsyncMock),
+        patch("skiff.auth._check_session_age", side_effect=HTTPException(401, "expired")),
+        patch.object(auth_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
+    ):
+        await auth_module.ws_keepalive(ws)
+    ws.close.assert_called_once_with(code=4003)
+
+
+@pytest.mark.asyncio
+async def test_ws_keepalive_send_exception_breaks():
+    """Generic exception from send_text causes keepalive to exit without raising."""
+    ws = AsyncMock()
+    ws.send_text = AsyncMock(side_effect=ConnectionResetError("reset"))
+    with (
+        patch("skiff.auth.asyncio.sleep", new_callable=AsyncMock),
+        patch("skiff.auth._check_session_age"),
+        patch.object(auth_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
+    ):
+        await auth_module.ws_keepalive(ws)
+    # Exits cleanly — no exception propagated
 
 
 # ── _redact_dict: all branches ───────────────────────────────────────────────
@@ -565,11 +663,11 @@ def test_stop_tunnel_locked_subprocess_exception():
 
 def test_start_tunnel_oserror_on_unlink_swallowed():
     """OSError when unlinking existing socket before tunnel start is swallowed."""
-    import os
+    import os as _os_real
     from pathlib import Path as _Path
     # Must be under resolved /tmp to pass path validation (macOS: /tmp → /private/tmp)
     tmp_root = _Path("/tmp").resolve()
-    sock = tmp_root / f"skiff-test-unlink-{os.getpid()}.sock"
+    sock = tmp_root / f"skiff-test-unlink-{_os_real.getpid()}.sock"
     sock_resolved = sock.resolve()
     result = MagicMock()
     result.returncode = 0
@@ -582,11 +680,21 @@ def test_start_tunnel_oserror_on_unlink_swallowed():
             return call_count[0] == 1  # exists on first check (triggers unlink attempt)
         return False
 
+    # Capture the real unlink before patching so the anonymous conf-file cleanup
+    # (os.unlink(_conf_path) immediately after mkstemp) still works. Only raise
+    # OSError for the socket path — that is what this test is covering.
+    _real_unlink = _os_real.unlink
+
+    def _unlink_se(path):
+        if str(path) == str(sock_resolved):
+            raise OSError("busy")
+        _real_unlink(path)  # allow conf-file unlink to proceed normally
+
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
         patch("skiff.docker_client.os.path.exists", side_effect=_exists),
-        patch("skiff.docker_client.os.unlink", side_effect=OSError("busy")),
+        patch("skiff.docker_client.os.unlink", side_effect=_unlink_se),
         patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
         patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
     ):

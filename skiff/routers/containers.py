@@ -550,8 +550,6 @@ async def stream_logs(websocket: WebSocket, container_id: str):
                 except TimeoutError:
                     await websocket.send_text("\n[Idle timeout — no new logs for 5 minutes]\n")
                     break
-                except StopIteration:
-                    break
 
         read_task = asyncio.create_task(read_logs())
         keepalive_task = asyncio.create_task(ws_keepalive(websocket))

@@ -148,6 +148,18 @@ def test_ready_docker_unreachable(client):
     assert resp.json()["status"] == "not_ready"
 
 
+# ── Debug threads ────────────────────────────────────────────────────────────
+
+def test_debug_threads(client):
+    """GET /debug/threads returns thread stacks with authentication."""
+    resp = client.get("/debug/threads", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "thread_count" in data
+    assert data["thread_count"] >= 1
+    assert "threads" in data
+
+
 # ── LICENSE ──────────────────────────────────────────────────────────────────
 
 def test_license_file(client, tmp_path):
