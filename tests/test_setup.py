@@ -3,6 +3,8 @@
 """Unit tests for the setup wizard endpoints (/api/setup-state, /api/setup, /api/setup/tunnel)."""
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -185,12 +187,26 @@ def test_tunnel_stop(client, monkeypatch):
     assert stop_called
 
 
-def test_setup_state_reflects_tunnel(client, monkeypatch, tmp_path):
-    sock = tmp_path / "docker.sock"
+def test_setup_state_reflects_tunnel(client, monkeypatch):
+    """tunnel_active is True when the stored socket path exists on disk.
+
+    The socket must live directly under the resolved /tmp/ root — setup_state
+    reconstructs the path from the basename alone so that no user-controlled
+    data reaches os.path.exists (CodeQL path-injection defence).
+    """
+    from pathlib import Path as _Path
+    # Create the socket directly under the resolved /tmp so that setup_state's
+    # basename-only reconstruction points to the same file on both Linux and macOS
+    # (where /tmp resolves to /private/tmp).
+    tmp_root = _Path("/tmp").resolve()
+    sock = tmp_root / f"skiff-test-state-{os.getpid()}.sock"
     sock.touch()
-    monkeypatch.setattr(docker_client_module, "_tunnel_socket_path", str(sock))
-    r = client.get("/api/setup-state")
-    assert r.json()["tunnel_active"] is True
+    try:
+        monkeypatch.setattr(docker_client_module, "_tunnel_socket_path", str(sock))
+        r = client.get("/api/setup-state")
+        assert r.json()["tunnel_active"] is True
+    finally:
+        sock.unlink(missing_ok=True)
 
 
 # ── Security: CSRF required on setup endpoints ────────────────────────────
