@@ -12,6 +12,7 @@ Uses Playwright's page.route() to intercept and mutate API responses without
 touching the server. That means these tests don't exercise server behaviour
 (covered elsewhere) — they exercise the client's recovery logic.
 """
+
 from __future__ import annotations
 
 pytest_plugins = ["tests.conftest_e2e"]
@@ -31,6 +32,7 @@ pytestmark = pytest.mark.e2e
 # R1 — Slow API: a 10s-delayed GET /api/containers must not freeze the UI
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_r1_slow_api_shows_loading_state(page, live_server):
     """A slow first-load request must render the loading placeholder instead of a blank page.
@@ -47,6 +49,7 @@ def test_r1_slow_api_shows_loading_state(page, live_server):
     def _delay_and_continue(route):
         time.sleep(2)
         route.continue_()
+
     page.route("**/api/containers", _delay_and_continue)
 
     # Click AFTER routing is set up — the first loadContainers invocation from
@@ -76,6 +79,7 @@ def test_r1_slow_api_shows_loading_state(page, live_server):
 # R2 — API 500 mid-session: UI shows an error, doesn't leak a blank page
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_r2_api_500_shows_graceful_error(page, live_server):
     """Mid-session 500 must surface via the sidebar banner even with cached data.
@@ -94,19 +98,23 @@ def test_r2_api_500_shows_graceful_error(page, live_server):
     page.wait_for_selector("h2:has-text('Images')", timeout=MEDIUM)
 
     # Fail every /api/containers after this point
-    page.route("**/api/containers", lambda r: r.fulfill(
-        status=500, body='{"detail":"simulated server error"}',
-        content_type="application/json",
-    ))
+    page.route(
+        "**/api/containers",
+        lambda r: r.fulfill(
+            status=500,
+            body='{"detail":"simulated server error"}',
+            content_type="application/json",
+        ),
+    )
     page.locator(".sidebar a:has-text('Containers')").click()
     # The UI surfaces the error through any of these paths; accept any —
     # the point of the test is that the user is NOT left staring at stale
     # data with no indication anything went wrong.
     page.wait_for_timeout(1500)
     indicators = (
-        ".status-banner.error",      # sticky banner
-        ".empty-state h3",           # "Cannot reach Docker engine" panel
-        ".toast.error",              # transient toast
+        ".status-banner.error",  # sticky banner
+        ".empty-state h3",  # "Cannot reach Docker engine" panel
+        ".toast.error",  # transient toast
     )
     page_text = page.locator("body").inner_text().lower()
     has_visible_indicator = any(page.locator(sel).count() > 0 for sel in indicators)
@@ -121,19 +129,21 @@ def test_r2_api_500_shows_graceful_error(page, live_server):
 # R3 — 401 mid-session: user gets kicked to login, token is cleared
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_r3_api_401_forces_login_and_clears_token(page, live_server):
     _login(page, live_server)
 
     # Intercept /api/containers to return 401 exactly once
     _call_count = {"n": 0}
+
     def _once_401(route):
         _call_count["n"] += 1
         if _call_count["n"] == 1:
-            route.fulfill(status=401, body='{"detail":"invalid token"}',
-                          content_type="application/json")
+            route.fulfill(status=401, body='{"detail":"invalid token"}', content_type="application/json")
         else:
             route.continue_()
+
     page.route("**/api/containers", _once_401)
 
     page.locator(".sidebar a:has-text('Containers')").click()
@@ -148,6 +158,7 @@ def test_r3_api_401_forces_login_and_clears_token(page, live_server):
 # R4 — 503 "Container engine unreachable" triggers the helpful empty state
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_r4_503_flips_banner_on_mid_session_failure(page, live_server):
     """503 after cached data must surface visibly — banner OR empty-state
@@ -156,10 +167,14 @@ def test_r4_503_flips_banner_on_mid_session_failure(page, live_server):
     # Navigate away first so the return click fetches fresh.
     page.locator(".sidebar a:has-text('Images')").click()
     page.wait_for_selector("h2:has-text('Images')", timeout=MEDIUM)
-    page.route("**/api/containers", lambda r: r.fulfill(
-        status=503, body='{"detail":"Container engine unreachable"}',
-        content_type="application/json",
-    ))
+    page.route(
+        "**/api/containers",
+        lambda r: r.fulfill(
+            status=503,
+            body='{"detail":"Container engine unreachable"}',
+            content_type="application/json",
+        ),
+    )
     page.locator(".sidebar a:has-text('Containers')").click()
     page.wait_for_timeout(1500)
     indicators = (".status-banner.error", ".empty-state h3", ".toast.error")
@@ -172,6 +187,7 @@ def test_r4_503_flips_banner_on_mid_session_failure(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # R5 — Structured error detail (object, not string) is rendered as message text
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_r5_structured_error_detail_rendered_safely(browser, live_server):
@@ -187,34 +203,50 @@ def test_r5_structured_error_detail_rendered_safely(browser, live_server):
     try:
         page = ctx.new_page()
         # Order matters: all routes set up BEFORE any page navigation
-        page.route("**/api/config", lambda r: r.fulfill(
-            status=200,
-            body='{"allowed_registries":[],"docker_vm_host":"","docker_host":"unix:///tmp/skiff-docker.sock"}',
-            content_type="application/json",
-        ))
-        page.route("**/api/containers", lambda r: r.fulfill(
-            status=503, body='{"detail":"Container engine unreachable"}',
-            content_type="application/json",
-        ))
-        page.route("**/api/tunnel/status", lambda r: r.fulfill(
-            status=200,
-            body='{"managed": true, "active": false, "socket": "/tmp/skiff-docker.sock"}',
-            content_type="application/json",
-        ))
-        page.route("**/api/tunnel/reconnect", lambda r: r.fulfill(
-            status=502,
-            body=('{"detail": {"message": "simulated tunnel failure", '
-                  '"code": "auth_failed", "help": "Run ssh-copy-id"}}'),
-            content_type="application/json",
-        ))
+        page.route(
+            "**/api/config",
+            lambda r: r.fulfill(
+                status=200,
+                body='{"allowed_registries":[],"docker_vm_host":"","docker_host":"unix:///tmp/skiff-docker.sock"}',
+                content_type="application/json",
+            ),
+        )
+        page.route(
+            "**/api/containers",
+            lambda r: r.fulfill(
+                status=503,
+                body='{"detail":"Container engine unreachable"}',
+                content_type="application/json",
+            ),
+        )
+        page.route(
+            "**/api/tunnel/status",
+            lambda r: r.fulfill(
+                status=200,
+                body='{"managed": true, "active": false, "socket": "/tmp/skiff-docker.sock"}',
+                content_type="application/json",
+            ),
+        )
+        page.route(
+            "**/api/tunnel/reconnect",
+            lambda r: r.fulfill(
+                status=502,
+                body=(
+                    '{"detail": {"message": "simulated tunnel failure", '
+                    '"code": "auth_failed", "help": "Run ssh-copy-id"}}'
+                ),
+                content_type="application/json",
+            ),
+        )
         _login(page, live_server)
         page.locator(".sidebar a:has-text('Containers')").click()
         page.wait_for_selector("button:has-text('Reconnect tunnel')", timeout=MEDIUM)
         page.locator("button:has-text('Reconnect tunnel')").click()
         page.wait_for_selector("text=simulated tunnel failure", timeout=MEDIUM)
         body = page.locator("body").inner_text()
-        assert "[object Object]" not in body, \
+        assert "[object Object]" not in body, (
             "Structured error detail rendered as object literal — apiFetch lost the message"
+        )
     finally:
         ctx.close()
 
@@ -222,6 +254,7 @@ def test_r5_structured_error_detail_rendered_safely(browser, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # R6 — Rapid back/forward navigation during a fetch doesn't crash
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_r6_rapid_nav_does_not_crash(page, live_server):
@@ -239,6 +272,7 @@ def test_r6_rapid_nav_does_not_crash(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # R7 — Concurrent tabs sharing sessionStorage (simulated via two contexts)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_r7_multiple_browser_contexts_each_authed_independently(browser, live_server):
@@ -261,6 +295,7 @@ def test_r7_multiple_browser_contexts_each_authed_independently(browser, live_se
 # ─────────────────────────────────────────────────────────────────────────────
 # R8 — Re-login flow after explicit logout works cleanly
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_r8_logout_and_relogin(page, live_server):

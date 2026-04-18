@@ -26,7 +26,7 @@
 # HSTS on by default) and A05 Injection (script-src 'self' blocks
 # inline / third-party JS — the dominant XSS surface).
 
-csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; worker-src 'self'"
 
 permissions_policy = "camera=(), microphone=(), geolocation=(), usb=()"
 

@@ -24,6 +24,7 @@ that the regex can't handle (function values, computed keys, spreads),
 the test fails loudly and the convention either bends or the parser
 grows — not both silently.
 """
+
 from __future__ import annotations
 
 import json
@@ -93,6 +94,9 @@ def _load_strings_dict() -> dict:
     and balance, and anything it can't digest is probably a bug.
     """
     text = _STRINGS_PATH.read_text(encoding="utf-8")
+    # Strip `//` line comments first so apostrophes inside them (e.g.
+    # "page's") can't confuse the brace walker's string tracking.
+    text = re.sub(r"//[^\n]*", "", text)
     # Locate the opening brace after `= `. Every other assignment in the
     # file is a comment or the `window.SKIFF_STRINGS` line itself.
     m = re.search(r"window\.SKIFF_STRINGS\s*=\s*(\{)", text)

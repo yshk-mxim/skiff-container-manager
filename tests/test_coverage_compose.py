@@ -6,6 +6,7 @@ import io
 from unittest.mock import MagicMock, patch
 
 import docker.errors
+import pytest
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
@@ -40,6 +41,7 @@ services:
 
 # ── List stacks ───────────────────────────────────────────────────────────────
 
+
 def test_list_compose_stacks_empty(client, mock_docker):
     mock_docker.containers.list.return_value = []
     resp = client.get("/api/compose/stacks", headers=AUTH_HEADER)
@@ -66,6 +68,7 @@ def test_list_compose_stacks_with_data(client, mock_docker):
 
 
 # ── Compose up ────────────────────────────────────────────────────────────────
+
 
 def test_compose_up_success(client, tmp_path):
     with (
@@ -171,6 +174,7 @@ def test_compose_up_subprocess_failure_no_stderr(client, tmp_path):
 
 def test_compose_up_timeout(client, tmp_path):
     import subprocess
+
     with (
         patch("skiff.config.COMPOSE_DIR", tmp_path),
         patch("skiff.routers.compose.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=120)),
@@ -184,8 +188,26 @@ def test_compose_up_timeout(client, tmp_path):
 
 
 # ── Compose down ──────────────────────────────────────────────────────────────
+#
+# `compose down` now requires an existing project directory (the handler
+# returns 404 `compose.not_found` if no deploy ever happened for this
+# name, instead of silently creating an empty dir just to shell out to
+# `docker compose down` against a non-existent stack). The fixture
+# pre-creates the dir so the subprocess branches (404 / 400 / 504)
+# stay exercised.
+@pytest.fixture
+def _existing_compose_dir():
+    import shutil
 
-def test_compose_down_success(client):
+    import skiff.config as _cfg
+
+    proj_dir = _cfg.COMPOSE_DIR / "myproject"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    yield proj_dir
+    shutil.rmtree(proj_dir, ignore_errors=True)
+
+
+def test_compose_down_success(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="down", stderr="")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
@@ -193,28 +215,41 @@ def test_compose_down_success(client):
     assert resp.json()["ok"] is True
 
 
-def test_compose_down_failure(client):
+def test_compose_down_failure(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="/some/path: not found")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 400
 
 
-def test_compose_down_no_stderr(client):
+def test_compose_down_no_stderr(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 400
 
 
-def test_compose_down_timeout(client):
+def test_compose_down_timeout(client, _existing_compose_dir):
     import subprocess
+
     with patch("skiff.routers.compose.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=60)):
         resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
     assert resp.status_code == 504
 
 
+def test_compose_down_missing_project_returns_404(client):
+    """Teardown on a name that was never deployed returns 404 without creating a dir."""
+    import skiff.config as _cfg
+
+    resp = client.post("/api/compose/down?project_name=nonexistent-xyz", headers=AUTH_CSRF)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "compose.not_found"
+    # Prove the handler did NOT create the project dir as a side effect.
+    assert not (_cfg.COMPOSE_DIR / "nonexistent-xyz").exists()
+
+
 # ── Compose validation: blocked top-level keys ────────────────────────────────
+
 
 def test_compose_blocked_top_level_secrets(client, tmp_path):
     content = b"""
@@ -356,6 +391,7 @@ def test_compose_project_logs_tail_clamped(client, mock_docker):
     assert resp.status_code == 200
     # Verify the kwarg passed to c.logs was within the cap
     from skiff.config import MAX_LOG_TAIL
+
     assert web.logs.call_args.kwargs["tail"] <= MAX_LOG_TAIL
 
 

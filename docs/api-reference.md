@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints require `Authorization: Bearer <token>` when `API_TOKEN` is configured.  
+All endpoints require `Authorization: Bearer <token>` when `API_TOKEN` is configured.
 Mutating endpoints (`POST`, `DELETE`) additionally require `X-Requested-With: ContainerManager`.
 
 ---
@@ -12,7 +12,7 @@ Liveness probe. Never checks Docker — always returns 200 to avoid restart loop
 
 **Response**
 ```json
-{"status": "ok", "uptime_seconds": 123, "version": "1.0.0"}
+{"status": "ok", "uptime_seconds": 123, "version": "1.0.1.dev0"}
 ```
 
 ### `GET /ready`
@@ -384,6 +384,11 @@ Disconnect a container from a network.
 ### `POST /api/networks/prune`
 Remove all unused networks.
 
+### `GET /api/networks/{id}/inspect`
+Full Docker network inspect payload — options, labels, attached
+containers, driver-specific metadata. Parity with
+`/api/volumes/{name}/inspect`.
+
 ---
 
 ## Compose
@@ -409,6 +414,26 @@ Tail-aggregated logs for all services in a Compose stack. Equivalent
 to `docker compose logs --tail=N`; rate-limited at the `READ` tier.
 
 **Query params** — `project` (path), `tail` (int, default 200)
+
+### `POST /api/compose/{project}/services/{service}/restart`
+Restart every container belonging to a single service in a Compose
+stack. Per-service granularity — does NOT re-evaluate the compose
+file the way `docker compose restart` would. Returns the list of
+restarted short ids.
+
+---
+
+## Profile
+
+### `POST /api/profile/enter-reviewer`
+One-way runtime switch into the read-only reviewer profile. Flips
+`config.PROFILE = "reviewer"` under the WS lock, force-closes every
+active exec WebSocket (`audit.ws_exec_terminated`), and emits a
+`profile.switched` audit record. Exiting reviewer mode requires
+either `/api/auth/reset-config` (which also restores PROFILE to
+the boot value) or a server restart.
+
+**Response** — `{ok: true, profile: "reviewer", exec_sessions_closed: <int>}`
 
 ---
 

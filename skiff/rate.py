@@ -27,6 +27,7 @@ Use:
     @limiter.limit(RATE.WRITE)
     def endpoint(...): ...
 """
+
 from __future__ import annotations
 
 from skiff.config import _TOML_RATE, _limit

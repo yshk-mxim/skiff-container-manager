@@ -18,8 +18,9 @@
  */
 :root {
   /* Brand (same across themes) */
-  --accent: #0d9488;
-  --accent-hover: #0f766e;
+  --accent: #0d9488;           /* decorative only (borders, icons, focus rings) — meets 3:1 non-text WCAG AA */
+  --accent-strong: #0f766e;    /* text+bg pair for buttons — 4.74:1 against #fff, WCAG AA for normal text */
+  --accent-hover: #115e59;     /* darker on hover so the visual shift is still obvious */
   --red: #cf222e; --green: #1a7f37; --orange: #bf5700; --yellow: #9a6700;
 
   /* Light-theme surface (default) */
@@ -31,7 +32,7 @@
   --border-subtle: #eef0f2;
   --text: #1e293b;
   --text-strong: #0f172a;
-  --muted: #64748b;
+  --muted: #566275;
   --scrollbar-thumb: #cbd5e1;
 
   /* Sidebar stays dark in light mode (Grafana-style) — users expect it */
@@ -201,13 +202,34 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
 .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
 
 /* Banner */
-.status-banner { position: fixed; top: 0; left: 220px; right: 0; z-index: 200; padding: 8px 16px; font-size: 13px; font-weight: 500; text-align: center; display: none; }
+.status-banner { position: fixed; top: 0; left: 220px; right: 0; z-index: 200; padding: 0; font-size: 13px; font-weight: 500; text-align: center; display: none; }
 .status-banner.error { background: var(--banner-error-bg); color: var(--banner-error-fg); display: block; }
+.status-banner.warn  { background: #fef3c7; color: #854d0e; display: block; }
+.status-banner.info  { background: var(--toast-info-bg); color: var(--toast-info-fg); display: block; }
+/* One row per stacked state. Multiple severities render as consecutive
+   rows; the container.className above carries the highest severity's
+   colour so historical tests that inspect `.status-banner.error` still
+   match the first banner when an error is active. */
+.status-banner-item { padding: 8px 16px; border-bottom: 1px solid rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: center; gap: 12px; }
+.status-banner-item:last-child { border-bottom: none; }
+.status-banner-item.warn { background: #fef3c7; color: #854d0e; }
+.status-banner-item.info { background: var(--toast-info-bg); color: var(--toast-info-fg); }
+.status-banner-item.error { background: var(--banner-error-bg); color: var(--banner-error-fg); }
+.status-banner-action { background: transparent; border: 1px solid currentColor; color: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+.status-banner-action:hover { background: rgba(0,0,0,0.08); }
+
+/* Wizard countdown indicator — quiet "Nm Ss left" next to the wizard
+   title while the 5-minute setup window is still open. Greyed-out
+   forms when the window has closed. */
+.wizard-countdown { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 10px; }
+.wizard-expired .wizard-forms, .wizard-expired form { opacity: 0.5; pointer-events: none; }
+.wizard-expired button[type="submit"] { pointer-events: none; }
 
 /* Insecure-mode banner. Full-width, above everything, sticky so
    the operator can't dismiss and forget. Red because the server is
    actually exposed without auth. */
 .insecure-banner { position: sticky; top: 0; left: 0; right: 0; z-index: 400; padding: 10px 16px; font-size: 13px; font-weight: 600; text-align: center; background: #b91c1c; color: #ffffff; letter-spacing: 0.02em; }
+.reviewer-banner { position: sticky; top: 0; left: 0; right: 0; z-index: 399; padding: 8px 16px; font-size: 12px; font-weight: 600; text-align: center; background: var(--accent); color: #ffffff; letter-spacing: 0.02em; }
 
 /* Toast */
 .toast-container { position: fixed; top: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
@@ -216,6 +238,15 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
 .toast.error   { background: var(--toast-error-bg);   color: var(--toast-error-fg); }
 .toast.info    { background: var(--toast-info-bg);    color: var(--toast-info-fg); }
 .toast .undo-link { margin-left: 10px; color: inherit; text-decoration: underline; font-weight: 600; cursor: pointer; }
+
+/* Pending-undo toast — the row+progress layout distinguishes "action is
+   pending, you can still undo" from the "something just finished" shape
+   of a regular info toast. The progress bar drains left-to-right over
+   the undo window so the user can see how long they have to click. */
+.toast-undo { padding-bottom: 6px; min-width: 260px; }
+.toast-undo .toast-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.toast-undo .toast-progress { margin-top: 8px; height: 3px; background: rgba(255,255,255,0.14); border-radius: 2px; overflow: hidden; }
+.toast-undo .toast-progress-bar { width: 100%; height: 100%; background: currentColor; opacity: 0.55; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 
 /* Page header */
@@ -258,10 +289,14 @@ tbody tr:hover { background: var(--card-hover); }
 .btn:hover { background: var(--card-hover); }
 .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.danger { color: var(--red); border-color: var(--danger-border); }
 .btn.danger:hover { background: var(--danger-hover-bg); }
+/* Reviewer profile = read-only. Hide destructive buttons client-side so
+   the reviewer doesn't click into a 403. Server still enforces via
+   secure_route.mutate; this is a UX layer, not a security boundary. */
+body.reviewer-mode .btn.danger { display: none !important; }
 .btn.small { padding: 4px 10px; font-size: 11px; }
 .btn.loading { opacity: 0.7; cursor: wait; }
 .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -374,7 +409,7 @@ tbody tr:hover { background: var(--card-hover); }
 
 /* Copyright / attribution footer text spacing */
 .sidebar-footer .attr { margin-top: 2px; }
-.sidebar-footer .attr a { color: inherit; text-decoration: underline; opacity: 0.7; }
+.sidebar-footer .attr a { color: inherit; text-decoration: underline; }
 
 /* Simple table-cell action row used by pages/*.js and UI.table actions column */
 .td-actions { display: flex; gap: 4px; flex-wrap: wrap; }

@@ -18,6 +18,7 @@ Authenticated lifecycle:
 The per-IP `_setup_failures` brute-force counter is cleared by the
 autouse rate-limit fixture in tests/conftest.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -91,6 +92,7 @@ def _probe_docker_socket(path_hint: str) -> tuple[bool, str]:
         return (False, expanded)
     try:
         import docker as _docker
+
         client = _docker.DockerClient(base_url=f"unix://{expanded}", timeout=config.PROBE_DOCKER_TIMEOUT)
         client.ping()
     except (docker.errors.DockerException, OSError):
@@ -118,7 +120,8 @@ def _enforce_lockout(client_ip: str) -> None:
         count, last_t = entry
         if count >= config.SETUP_MAX_ATTEMPTS and (now - last_t) < config.SETUP_LOCKOUT_SECS:
             log.warning(
-                "audit.setup_lockout", remote=client_ip,
+                "audit.setup_lockout",
+                remote=client_ip,
                 remaining=config.SETUP_LOCKOUT_SECS - (now - last_t),
             )
             raise http_error(
@@ -127,6 +130,29 @@ def _enforce_lockout(client_ip: str) -> None:
             )
         if (now - last_t) >= config.SETUP_LOCKOUT_SECS:
             del _setup_failures[client_ip]
+
+
+def _setup_lockout_remaining(client_ip: str) -> int | None:
+    """Return remaining lockout seconds for this IP, or None if not locked.
+
+    Mirrors `_enforce_lockout`'s check without raising so the wizard can
+    paint a banner on page load (or via the /api/setup-state poll) that
+    shows how long the 3-failure lockout has left. Reveals only the
+    caller's own remaining window — not useful to an attacker who would
+    already know they're locked out.
+    """
+    now = time.monotonic()
+    with _setup_lock:
+        entry = _setup_failures.get(client_ip)
+        if entry is None:
+            return None
+        count, last_t = entry
+        if count < config.SETUP_MAX_ATTEMPTS:
+            return None
+        remaining = config.SETUP_LOCKOUT_SECS - (now - last_t)
+        if remaining <= 0:
+            return None
+        return int(remaining)
 
 
 def _enforce_preconditions() -> None:
@@ -258,6 +284,7 @@ def _raise_tunnel_error(exc: docker_client.TunnelError) -> NoReturn:
 # Routes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/api/setup-state", tags=["setup"])
 def setup_state(request: Request):
     """Return wizard state: configured? from_env? tunnel reachable?
@@ -266,23 +293,44 @@ def setup_state(request: Request):
     only reveal the tunnel socket path when BOTH (a) the wizard is
     still needed AND (b) the caller is on the loopback interface. A
     pre-auth caller from any other interface gets `{configured,
-    from_env}` only — the tunnel path is an operator-only detail.
+    from_env}` plus the window-expiry timers — the tunnel path is an
+    operator-only detail, but the window countdown is not a secret.
+
+    When unconfigured the response carries three always-present timer
+    fields so the wizard can show a live countdown and paint a banner
+    the moment the window closes (without needing a second round-trip):
+      - window_open           — bool, true while POST /api/setup is reachable
+      - window_expires_in     — int seconds remaining, 0 once closed
+      - lockout_remaining_secs — int or null; non-null iff the caller's IP
+                                 is past SETUP_MAX_ATTEMPTS
     """
     if config._cfg.api_token:
         return {"configured": True, "from_env": config._cfg.from_env}
     client_ip = request.client.host if request.client else ""
+    elapsed = time.monotonic() - config.APP_START_MONOTONIC
+    window_remaining = max(0, int(config.SETUP_WINDOW_SECS - elapsed))
+    lockout_remaining = _setup_lockout_remaining(client_ip)
     # Same-host callers (loopback IPs only) get the tunnel path in the
     # unconfigured response. Network callers don't — they'd only leak the
-    # path of a socket they can't reach anyway.
+    # path of a socket they can't reach anyway. Both get the timers.
     is_same_host = client_ip in _LOOPBACK_HOSTS
     if not is_same_host:
-        return {"configured": False, "from_env": config._cfg.from_env}
+        return {
+            "configured": False,
+            "from_env": config._cfg.from_env,
+            "window_open": window_remaining > 0,
+            "window_expires_in": window_remaining,
+            "lockout_remaining_secs": lockout_remaining,
+        }
     safe_path = docker_client._safe_tunnel_socket_path(docker_client.get_tunnel_socket_path())
     return {
         "configured": False,
         "from_env": config._cfg.from_env,
         "tunnel_active": bool(safe_path and Path(safe_path).exists()),
         "tunnel_socket": safe_path or config.TUNNEL_DEFAULT_SOCKET,
+        "window_open": window_remaining > 0,
+        "window_expires_in": window_remaining,
+        "lockout_remaining_secs": lockout_remaining,
     }
 
 
@@ -412,8 +460,15 @@ def tunnel_status(request: Request) -> dict:
     if not safe_path:
         dh = config._cfg.docker_host or ""
         if dh.startswith("unix://"):
-            safe_path = docker_client._safe_tunnel_socket_path(dh[len("unix://"):])
-    active = bool(safe_path and Path(safe_path).exists())
+            safe_path = docker_client._safe_tunnel_socket_path(dh[len("unix://") :])
+    # File existence alone is NOT enough: when SSH exits the AF_UNIX
+    # file survives in /tmp until `_stop_tunnel_locked()` unlinks it.
+    # A stale file would make the UI show a green indicator while every
+    # Docker request returns 503. Probe the socket for real reachability,
+    # matching the check that `tunnel_reconnect`'s Case-2 path uses.
+    active = False
+    if safe_path and Path(safe_path).exists():
+        active, _ = _probe_docker_socket(safe_path)
     return {
         "managed": bool(target),
         "active": active,
@@ -465,7 +520,7 @@ def tunnel_reconnect(request: Request) -> OkResponse:
     dh = config._cfg.docker_host or ""
     if not dh.startswith("unix://"):
         raise http_error("tunnel.not_configured")
-    sock_path = dh[len("unix://"):]
+    sock_path = dh[len("unix://") :]
     safe_path = docker_client._safe_tunnel_socket_path(sock_path)
     if not safe_path:
         raise http_error("tunnel.not_configured")
@@ -480,7 +535,8 @@ def tunnel_reconnect(request: Request) -> OkResponse:
         if not reachable:
             log.info(
                 "tunnel.manual_reconnect_required",
-                socket=str(sp_resolved), managed=False,
+                socket=str(sp_resolved),
+                managed=False,
                 reason="socket_present_but_unreachable",
             )
             raise http_error(
@@ -498,7 +554,8 @@ def tunnel_reconnect(request: Request) -> OkResponse:
     # Case 3 — manual tunnel is down; only the operator can reopen it.
     log.info(
         "tunnel.manual_reconnect_required",
-        socket=str(sp_resolved), managed=False,
+        socket=str(sp_resolved),
+        managed=False,
     )
     raise http_error(
         "tunnel.manual_reconnect_required",
@@ -544,7 +601,12 @@ def rotate_token(request: Request, new_token: str = Body(..., embed=True)) -> di
 
 
 @router.post("/api/auth/reset-config", dependencies=AUTH, tags=["auth"])
-@secure_route.mutate(RATE.AUTH_SENSITIVE)
+# allow_in_reviewer: reset-config CLEARS state (token, docker_host,
+# registries). A reviewer who ended up in a corrupt state needs a
+# way out that does NOT require host shell access. Blocking this in
+# reviewer mode traps the operator (reviewer can't exit to dev
+# without a restart; reset-config is the documented soft-restart).
+@secure_route.mutate(RATE.AUTH_SENSITIVE, allow_in_reviewer=True)
 def reset_config(request: Request) -> OkResponse:
     """Clear in-memory state + stop tunnel + reopen the setup window.
 
@@ -567,6 +629,29 @@ def reset_config(request: Request) -> OkResponse:
         log.warning("auth.reset_tunnel_cleanup_failed", error=str(exc))
     # Reopen the setup window (normally locked 5 min after startup).
     import skiff.config as _config_module
+
     _config_module.APP_START_MONOTONIC = time.monotonic()
+    # Clear per-IP brute-force counters so a legitimate operator who
+    # just reset doesn't inherit lockouts accumulated against the
+    # pre-reset token. Attackers who already locked themselves out
+    # stay in the brute-force audit trail (lockout event), but a fresh
+    # window starts their counter from zero — acceptable: the window
+    # itself re-closes in SETUP_WINDOW_SECS either way.
+    _setup_failures.clear()
+    # Restore PROFILE to the boot-time value. Without this, an admin
+    # who entered reviewer mode and then reset-configs would land in
+    # `PROFILE=reviewer` with a fresh token — every mutation 403s and
+    # there's no UI path out. `reset-config` is documented as a
+    # "soft restart" that avoids host shell access; honour that
+    # contract by returning PROFILE to whatever the boot env declared.
+    profile_before = _config_module.PROFILE
+    _config_module.PROFILE = _config_module._BOOT_PROFILE
+    if profile_before != _config_module._BOOT_PROFILE:
+        log.info(
+            "profile.switched",
+            old=profile_before,
+            new=_config_module._BOOT_PROFILE,
+            exec_sessions_closed=0,
+        )
     log.info("auth.config_reset", old_suffix=old_suffix)
     return OkResponse()

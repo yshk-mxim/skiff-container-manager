@@ -13,6 +13,7 @@ oauth2-proxy command launch?) is beyond the scope of an in-browser test —
 those would require a full integration lab. What's here covers the highest-
 value guarantee: **the snippet is syntactically valid for its target tool**.
 """
+
 from __future__ import annotations
 
 pytest_plugins = ["tests.conftest_e2e"]
@@ -54,6 +55,7 @@ def _first_code_or_pre(page) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Validators — parse the snippet with the target tool's grammar
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _validate_vscode(page):
     _select_tool(page, "vscode")
@@ -176,6 +178,7 @@ def _validate_caddy(page):
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_connect_panel_renders(page, live_server):

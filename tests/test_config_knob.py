@@ -12,6 +12,7 @@ A later commit will extend with a consistency test between the knob
 registry, `.env.example`, and README.md — deferred until more knobs
 migrate.
 """
+
 from __future__ import annotations
 
 import re
@@ -42,8 +43,7 @@ class TestKnobRegistry:
             if spec.secret:
                 # Secret knobs should not also have a default that's a real secret.
                 # Defaults are allowed to be empty string / None / placeholder.
-                assert spec.default in (None, ""), \
-                    f"secret knob {spec.name!r} has a non-empty default — risky"
+                assert spec.default in (None, ""), f"secret knob {spec.name!r} has a non-empty default — risky"
 
 
 class TestKnobBehaviour:
@@ -60,7 +60,8 @@ class TestKnobBehaviour:
         assert value == 42
 
     def test_missing_env_returns_default_or_none(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("_TEST_ABSENT_KNOB", raising=False)
         _KNOBS.pop("_TEST_ABSENT_KNOB", None)
@@ -68,7 +69,8 @@ class TestKnobBehaviour:
         assert value is None
 
     def test_validator_failure_propagates(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _KNOBS.pop("_TEST_BAD_INT_KNOB", None)
         monkeypatch.setenv("_TEST_BAD_INT_KNOB", "not-a-number")

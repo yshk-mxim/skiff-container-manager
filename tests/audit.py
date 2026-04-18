@@ -17,6 +17,7 @@ The helper:
 A companion `log_capture` fixture in this file is imported by tests that
 want the canonical shape.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -67,8 +68,7 @@ def assert_audit_event(
     if not matches:
         emitted = sorted({e.get("event") for e in log_capture.entries})
         raise AssertionError(
-            f"Expected audit event {name!r}, but it wasn't emitted.\n"
-            f"Events captured: {emitted}",
+            f"Expected audit event {name!r}, but it wasn't emitted.\nEvents captured: {emitted}",
         )
     # Use the most recent match
     entry = matches[-1]
@@ -76,8 +76,7 @@ def assert_audit_event(
     missing_required = [f for f in required_fields(name) if f not in entry]
     if missing_required:
         raise AssertionError(
-            f"Audit event {name!r} missing catalogue-required fields: "
-            f"{missing_required}. Entry: {entry}",
+            f"Audit event {name!r} missing catalogue-required fields: {missing_required}. Entry: {entry}",
         )
     # Any expected_fields kwargs must match exactly
     mismatches: list[str] = []
@@ -88,9 +87,7 @@ def assert_audit_event(
             mismatches.append(f"  {key}: got {entry[key]!r} (expected {want!r})")
     if mismatches:
         raise AssertionError(
-            f"Audit event {name!r} has mismatched fields:\n"
-            + "\n".join(mismatches)
-            + f"\nFull entry: {entry}",
+            f"Audit event {name!r} has mismatched fields:\n" + "\n".join(mismatches) + f"\nFull entry: {entry}",
         )
     return entry
 

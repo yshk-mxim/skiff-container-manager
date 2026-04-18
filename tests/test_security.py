@@ -19,17 +19,21 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── Registry bypass attempts ───────────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("bypass_attempt", [
-    # Subdomain confusion: evil.us-docker.pkg.dev is NOT the allowed registry
-    "evil.us-docker.pkg.dev/img:latest",
-    # Path confusion: allowed registry appears after a slash, not as hostname
-    "evil.example.com/us-docker.pkg.dev/img:latest",
-    # Registry prefix as path segment, not host
-    "example.com/us-docker.pkg.dev:latest",
-    # Subdomain confusion for docker.io
-    "evil.docker.io/img:latest",
-])
+@pytest.mark.parametrize(
+    "bypass_attempt",
+    [
+        # Subdomain confusion: evil.us-docker.pkg.dev is NOT the allowed registry
+        "evil.us-docker.pkg.dev/img:latest",
+        # Path confusion: allowed registry appears after a slash, not as hostname
+        "evil.example.com/us-docker.pkg.dev/img:latest",
+        # Registry prefix as path segment, not host
+        "example.com/us-docker.pkg.dev:latest",
+        # Subdomain confusion for docker.io
+        "evil.docker.io/img:latest",
+    ],
+)
 def test_registry_bypass_attempts_blocked(bypass_attempt):
     with pytest.raises(HTTPException) as exc:
         validate_image_registry(bypass_attempt)
@@ -45,11 +49,15 @@ def test_allowed_registry_exact_match_required():
 
 # ── Compose sandbox escape attempts ───────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("privileged_variant", [
-    "privileged: true",
-    "privileged: True",   # YAML boolean alias
-])
+@pytest.mark.parametrize(
+    "privileged_variant",
+    [
+        "privileged: true",
+        "privileged: True",  # YAML boolean alias
+    ],
+)
 def test_compose_privileged_variants_blocked(privileged_variant):
     content = f"services:\n  web:\n    image: docker.io/library/nginx:latest\n    {privileged_variant}\n".encode()
     with pytest.raises(HTTPException) as exc:
@@ -100,13 +108,16 @@ services:
 
 @pytest.mark.unit
 def test_compose_top_level_configs_blocked():
-    content = b"configs:\n  mycfg:\n    file: ./config.txt\nservices:\n  web:\n    image: docker.io/library/nginx:latest\n"
+    content = (
+        b"configs:\n  mycfg:\n    file: ./config.txt\nservices:\n  web:\n    image: docker.io/library/nginx:latest\n"
+    )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
 
 
 # ── Response security headers ─────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_security_headers_present(client):
@@ -124,6 +135,7 @@ def test_csp_blocks_frame_ancestors(client):
 
 
 # ── Auth edge cases ────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_bearer_scheme_required(client):

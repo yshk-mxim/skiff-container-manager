@@ -13,3 +13,4 @@ carries the narrative and threat-model context.
 | DELETE | `/api/networks/{network_id}` | `network.deleted` | 30/minute | ✓ | `delete_network` | Remove a user-defined network (default networks are protected). |
 | POST | `/api/networks/{network_id}/connect` | `network.connect` | 30/minute | ✓ | `connect_container_to_network` | Attach a container to a network. |
 | POST | `/api/networks/{network_id}/disconnect` | `network.disconnect` | 30/minute | ✓ | `disconnect_container_from_network` | Detach a container from a network. |
+| GET | `/api/networks/{network_id}/inspect` | — | 60/minute | — | `inspect_network` | Return the full Docker inspect payload for a network. |

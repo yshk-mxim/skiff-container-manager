@@ -5,6 +5,7 @@ the critical-path sweep brought auth/secure/validators/undo to 100%.
 
 Where a function has ≥2 branches, prefer Hypothesis over example tests.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -37,6 +38,7 @@ def client():
 
 
 # ── skiff/app.py startup-warning helpers ─────────────────────────────────────
+
 
 def test_warn_empty_api_token_env_fires(monkeypatch, caplog):
     """Line 71: warning emits when the env var is set but empty.
@@ -90,12 +92,14 @@ def test_warn_unencrypted_docker_host_localhost_silent() -> None:
 def test_log_dependency_versions_swallows_package_not_found():
     """Lines 123-124: a missing/unavailable dep doesn't crash startup."""
     import importlib.metadata as imeta
+
     with patch("importlib.metadata.version", side_effect=imeta.PackageNotFoundError("x")):
         # Must not raise
         app_module._log_dependency_versions()
 
 
 # ── skiff/routers/system.py — connect_snippets + _resolve_knob ───────────────
+
 
 def test_connect_snippets_endpoint_returns_tools(client):
     """Lines 162-190: connect_snippets assembles tools from the TOML catalogue."""
@@ -117,11 +121,7 @@ def test_connect_snippets_renders_runtime_context(client, monkeypatch):
     monkeypatch.setattr(config_module._cfg, "docker_host", "unix:///tmp/probe.sock")
     r = client.get("/api/connect-snippets", headers={**AUTH_HEADER, "host": "skiff.example.com"})
     assert r.status_code == 200
-    rendered = " ".join(
-        b["content"]
-        for t in r.json()["tools"]
-        for b in t["blocks"]
-    )
+    rendered = " ".join(b["content"] for t in r.json()["tools"] for b in t["blocks"])
     # One of the snippets references {dockerHost}; after rendering the
     # placeholder must be gone. (Exact content depends on the TOML — we
     # just assert the substitution happened, not a specific string.)
@@ -149,15 +149,18 @@ def test_resolve_knob_fallback_path(monkeypatch):
 
 # ── skiff/routers/volumes.py + images.py undo-delete paths ──────────────────
 
+
 def _override_docker_client(mock_client):
     """Attach a MagicMock in place of docker_client_dep so the handler
     doesn't try to reach a real daemon."""
     from skiff.docker_client import docker_client_dep
+
     app.dependency_overrides[docker_client_dep] = lambda: mock_client
 
 
 def _clear_docker_client_override():
     from skiff.docker_client import docker_client_dep
+
     app.dependency_overrides.pop(docker_client_dep, None)
 
 
@@ -173,6 +176,7 @@ def test_volume_delete_with_undo_returns_token(client):
         assert "undo_token" in body
         assert body["expires_in"] == config_module.UNDO_DELAY_SECS
         from skiff.undo import get_queue
+
         get_queue().cancel(body["undo_token"])
     finally:
         _clear_docker_client_override()
@@ -184,6 +188,7 @@ def test_history_created_int_coerced_to_iso():
     submodel doesn't raise ValidationError on every inspect call.
     """
     from skiff.routers.images import _history_created_to_iso
+
     # Docker "history" entry: Unix timestamp int
     out = _history_created_to_iso(1_776_283_285)
     assert out.startswith("2026-") and out.endswith("Z")
@@ -208,6 +213,7 @@ def test_image_delete_with_undo_returns_token(client):
         body = r.json()
         assert "undo_token" in body
         from skiff.undo import get_queue
+
         get_queue().cancel(body["undo_token"])
     finally:
         _clear_docker_client_override()
@@ -234,6 +240,7 @@ def test_emit_loop_lag_warning_prints_stacks(capsys):
 # ── Hypothesis property: _resolve_knob always returns `spec.default`
 # ── when the env var's value fails the validator. Covers the TypeError
 # ── arm alongside ValueError (lines 81-82).
+
 
 @given(raw=st.text(min_size=0, max_size=10).filter(lambda s: "\x00" not in s))
 @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])

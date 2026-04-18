@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Unit tests for audit log event classification and session age enforcement."""
+
 from __future__ import annotations
 
 import pytest
@@ -33,27 +34,31 @@ def client():
 
 # ── _classify_event ────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("method,path,status,expected_type", [
-    # After R26 the classification layer uses the decorator-declared
-    # `audit=<name>` directly — no more parallel "historical" names
-    # drifting from what handlers actually emit. The names below match
-    # @secure_route.mutate(audit=...) in each router module.
-    ("POST",   "/api/containers/abc123/start",  200, "container.started"),
-    ("POST",   "/api/containers/run",           200, "container.run"),
-    ("DELETE", "/api/containers/abc123",        200, "container.removed"),
-    ("POST",   "/api/images/pull",              200, "image.pulled"),
-    ("POST",   "/api/compose/up",               200, "compose.up"),
-    ("POST",   "/api/compose/down",             200, "compose.down"),
-    ("GET",    "/api/system/audit-log",         200, "audit.log_read"),
-    # /api/setup has no audit= annotation (intentional — the setup
-    # endpoint's own log line is the authoritative audit event), so
-    # classification falls through to the /api/ catch-all.
-    ("POST",   "/api/setup",                    200, "api.request"),
-    ("GET",    "/api/volumes",                  401, "auth.denied"),
-    ("GET",    "/api/containers",               429, "rate_limit.exceeded"),
-    ("GET",    "/api/unknown/path",             200, "api.request"),
-])
+@pytest.mark.parametrize(
+    "method,path,status,expected_type",
+    [
+        # After R26 the classification layer uses the decorator-declared
+        # `audit=<name>` directly — no more parallel "historical" names
+        # drifting from what handlers actually emit. The names below match
+        # @secure_route.mutate(audit=...) in each router module.
+        ("POST", "/api/containers/abc123/start", 200, "container.started"),
+        ("POST", "/api/containers/run", 200, "container.run"),
+        ("DELETE", "/api/containers/abc123", 200, "container.removed"),
+        ("POST", "/api/images/pull", 200, "image.pulled"),
+        ("POST", "/api/compose/up", 200, "compose.up"),
+        ("POST", "/api/compose/down", 200, "compose.down"),
+        ("GET", "/api/system/audit-log", 200, "audit.log_read"),
+        # /api/setup has no audit= annotation (intentional — the setup
+        # endpoint's own log line is the authoritative audit event), so
+        # classification falls through to the /api/ catch-all.
+        ("POST", "/api/setup", 200, "api.request"),
+        ("GET", "/api/volumes", 401, "auth.denied"),
+        ("GET", "/api/containers", 429, "rate_limit.exceeded"),
+        ("GET", "/api/unknown/path", 200, "api.request"),
+    ],
+)
 def test_classify_event(method, path, status, expected_type):
     event_type, _, _ = _classify_event(method, path, status)
     assert event_type == expected_type
@@ -74,6 +79,7 @@ def test_classify_event_image_resource():
 
 
 # ── Server-side session age ────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_session_accepted_within_timeout(client):
@@ -107,6 +113,7 @@ def test_session_cache_cleared_on_reconfigure(client, monkeypatch):
 
 # ── X-Forwarded-User logged ────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_forwarded_user_accepted_without_error(client):
     """X-Forwarded-User header must not cause errors — logged by middleware."""
@@ -115,6 +122,7 @@ def test_forwarded_user_accepted_without_error(client):
 
 
 # ── Audit retention env vars ───────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_audit_max_bytes_default():

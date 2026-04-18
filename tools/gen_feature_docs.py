@@ -26,6 +26,7 @@ Usage:
 
 --check is what CI runs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,16 +56,18 @@ def _routes_by_module() -> dict[str, list[dict]]:
             continue
         key = mod_name.rsplit(".", 1)[-1]
         marker = getattr(endpoint, "_skiff_secure", {}) or {}
-        by_mod.setdefault(key, []).append({
-            "method": ",".join(sorted(getattr(route, "methods", set()))),
-            "path": getattr(route, "path", ""),
-            "tags": getattr(route, "tags", []) or [],
-            "audit": marker.get("audit") or "",
-            "rate": marker.get("rate") or "",
-            "csrf": marker.get("csrf"),
-            "name": endpoint.__name__,
-            "doc": (endpoint.__doc__ or "").strip().split("\n", 1)[0],
-        })
+        by_mod.setdefault(key, []).append(
+            {
+                "method": ",".join(sorted(getattr(route, "methods", set()))),
+                "path": getattr(route, "path", ""),
+                "tags": getattr(route, "tags", []) or [],
+                "audit": marker.get("audit") or "",
+                "rate": marker.get("rate") or "",
+                "csrf": marker.get("csrf"),
+                "name": endpoint.__name__,
+                "doc": (endpoint.__doc__ or "").strip().split("\n", 1)[0],
+            }
+        )
     return by_mod
 
 
@@ -94,8 +97,7 @@ def _feature_md(module: str, entries: list[dict]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true",
-                        help="Exit 1 if any generated feature doc is stale.")
+    parser.add_argument("--check", action="store_true", help="Exit 1 if any generated feature doc is stale.")
     args = parser.parse_args()
 
     out_dir = ROOT / "docs" / "features"

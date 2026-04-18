@@ -1,27 +1,57 @@
 # SKIFF Documentation Index
 
-Each doc answers one question. Use the table below as a router.
+The docs are tiered — **casual users only need Tier 1**. Each deeper
+tier is for a specific audience and can be safely skipped until you
+need it.
+
+## Tier 1 — Getting started (casual users)
+
+Start here. 90% of SKIFF users never need to go past this tier.
 
 | If you're… | Go to |
 |---|---|
-| A brand-new user opening SKIFF for the first time | [README.md](../README.md) (top-level, Quick Start) |
-| Deploying for real (homelab, remote host, reverse proxy) | [deployment.md](deployment.md) |
-| Tuning config for your fleet (env vars, TOML defaults) | [configuration.md](configuration.md) · [config-knobs.md](config-knobs.md) |
-| Hardening a production install (TLS, SSO, SIEM, secrets) | [hardening/production.md](hardening/production.md) |
-| Stuck — something isn't working | [runbooks/README.md](runbooks/README.md) or [troubleshooting.md](troubleshooting.md) |
-| Connecting an external tool (IDE, Prometheus, Loki, Splunk…) | Use the **Connect external tool** panel in the System page — or [hardening/integrations.md](hardening/integrations.md) for the full catalog |
+| Opening SKIFF for the first time | [README.md](../README.md) — top-level Quick Start |
+| Looking for a UI walkthrough or feature by feature | [features/](features/) — per-router generated docs |
+| Stuck — something isn't working | [troubleshooting.md](troubleshooting.md) for symptom → fix, [runbooks/README.md](runbooks/README.md) for "I'm mid-sequence and hit a wall" |
+| Connecting an external tool (IDE, Prometheus, Loki…) | Use the **Connect external tool** panel on the System page in-app |
 | Reporting a security issue | [../SECURITY.md](../SECURITY.md) |
+
+## Tier 2 — Operator / deployment
+
+For running SKIFF beyond a single workstation — homelab, shared host,
+reverse proxy, audit-log pipeline.
+
+| If you're… | Go to |
+|---|---|
+| Deploying on a homelab / remote host | [deployment.md](deployment.md) |
+| Tuning configuration (env vars, TOML defaults) | [configuration.md](configuration.md) · [config-knobs.md](config-knobs.md) |
+| Hardening a deployment (TLS, SSO, SIEM, secrets) | [hardening/production.md](hardening/production.md) |
+| Integrating with observability stacks | [hardening/integrations.md](hardening/integrations.md) |
 | Running security scans locally or in CI | [hardening/security-scans.md](hardening/security-scans.md) |
+| Looking up API endpoints | [api-reference.md](api-reference.md) or live OpenAPI at `/api/docs` |
+| Looking up error codes / audit events | [errors.md](errors.md) · [audit-events.md](audit-events.md) |
+
+## Tier 3 — Developer / contributor
+
+For people modifying SKIFF's code or tests.
+
+| If you're… | Go to |
+|---|---|
 | Contributing a new feature or endpoint | [dev/feature-development.md](dev/feature-development.md) · [dev/feature-template.md](dev/feature-template.md) |
-| Auditing the invariants (maintainer review template) | [dev/zero-trust-review-template.md](dev/zero-trust-review-template.md) |
-| Adding a UI string / localisation posture | [dev/i18n.md](dev/i18n.md) |
-| Looking up API endpoints | [api-reference.md](api-reference.md) or the live OpenAPI at `/api/docs` |
-| Looking up error codes or audit events | [errors.md](errors.md) · [audit-events.md](audit-events.md) |
-| Curious about the code organisation | [dev/code-quality-guide.md](dev/code-quality-guide.md) |
-| Exploring test scenarios / user personas | [dev/storyboards.md](dev/storyboards.md) · [dev/personas.md](dev/personas.md) |
-| Tracking user-facing copy | [dev/copy.md](dev/copy.md) |
+| Auditing invariants (maintainer review template) | [dev/zero-trust-review-template.md](dev/zero-trust-review-template.md) |
 | Running the security-review checklist against a PR diff | [dev/review-checklist.md](dev/review-checklist.md) |
-| Per-router generated feature docs | [features/](features/) — `features/<router>.generated.md` |
+| Understanding the code organisation | [dev/code-quality-guide.md](dev/code-quality-guide.md) |
+| Exploring test scenarios / personas | [dev/storyboards.md](dev/storyboards.md) · [dev/personas.md](dev/personas.md) |
+| Adding a UI string / working on i18n | [dev/i18n.md](dev/i18n.md) · [dev/copy.md](dev/copy.md) |
+
+## Tier 4 — Compliance & research reference
+
+> **Scope note.** [`compliance/`](compliance/) documents **SKIFF's own
+> posture** against frameworks a researcher or evaluator might map
+> against a code project. It is a descriptive first-party reference,
+> not guidance for other projects or organisations.
+
+See [`compliance/README.md`](compliance/README.md) for the full index.
 
 ## Two-minute orientation
 

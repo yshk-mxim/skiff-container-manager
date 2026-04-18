@@ -73,6 +73,17 @@ async function loadNetworks() {
           }, 'btn small'));
           Object.entries(n.containers || {}).forEach(function(entry) {
             actGrp.appendChild(makeActionBtn('Disconnect ' + entry[1], function() {
+              // The server doesn't tell us whether this is the container's
+              // ONLY network before we disconnect it. Rather than pre-fetch
+              // every container's network list on page load, we warn
+              // unconditionally — a user disconnecting from a multi-homed
+              // container will click through quickly; a user disconnecting
+              // from the last network gets informed consent.
+              if (!confirm('Disconnect "' + entry[1] + '" from "' + n.name + '"?\n\n' +
+                           'If this is the only network attached to the container, ' +
+                           'it will lose all network access.')) {
+                throw new Error('Cancelled');
+              }
               return apiFetch(API + '/networks/' + n.id + '/disconnect?container_id=' + entry[0],
                               { method: 'POST' }).then(function() {
                 toast('Disconnected ' + entry[1], 'info'); loadNetworks();

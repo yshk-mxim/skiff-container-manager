@@ -44,11 +44,14 @@ def test_delete_volume(client, mock_docker):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("bad_name", [
-    "has space",         # spaces not allowed
-    "a" * 65,            # exceeds 64-char limit
-    "!invalid@chars",    # special chars not allowed
-])
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "has space",  # spaces not allowed
+        "a" * 65,  # exceeds 64-char limit
+        "!invalid@chars",  # special chars not allowed
+    ],
+)
 def test_delete_volume_invalid_name_returns_400(client, bad_name):
     resp = client.delete(f"/api/volumes/{bad_name}", headers=AUTH_CSRF)
     assert resp.status_code == 400

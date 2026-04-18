@@ -17,6 +17,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `auth.not_configured` | 503 | server not configured — set API_TOKEN before accessing this endpoint |  |
 | `auth.rate_limited` | 429 | too many requests |  |
 | `auth.reset_env_managed` | 403 | cannot reset: server is configured via environment variables |  |
+| `auth.reviewer_read_only` | 403 | reviewer profile is read-only; mutations are disabled | docs/dev/personas.md |
 | `auth.session_expired` | 401 | session expired; please sign in again |  |
 | `auth.setup_locked` | 429 | setup endpoint is temporarily locked |  |
 | `auth.token_unchanged` | 400 | new_token is identical to the current token |  |
@@ -48,6 +49,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `container.limit_reached` | 400 | container limit ({limit}) reached |  |
 | `container.memory_above_cap` | 400 | memory exceeds cap of {cap} |  |
 | `container.memory_below_minimum` | 400 | memory must be >= {minimum} bytes (Docker minimum) |  |
+| `container.memory_uncap_unsupported` | 400 | Docker Engine does not support removing a memory cap on a running container; recreate the container with no memory limit instead. | docs/api-reference.md#post-apicontainersidupdate |
 | `container.name_taken` | 409 | name '{name}' is already in use |  |
 | `container.not_found` | 404 | container {id} not found |  |
 | `container.op_failed` | 400 | container operation failed |  |
@@ -62,6 +64,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `container.update_no_fields` | 400 | no updatable fields provided |  |
 | `container.volume_format` | 400 | invalid volume spec |  |
 | `container.volume_host_path_blocked` | 400 | host path mounts are not allowed — use named volumes only |  |
+| `docker.sdk_error` | 500 | Docker daemon returned {status}: {message} | docs/audit-events.md#docker-client-events |
 | `image.bad_id` | 400 | invalid image id |  |
 | `image.not_found` | 404 | image not found |  |
 | `image.pull_failed` | 400 | image pull failed |  |
@@ -75,6 +78,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `network.bad_name` | 400 | invalid network name |  |
 | `network.builtin_protected` | 400 | built-in network cannot be removed |  |
 | `network.not_found` | 404 | network not found |  |
+| `resource.in_use` | 409 | resource is in use: {detail} |  |
 | `resource.not_found` | 404 | resource not found |  |
 | `setup.already_configured` | 409 | setup is already complete |  |
 | `setup.already_done` | 403 | already configured |  |

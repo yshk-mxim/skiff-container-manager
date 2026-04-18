@@ -46,6 +46,7 @@ Test invariants (enforced by tests/test_route_contract.py in F4):
   - `audit` event names passed here must all appear in
     `skiff.contract.events.known_events()`.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +59,35 @@ from fastapi import Request
 
 from skiff.auth import verify_csrf
 from skiff.config import limiter
+from skiff.contract.errors import http_error
 from skiff.contract.events import known_events
+
+
+def _reject_if_reviewer() -> None:
+    """Block mutations when PROFILE=reviewer.
+
+    Reviewer persona is declared as "Security-review mode" in
+    `docs/dev/personas.md`. Enforcing it server-side means a compromised
+    or unaware client cannot mutate state even if the reviewer's browser
+    somehow surfaces a destructive button. The CSS on body.reviewer-mode
+    already hides those buttons, but the server is the authoritative gate.
+
+    Exception: an instance whose `api_token` is still empty has not
+    finished the setup wizard yet. Blocking `POST /api/setup` there
+    would brick the wizard (the operator cannot complete setup AND
+    cannot exit reviewer mode without a restart). Pre-token requests
+    are allowed through so a `PROFILE=reviewer API_TOKEN=""` boot can
+    still complete the wizard; the gate re-engages the moment a token
+    exists.
+    """
+    import skiff.config as _config_module
+
+    if _config_module.PROFILE != "reviewer":
+        return
+    if not _config_module._cfg.api_token.strip():
+        return  # setup still open; reviewer gate deferred until token exists
+    raise http_error("auth.reviewer_read_only")
+
 
 _log = structlog.get_logger(__name__)
 
@@ -100,6 +129,28 @@ def _audit_from_response(
     _emit_audit(audit, fields)
 
 
+def _run_mutation_guards(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    csrf: bool,
+    allow_in_reviewer: bool,
+) -> None:
+    """Run the pre-handler guards shared by sync + async wrappers.
+
+    Extracted so the async_wrapper / sync_wrapper bodies each touch one
+    branch instead of two, keeping cyclomatic complexity under the
+    AP / C901 thresholds.
+    """
+    if not csrf:
+        return
+    req = _find_request(args, kwargs)
+    if req is not None:
+        verify_csrf(req)
+    if not allow_in_reviewer:
+        _reject_if_reviewer()
+
+
 class _SecureRoute:
     """Namespace for the three variants. See module docstring."""
 
@@ -110,30 +161,37 @@ class _SecureRoute:
         csrf: bool,
         audit: str | None,
         audit_fields: Callable[..., dict[str, Any]] | None,
+        allow_in_reviewer: bool = False,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             # slowapi's limiter.limit needs the raw function so it can see its
             # signature (especially `request: Request`). We apply it last so
             # its wrapper is the outermost layer.
             if asyncio.iscoroutinefunction(func):
+
                 @functools.wraps(func)
                 async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                    if csrf:
-                        req = _find_request(args, kwargs)
-                        if req is not None:
-                            verify_csrf(req)
+                    _run_mutation_guards(
+                        args,
+                        kwargs,
+                        csrf=csrf,
+                        allow_in_reviewer=allow_in_reviewer,
+                    )
                     result = await func(*args, **kwargs)
                     _audit_from_response(audit, audit_fields, *args, **kwargs)
                     return result
 
                 wrapped: Callable[..., Any] = async_wrapper
             else:
+
                 @functools.wraps(func)
                 def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                    if csrf:
-                        req = _find_request(args, kwargs)
-                        if req is not None:
-                            verify_csrf(req)
+                    _run_mutation_guards(
+                        args,
+                        kwargs,
+                        csrf=csrf,
+                        allow_in_reviewer=allow_in_reviewer,
+                    )
                     result = func(*args, **kwargs)
                     _audit_from_response(audit, audit_fields, *args, **kwargs)
                     return result
@@ -148,7 +206,9 @@ class _SecureRoute:
             # closure. Written on BOTH layers so whichever the test inspects
             # first has a consistent signal.
             wrapped._skiff_secure = {  # type: ignore[attr-defined]
-                "csrf": csrf, "audit": audit, "rate": rate,
+                "csrf": csrf,
+                "audit": audit,
+                "rate": rate,
             }
             limited._skiff_secure = wrapped._skiff_secure  # type: ignore[attr-defined]
             return limited
@@ -161,14 +221,27 @@ class _SecureRoute:
         *,
         audit: str | None = None,
         audit_fields: Callable[..., dict[str, Any]] | None = None,
+        allow_in_reviewer: bool = False,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Bundle AUTH + CSRF + rate-limit + audit for a mutating route.
 
         Pass `audit` as a declared event name; optional `audit_fields` is a
         callable that receives the same (*args, **kwargs) as the handler
         and returns the structlog fields to emit.
+
+        `allow_in_reviewer=True` skips the reviewer-mode gate for routes
+        that MAKE STATE SAFER (cancelling a queued destroy, resetting
+        config to clear secrets). Default False — any caller that does
+        not explicitly opt in is treated as a state-mutating write and
+        blocked in reviewer mode.
         """
-        return self._wrap(rate, csrf=True, audit=audit, audit_fields=audit_fields)
+        return self._wrap(
+            rate,
+            csrf=True,
+            audit=audit,
+            audit_fields=audit_fields,
+            allow_in_reviewer=allow_in_reviewer,
+        )
 
     def read(self, rate: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """AUTH + rate-limit. No CSRF (read-only). No audit by default."""

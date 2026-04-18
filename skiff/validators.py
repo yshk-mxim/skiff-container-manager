@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Input validation, Docker helper functions, and compose-file sandbox enforcement."""
+
 from __future__ import annotations
 
 import re
@@ -10,7 +11,6 @@ import docker
 import docker.errors
 import structlog
 import yaml
-from fastapi import HTTPException
 
 from skiff import config
 from skiff.contract.errors import http_error
@@ -26,11 +26,11 @@ log = structlog.get_logger(__name__)
 # 4-char short-ID floor the Docker CLI accepts.
 
 _IDENT_SHAPES: dict[str, tuple[str, str, int, int]] = {
-    "hex_id":         ("a-f0-9",    "a-f0-9",          4,  64),
-    "compose_name":   ("a-z0-9",    "a-z0-9_-",        1,  63),
-    "container_name": ("a-zA-Z0-9", "a-zA-Z0-9_.-",    1, 128),
-    "network_name":   ("a-zA-Z0-9", "a-zA-Z0-9_.-",    1,  64),
-    "image_tag":      ("a-zA-Z0-9", "a-zA-Z0-9_./:@-", 1, 256),
+    "hex_id": ("a-f0-9", "a-f0-9", 4, 64),
+    "compose_name": ("a-z0-9", "a-z0-9_-", 1, 63),
+    "container_name": ("a-zA-Z0-9", "a-zA-Z0-9_.-", 1, 128),
+    "network_name": ("a-zA-Z0-9", "a-zA-Z0-9_.-", 1, 64),
+    "image_tag": ("a-zA-Z0-9", "a-zA-Z0-9_./:@-", 1, 256),
 }
 
 
@@ -73,11 +73,21 @@ _ENV_SENSITIVE_RE = re.compile(
 
 # ── Path / ID validation ───────────────────────────────────
 
+
 def validate_container_id(container_id: str) -> str:
-    """Raise HTTP 400 if container_id is not a valid hex ID."""
-    if not CONTAINER_ID_RE.fullmatch(container_id):
-        raise http_error("container.bad_id")
-    return container_id
+    """Raise HTTP 400 if `container_id` is neither a valid hex id nor a name.
+
+    Docker's SDK accepts either form on `containers.get`, so the API
+    surface is symmetric with `GET /api/containers` (which returns `name`).
+    An operator copy-pasting a name from the UI's resource column can
+    hit `/api/containers/<name>/inspect` directly without a list-then-id
+    round-trip.
+    """
+    if CONTAINER_ID_RE.fullmatch(container_id):
+        return container_id
+    if CONTAINER_NAME_RE.fullmatch(container_id):
+        return container_id
+    raise http_error("container.bad_id")
 
 
 def validate_project_name(project_name: str) -> str:
@@ -111,18 +121,14 @@ def _extract_image_registry(image: str) -> str:
 
 def _allow_bare_image() -> bool:
     """True when docker.io is in the allowlist — bare names resolve there."""
-    return any(
-        r.rstrip("/").lower() == "docker.io"
-        for r in config._cfg.allowed_registries
-    )
+    return any(r.rstrip("/").lower() == "docker.io" for r in config._cfg.allowed_registries)
 
 
 def _registry_matches_allowlist(image: str, image_registry: str) -> bool:
     """True if `image` (or its registry host) matches any allowlist entry."""
     lower = image_registry.lower()
     return any(
-        lower == r.rstrip("/").lower()
-        or image.lower().startswith((r if r.endswith("/") else r + "/").lower())
+        lower == r.rstrip("/").lower() or image.lower().startswith((r if r.endswith("/") else r + "/").lower())
         for r in config._cfg.allowed_registries
     )
 
@@ -132,18 +138,45 @@ def _raise_bare_image_blocked() -> None:
         "image.registry_blocked",
         registry="(none)",
         message=(
-            f"Image must include an explicit registry hostname. "
-            f"Allowed: {', '.join(config._cfg.allowed_registries)}"
+            f"Image must include an explicit registry hostname. Allowed: {', '.join(config._cfg.allowed_registries)}"
         ),
     )
 
 
 def validate_image_registry(image: str) -> None:
-    """Raise HTTP 400 if the image is not from an allowed registry."""
+    """Raise HTTP 400 if the image is not from an allowed registry.
+
+    Also rejects malformed refs the tokenizer would otherwise accept:
+    a trailing-colon form (`alpine:`) parses as a zero-length tag
+    which Docker then substitutes with `:latest` — defeating any
+    operator policy that wants pinned tags. The IMAGE_TAG_RE allows
+    `:` in the body to permit `image:tag@digest`, so we add an
+    explicit shape guard here.
+    """
     if not IMAGE_TAG_RE.fullmatch(image):
         raise http_error("validation.bad_image_name")
+    # Trailing `:` with no tag, trailing `@` with no digest, or double
+    # separators all indicate a malformed reference.
+    if image.endswith((":", "@")) or ":@" in image or "::" in image:
+        raise http_error("validation.bad_image_name")
     if not config._cfg.allowed_registries:
-        return
+        # Fail-CLOSED when the operator cleared the allowlist. The
+        # prior behaviour (no allowlist → accept everything) was
+        # counter-intuitive: a homelab operator setting
+        # `ALLOWED_REGISTRIES=""` to "lock it down" got the opposite.
+        # A permissive posture must be expressed positively (set the
+        # knob to `docker.io,ghcr.io` or whatever registries ARE
+        # allowed), not by clearing. `security.no_registry_allowlist`
+        # still fires at boot so the operator sees the change.
+        raise http_error(
+            "image.registry_blocked",
+            registry="(none)",
+            message=(
+                "ALLOWED_REGISTRIES is empty — no image pulls are "
+                "accepted. Set the env var to one or more registry "
+                "hostnames (e.g. `docker.io,ghcr.io`) to allow pulls."
+            ),
+        )
     image_registry = _extract_image_registry(image)
     if not image_registry:
         if not _allow_bare_image():
@@ -164,6 +197,7 @@ def validate_container_name(name: str | None) -> str | None:
 
 # ── Docker helpers ─────────────────────────────────────────
 
+
 def _get_container(client, container_id: str):
     """Fetch a container by ID with proper error handling."""
     validate_container_id(container_id)
@@ -182,13 +216,40 @@ def _raise_docker_api_error(e: docker.errors.APIError) -> None:
 
     Preserves the upstream status when it's non-default (Docker daemon may
     return 422 / 500 / etc. for specific failures); the catalogue entry is
-    400-only, so non-400 non-409 codes fall through to raw HTTPException.
+    400-only, so non-400 non-409 codes fall through to a generic
+    `docker.sdk_error` envelope rather than a bare HTTPException so every
+    4xx/5xx still carries the documented `{code, message}` shape.
     """
     if e.status_code == 409:
+        # "in use" surfaces from volume/network delete when something has
+        # the resource mounted/attached. Keep the generic container.conflict
+        # label unless the explanation explicitly mentions "in use" — then
+        # emit `resource.in_use` so volume/network routers give a better
+        # first-try error than "container conflict".
+        explanation_raw = str(e.explanation or "")
+        explanation = explanation_raw.lower()
+        if "in use" in explanation:
+            raise http_error("resource.in_use", detail=explanation_raw[:200]) from e
+        # Propagate the Docker daemon's explanation into `message`. The
+        # prior template-only error obscured root causes like memory-swap
+        # mismatches or unsupported config keys with a misleading
+        # "already started/stopped?" default.
+        if explanation_raw:
+            raise http_error(
+                "container.conflict",
+                message=f"container conflict: {explanation_raw[:200]}",
+            ) from e
         raise http_error("container.conflict") from e
-    message = str(e.explanation or "Container operation failed")[:500]
+    message = str(e.explanation or "Docker operation failed")[:500]
     if e.status_code and e.status_code != 400:
-        raise HTTPException(e.status_code, message) from e
+        # Pass upstream status through (422, 503, etc.) so the client sees
+        # the Docker daemon's actual severity rather than a flat 500.
+        raise http_error(
+            "docker.sdk_error",
+            status=e.status_code,
+            message=message,
+            status_override=e.status_code,
+        ) from e
     raise http_error("container.op_failed", message=message) from e
 
 
@@ -198,13 +259,17 @@ def _is_object_bound(fn) -> bool:
     return self is not None and not isinstance(self, type)
 
 
-def safe_docker_call(fn, *args, **kwargs):
+def safe_docker_call(fn, *args, kind: str | None = None, **kwargs):
     """Execute a Docker SDK call with transient-error retry.
 
-    - NotFound            → 404 (`resource.not_found`)
-    - APIError            → preserves upstream status, or 400 op_failed
-    - DOCKER_TRANSIENT    → one retry (client-level calls only) then 503
+    - NotFound            → 404 — `{kind}.not_found` if `kind` is given,
+                              else `resource.not_found` catch-all.
+    - APIError            → envelope-shaped via `_raise_docker_api_error`.
+    - DOCKER_TRANSIENT    → one retry (client-level calls only) then 503.
 
+    Pass `kind="image"|"volume"|"network"|"container"` to get a
+    resource-specific 404 so the UI can render a useful message
+    (`"image not found"` rather than the catch-all `"resource not found"`).
     Object-bound methods (container.start) skip the retry because the
     object retains a reference to the closed client; the caller's next
     request uses a fresh client via get_client().
@@ -214,6 +279,8 @@ def safe_docker_call(fn, *args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except docker.errors.NotFound as exc:
+            if kind in {"image", "volume", "network", "container"}:
+                raise http_error(f"{kind}.not_found") from exc
             raise http_error("resource.not_found") from exc
         except docker.errors.APIError as e:
             _raise_docker_api_error(e)
@@ -227,6 +294,7 @@ def safe_docker_call(fn, *args, **kwargs):
 
 
 # ── Redaction helpers ──────────────────────────────────────
+
 
 def _redact_env(env_list: list[str]) -> list[str]:
     """Redact environment variable values whose names suggest sensitive data."""
@@ -271,10 +339,21 @@ _BLOCKED_MOUNT_TARGETS: frozenset[str] = frozenset(config._TOML_MOUNT_TARGETS["b
 
 
 def _validate_mount_target(path: str) -> None:
-    """Reject mounts to sensitive container paths."""
+    """Reject mounts to sensitive container paths.
+
+    Rejects `/` and any trailing-slash variant explicitly: a mount
+    onto the container root shadows the entire filesystem including
+    /etc, /bin, /lib. `rstrip("/")` on `"/"` returns `""` which
+    matched none of the blocklist entries, so the Docker SDK saw
+    `myvol:/` and rejected it with a 500 error envelope. Pre-empt
+    with a 400 so the operator gets an actionable message.
+    """
     if not path.startswith("/"):
         raise http_error("validation.bad_mount_target")
     normalized = path.rstrip("/")
+    if normalized == "":
+        # `/` or `///…/` — root bind is always forbidden.
+        raise http_error("validation.mount_target_blocked", path=path)
     for blocked in _BLOCKED_MOUNT_TARGETS:
         if normalized == blocked or normalized.startswith(blocked + "/"):
             raise http_error("validation.mount_target_blocked", path=path)
@@ -300,10 +379,18 @@ _MEM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]i?|[kmgt])?\s*$")
 _CPU_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(m)?\s*$")
 _MEM_UNIT_BYTES = {
     "": 1,
-    "k": 1000, "K": 1000, "Ki": 1024,
-    "m": 1_000_000, "M": 1_000_000, "Mi": 1024 ** 2,
-    "g": 1_000_000_000, "G": 1_000_000_000, "Gi": 1024 ** 3,
-    "t": 1_000_000_000_000, "T": 1_000_000_000_000, "Ti": 1024 ** 4,
+    "k": 1000,
+    "K": 1000,
+    "Ki": 1024,
+    "m": 1_000_000,
+    "M": 1_000_000,
+    "Mi": 1024**2,
+    "g": 1_000_000_000,
+    "G": 1_000_000_000,
+    "Gi": 1024**3,
+    "t": 1_000_000_000_000,
+    "T": 1_000_000_000_000,
+    "Ti": 1024**4,
 }
 
 
@@ -311,9 +398,9 @@ def parse_memory_quantity(value: str | int) -> int:
     """Parse memory quantity to bytes. Accepts int (bytes), str with IEC or decimal suffix.
 
     Examples: "256Mi" → 268435456, "1Gi" → 1073741824, "500M" → 500000000.
-    Raises HTTPException(400) on invalid format. The regex guarantees the numeric
-    fragment is a valid non-negative decimal and the unit is in _MEM_UNIT_BYTES,
-    so no redundant float()/range checks are needed past the regex.
+    Empty string (`""`) returns 0 — the documented "no cap / remove
+    limit" sentinel on `/update`. Raises `http_error("validation.bad_memory")`
+    (400) on invalid format.
     """
     if isinstance(value, bool):
         raise http_error(
@@ -329,6 +416,11 @@ def parse_memory_quantity(value: str | int) -> int:
             "validation.bad_memory",
             message="memory must be an integer (bytes) or a string like '256Mi'",
         )
+    # Empty string is the "remove the cap" signal for `/update`; return
+    # 0 so `_apply_memory`'s below-minimum check short-circuits with
+    # "no cap" semantics (mem_limit=0 → unlimited in the Docker SDK).
+    if value == "":
+        return 0
     m = _MEM_RE.match(value)
     if not m:
         raise http_error(
@@ -341,7 +433,7 @@ def parse_memory_quantity(value: str | int) -> int:
 def parse_cpu_quantity(value: str | float) -> float:
     """Parse CPU quantity to fractional cores. Accepts numeric, "0.5", "500m", "2".
 
-    Returns a float (e.g. 0.5 for half a core). Raises HTTPException(400) on invalid.
+    Returns a float (e.g. 0.5 for half a core). Raises `http_error("validation.bad_cpu")` (400) on invalid.
     The regex guarantees the numeric fragment is a valid non-negative decimal.
     """
     if isinstance(value, bool):
@@ -370,9 +462,9 @@ def parse_cpu_quantity(value: str | float) -> float:
 # Size-suffix → MB multiplier for tmpfs size= option parsing.
 _TMPFS_SIZE_UNITS: dict[str, float] = {
     "": 1 / 1024 / 1024,  # raw bytes → MB
-    "k": 1 / 1024,         # kilobytes → MB
-    "m": 1.0,              # megabytes
-    "g": 1024.0,           # gigabytes → MB
+    "k": 1 / 1024,  # kilobytes → MB
+    "m": 1.0,  # megabytes
+    "g": 1024.0,  # gigabytes → MB
 }
 
 
@@ -510,7 +602,8 @@ def _check_namespace_modes(svc_name: str, svc: dict) -> None:
     if any(net_mode.startswith(m) for m in BLOCKED_NETWORK_MODES):
         raise http_error(
             "compose.service_bad_network_mode",
-            svc_name=svc_name, net_mode=net_mode,
+            svc_name=svc_name,
+            net_mode=net_mode,
         )
     if str(svc.get("pid", "")) == "host":
         raise http_error("compose.service_host_pid", svc_name=svc_name)
@@ -593,8 +686,8 @@ def _sanitize_stderr(stderr: str) -> str:
     sanitized = stderr
     while prev != sanitized:
         prev = sanitized
-        sanitized = re.sub(r'(/[^\s:,\'"]+)', '[path]', sanitized)
-    sanitized = re.sub(r'\b([a-zA-Z0-9-]+\.){2,}[a-zA-Z]{2,}\b', '[host]', sanitized)
+        sanitized = re.sub(r'(/[^\s:,\'"]+)', "[path]", sanitized)
+    sanitized = re.sub(r"\b([a-zA-Z0-9-]+\.){2,}[a-zA-Z]{2,}\b", "[host]", sanitized)
     # Collapse `[path][path]…` runs that the iterative substitution may leave.
-    sanitized = re.sub(r'(?:\[path\]){2,}', '[path]', sanitized)
+    sanitized = re.sub(r"(?:\[path\]){2,}", "[path]", sanitized)
     return sanitized[:400].strip()

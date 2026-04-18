@@ -6,6 +6,7 @@ pytest collects it in the same session but runs it after the main UI suite.
 The tunnel-kill test is placed last to minimise blast radius if restoration
 fails.
 """
+
 from __future__ import annotations
 
 pytest_plugins = ["tests.conftest_e2e"]
@@ -47,6 +48,7 @@ pytestmark = pytest.mark.e2e
 # Containers — uncovered actions
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_container_restart(page, live_server, docker_client):
     """Restart button on a running container keeps it running afterwards."""
@@ -63,9 +65,7 @@ def test_container_restart(page, live_server, docker_client):
     row.locator("button:has-text('Restart')").click()
 
     # Wait for the restart to complete and the container to be running again
-    page.wait_for_selector(
-        f"tr:has-text('{name}') .status.running", timeout=LONG
-    )
+    page.wait_for_selector(f"tr:has-text('{name}') .status.running", timeout=LONG)
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -118,8 +118,7 @@ def test_container_delete_confirm_cancel(page, live_server, docker_client):
     page.locator(f"tr:has-text('{name}') button:has-text('Delete')").click()
 
     page.wait_for_timeout(600)
-    assert page.locator(f"tr:has-text('{name}')").count() > 0, \
-        "Container row disappeared after cancelled delete"
+    assert page.locator(f"tr:has-text('{name}')").count() > 0, "Container row disappeared after cancelled delete"
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -144,8 +143,9 @@ def test_container_kill_confirm_cancel(page, live_server, docker_client):
     page.locator(f"tr:has-text('{name}') button:has-text('Kill')").click()
 
     page.wait_for_timeout(600)
-    assert page.locator(f"tr:has-text('{name}') .status.running").count() > 0, \
+    assert page.locator(f"tr:has-text('{name}') .status.running").count() > 0, (
         "Container no longer running after cancelled kill"
+    )
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -171,8 +171,11 @@ def test_container_update_memory_and_cpus_live(page, live_server, docker_client)
             c.remove(force=True)
     # Start with modest defaults so the test values are a real delta
     docker_client.containers.run(
-        "alpine:latest", "sleep 600", name=name, detach=True,
-        mem_limit="64m",   # 64 MiB = 67108864 bytes
+        "alpine:latest",
+        "sleep 600",
+        name=name,
+        detach=True,
+        mem_limit="64m",  # 64 MiB = 67108864 bytes
     )
     try:
         _nav_to(page, "containers")
@@ -202,11 +205,11 @@ def test_container_update_memory_and_cpus_live(page, live_server, docker_client)
             if last_hc.get("Memory") == 128 * 1024 * 1024 and last_hc.get("CpuQuota") == 100_000:
                 break
             time.sleep(0.25)
-        assert last_hc.get("Memory") == 128 * 1024 * 1024, \
-            f"Memory not updated after 15s: {last_hc.get('Memory')} (expected {128 * 1024 * 1024}). "\
+        assert last_hc.get("Memory") == 128 * 1024 * 1024, (
+            f"Memory not updated after 15s: {last_hc.get('Memory')} (expected {128 * 1024 * 1024}). "
             f"Full HostConfig: {last_hc}"
-        assert last_hc.get("CpuQuota") == 100_000, \
-            f"CpuQuota not updated: {last_hc.get('CpuQuota')} (expected 100000)"
+        )
+        assert last_hc.get("CpuQuota") == 100_000, f"CpuQuota not updated: {last_hc.get('CpuQuota')} (expected 100000)"
     finally:
         for c in docker_client.containers.list(all=True):
             if c.name == name:
@@ -238,8 +241,9 @@ def test_container_update_cap_rejected(page, live_server, docker_client):
         # Verify container was NOT mutated
         ctr = docker_client.containers.get(name)
         ctr.reload()
-        assert ctr.attrs["HostConfig"]["Memory"] == 64 * 1024 * 1024, \
+        assert ctr.attrs["HostConfig"]["Memory"] == 64 * 1024 * 1024, (
             "Container memory was changed despite cap rejection — server cap bypassed"
+        )
     finally:
         for c in docker_client.containers.list(all=True):
             if c.name == name:
@@ -339,8 +343,7 @@ def test_rotate_token_blocked_when_from_env(live_server):
     """
     r = requests.post(
         f"{BASE_URL}/api/auth/rotate-token",
-        headers={"X-Requested-With": "ContainerManager",
-                 "Authorization": f"Bearer {E2E_TOKEN}"},
+        headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
         json={"new_token": "new-rotated-value-for-the-test-32c"},
         timeout=15,
     )
@@ -354,8 +357,7 @@ def test_reset_config_blocked_when_from_env(live_server):
     """Same pathway: reset is blocked when from_env=True."""
     r = requests.post(
         f"{BASE_URL}/api/auth/reset-config",
-        headers={"X-Requested-With": "ContainerManager",
-                 "Authorization": f"Bearer {E2E_TOKEN}"},
+        headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
         timeout=15,
     )
     assert r.status_code == 403
@@ -368,8 +370,9 @@ def test_account_section_hidden_when_from_env(page, live_server):
     page.wait_for_selector("h2:has-text('System')", timeout=MEDIUM)
     # Give the async fetch time to settle
     page.wait_for_timeout(1500)
-    assert page.locator("h3:has-text('Account')").count() == 0, \
+    assert page.locator("h3:has-text('Account')").count() == 0, (
         "Account section should be hidden in env-configured mode"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +469,10 @@ def test_container_clone_changes_memory_both_exist(page, live_server, docker_cli
         if c.name == src_name or c.name == "clone-" + src_name:
             c.remove(force=True)
     docker_client.containers.run(
-        "alpine:latest", "sleep 600", name=src_name, detach=True,
+        "alpine:latest",
+        "sleep 600",
+        name=src_name,
+        detach=True,
         mem_limit="64m",
         environment=["FROM_SOURCE=yes", "SECRET=topsecret"],
     )
@@ -498,8 +504,7 @@ def test_container_clone_changes_memory_both_exist(page, live_server, docker_cli
         # Verify env inheritance: clone's env must include SECRET=topsecret
         clone = docker_client.containers.get("clone-" + src_name)
         clone_env = clone.attrs["Config"]["Env"]
-        assert "SECRET=topsecret" in clone_env, \
-            f"Env not inherited: {clone_env!r}"
+        assert "SECRET=topsecret" in clone_env, f"Env not inherited: {clone_env!r}"
         assert "FROM_SOURCE=yes" in clone_env
     finally:
         for c in docker_client.containers.list(all=True):
@@ -515,7 +520,11 @@ def test_container_clone_replace_removes_source(page, live_server, docker_client
         if c.name in (src_name, "clone-" + src_name):
             c.remove(force=True)
     docker_client.containers.run(
-        "alpine:latest", "sleep 600", name=src_name, detach=True, mem_limit="64m",
+        "alpine:latest",
+        "sleep 600",
+        name=src_name,
+        detach=True,
+        mem_limit="64m",
     )
     try:
         _nav_to(page, "containers")
@@ -557,7 +566,11 @@ def test_container_clone_bad_port_preserves_source(page, live_server, docker_cli
         if c.name in (src_name, "clone-" + src_name):
             c.remove(force=True)
     docker_client.containers.run(
-        "alpine:latest", "sleep 600", name=src_name, detach=True, mem_limit="64m",
+        "alpine:latest",
+        "sleep 600",
+        name=src_name,
+        detach=True,
+        mem_limit="64m",
     )
     try:
         _nav_to(page, "containers")
@@ -584,6 +597,7 @@ def test_container_clone_bad_port_preserves_source(page, live_server, docker_cli
 # ─────────────────────────────────────────────────────────────────────────────
 # Images — uncovered paths
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_image_pull_empty_name_error(page, live_server):
@@ -629,8 +643,7 @@ def test_image_push_confirm_cancel(page, live_server, docker_client):
     page.wait_for_timeout(500)
 
     # No success toast should appear
-    assert page.locator(".toast.success:has-text('Pushed')").count() == 0, \
-        "Push ran despite confirm being cancelled"
+    assert page.locator(".toast.success:has-text('Pushed')").count() == 0, "Push ran despite confirm being cancelled"
 
 
 @pytest.mark.e2e
@@ -648,7 +661,7 @@ def test_modal_cancel_pull(page, live_server):
 def test_modal_cancel_create_volume(page, live_server):
     """Cancel button on create-volume modal closes it without creating a volume."""
     _nav_to(page, "volumes")
-    page.locator("button:has-text('Create volume')").click()
+    page.locator("#main button:has-text('Create')").click()
     page.wait_for_selector(".modal-bg", timeout=SHORT)
 
     page.locator(".modal-bg button:has-text('Cancel')").click()
@@ -670,6 +683,7 @@ def test_modal_cancel_create_network(page, live_server):
 # Volumes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_volume_delete_confirm_cancel(page, live_server, docker_client):
     """Cancelling volume delete confirmation leaves the volume in the list."""
@@ -688,8 +702,7 @@ def test_volume_delete_confirm_cancel(page, live_server, docker_client):
     page.locator(f"tr:has-text('{vol_name}') button:has-text('Delete')").click()
 
     page.wait_for_timeout(600)
-    assert page.locator(f"tr:has-text('{vol_name}')").count() > 0, \
-        "Volume disappeared after cancelled delete"
+    assert page.locator(f"tr:has-text('{vol_name}')").count() > 0, "Volume disappeared after cancelled delete"
 
     if docker_client:
         try:
@@ -702,29 +715,34 @@ def test_volume_delete_confirm_cancel(page, live_server, docker_client):
 # Compose — error and output paths
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_compose_deploy_invalid_yaml_shows_error(page, live_server):
     """Uploading an invalid compose file renders a red error output div."""
     _nav_to(page, "compose")
 
-    page.locator("input[type='file']").set_input_files([{
-        "name": "docker-compose.yml",
-        "mimeType": "application/x-yaml",
-        "buffer": b"this is: not: valid: compose: {{{",
-    }])
+    page.locator("input[type='file']").set_input_files(
+        [
+            {
+                "name": "docker-compose.yml",
+                "mimeType": "application/x-yaml",
+                "buffer": b"this is: not: valid: compose: {{{",
+            }
+        ]
+    )
 
     # The UI first renders a colourless "Deploying stack…" placeholder then replaces
     # it with the final (coloured) result div.  Wait until style.color is non-empty.
     page.wait_for_function(
-        "() => { var el = document.querySelector('#compose-output .log-viewer'); "
-        "return el && el.style.color !== ''; }",
+        "() => { var el = document.querySelector('#compose-output .log-viewer'); return el && el.style.color !== ''; }",
         timeout=MEDIUM,
     )
     color = page.locator("#compose-output .log-viewer").evaluate("el => el.style.color")
     text = page.locator("#compose-output .log-viewer").text_content()
     # Red: rgb(248, 81, 73) or the hex equivalent
-    assert "248" in color or "f85149" in color.replace("#", "").lower(), \
+    assert "248" in color or "f85149" in color.replace("#", "").lower(), (
         f"Expected red error color, got: {color!r} (output: {text!r})"
+    )
 
 
 @pytest.mark.e2e
@@ -743,23 +761,27 @@ def test_compose_output_shown_on_success(page, live_server):
     _nav_to(page, "compose")
 
     yaml = b"services:\n  web:\n    image: alpine:latest\n    command: sleep 30\n"
-    page.locator("input[type='file']").set_input_files([{
-        "name": "docker-compose.yml",
-        "mimeType": "application/x-yaml",
-        "buffer": yaml,
-    }])
+    page.locator("input[type='file']").set_input_files(
+        [
+            {
+                "name": "docker-compose.yml",
+                "mimeType": "application/x-yaml",
+                "buffer": yaml,
+            }
+        ]
+    )
 
     # Wait until style.color is non-empty (interim "Deploying…" placeholder has no colour)
     page.wait_for_function(
-        "() => { var el = document.querySelector('#compose-output .log-viewer'); "
-        "return el && el.style.color !== ''; }",
+        "() => { var el = document.querySelector('#compose-output .log-viewer'); return el && el.style.color !== ''; }",
         timeout=LONG,
     )
     color = page.locator("#compose-output .log-viewer").evaluate("el => el.style.color")
     text = page.locator("#compose-output .log-viewer").text_content()
     # Green: rgb(63, 185, 80) or hex #3fb950
-    assert "63" in color or "3fb950" in color.replace("#", "").lower(), \
+    assert "63" in color or "3fb950" in color.replace("#", "").lower(), (
         f"Expected green success color, got: {color!r} (output: {text!r})"
+    )
 
     # Tear down the stack after the test (best-effort)
     try:
@@ -787,8 +809,7 @@ def test_compose_project_name_field(page, live_server):
 
     _nav_to(page, "compose")
     page.wait_for_selector("#compose-project", timeout=MEDIUM)
-    assert page.locator("#compose-project").input_value() == "dev", \
-        "Default project name should be 'dev'"
+    assert page.locator("#compose-project").input_value() == "dev", "Default project name should be 'dev'"
 
     page.locator("#compose-project").fill("e2e-test-proj")
 
@@ -801,16 +822,21 @@ def test_compose_project_name_field(page, live_server):
     page.on("request", _capture)
 
     yaml = b"services:\n  app:\n    image: alpine:latest\n    command: sleep 10\n"
-    page.locator("input[type='file']").set_input_files([{
-        "name": "docker-compose.yml",
-        "mimeType": "application/x-yaml",
-        "buffer": yaml,
-    }])
+    page.locator("input[type='file']").set_input_files(
+        [
+            {
+                "name": "docker-compose.yml",
+                "mimeType": "application/x-yaml",
+                "buffer": yaml,
+            }
+        ]
+    )
 
     page.wait_for_selector("#compose-output .log-viewer", timeout=LONG)
 
-    assert any("e2e-test-proj" in u for u in project_urls), \
+    assert any("e2e-test-proj" in u for u in project_urls), (
         f"Project name not found in captured requests: {project_urls}"
+    )
 
     # Tear down (best-effort)
     try:
@@ -826,6 +852,7 @@ def test_compose_project_name_field(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks — connect form submit
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_network_connect_form_submit(page, live_server, docker_client):
@@ -880,6 +907,7 @@ def test_network_connect_form_submit(page, live_server, docker_client):
 # Containers — sort direction toggle
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_container_sort_direction_toggle(page, live_server, docker_client):
     """Clicking the Name column header twice reverses the sort order."""
@@ -915,8 +943,7 @@ def test_container_sort_direction_toggle(page, live_server, docker_client):
     aaa_before_zzz_second = aaa2 < zzz2
 
     assert aaa_before_zzz_first != aaa_before_zzz_second, (
-        f"Sort did not reverse: after 1st click aaa={aaa1} zzz={zzz1}; "
-        f"after 2nd click aaa={aaa2} zzz={zzz2}"
+        f"Sort did not reverse: after 1st click aaa={aaa1} zzz={zzz1}; after 2nd click aaa={aaa2} zzz={zzz2}"
     )
 
     if docker_client:
@@ -929,6 +956,7 @@ def test_container_sort_direction_toggle(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Run modal — registry hint and image chips
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_run_modal_registry_hint_loads(page, live_server):
@@ -945,8 +973,7 @@ def test_run_modal_registry_hint_loads(page, live_server):
     )
     hint_text = hint.text_content()
     # Must mention either a registry name or "No registry restriction"
-    assert hint_text and "Loading" not in hint_text, \
-        f"Registry hint still loading: {hint_text!r}"
+    assert hint_text and "Loading" not in hint_text, f"Registry hint still loading: {hint_text!r}"
 
     page.locator(".modal-bg button:has-text('Cancel')").click()
     page.wait_for_selector(".modal-bg", state="detached", timeout=SHORT)
@@ -955,6 +982,7 @@ def test_run_modal_registry_hint_loads(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks — built-in networks have no Connect or Delete buttons
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_builtin_network_no_action_buttons(page, live_server):
@@ -972,15 +1000,16 @@ def test_builtin_network_no_action_buttons(page, live_server):
         ).first
         if row.count() == 0:
             continue
-        assert row.locator("button:has-text('Connect...')").count() == 0, \
+        assert row.locator("button:has-text('Connect...')").count() == 0, (
             f"'{builtin_name}' should not have Connect button"
-        assert row.locator("button:has-text('Delete')").count() == 0, \
-            f"'{builtin_name}' should not have Delete button"
+        )
+        assert row.locator("button:has-text('Delete')").count() == 0, f"'{builtin_name}' should not have Delete button"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # System — prune confirm cancel
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_system_prune_confirm_cancel(page, live_server):
@@ -993,8 +1022,7 @@ def test_system_prune_confirm_cancel(page, live_server):
 
     page.wait_for_timeout(600)
     # No success or info toast should fire
-    assert page.locator(".toast:has-text('Pruned')").count() == 0, \
-        "Prune toast appeared after cancelled confirmation"
+    assert page.locator(".toast:has-text('Pruned')").count() == 0, "Prune toast appeared after cancelled confirmation"
     assert page.locator(".toast:has-text('Nothing')").count() == 0
 
 
@@ -1002,14 +1030,16 @@ def test_system_prune_confirm_cancel(page, live_server):
 # Volume prune confirm cancel
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_volume_prune_confirm_cancel(page, live_server):
     """Cancelling the volume-prune confirmation makes no API call."""
     _nav_to(page, "volumes")
-    page.wait_for_selector("button:has-text('Prune unused')", timeout=MEDIUM)
+    # Volumes toolbar prune button is "Prune" (networks still uses "Prune unused").
+    page.wait_for_selector("#main button:has-text('Prune')", timeout=MEDIUM)
 
     page.evaluate("window.confirm = () => false")
-    page.locator("button:has-text('Prune unused')").click()
+    page.locator("#main button:has-text('Prune')").click()
 
     page.wait_for_timeout(600)
     assert page.locator(".toast:has-text('Pruned')").count() == 0
@@ -1018,6 +1048,7 @@ def test_volume_prune_confirm_cancel(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Network prune confirm cancel
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_network_prune_confirm_cancel(page, live_server):
@@ -1036,6 +1067,7 @@ def test_network_prune_confirm_cancel(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Network delete confirm cancel
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_network_delete_confirm_cancel(page, live_server, docker_client):
@@ -1057,8 +1089,7 @@ def test_network_delete_confirm_cancel(page, live_server, docker_client):
     page.locator(f"tr:has-text('{net_name}') button:has-text('Delete')").click()
 
     page.wait_for_timeout(600)
-    assert page.locator(f"tr:has-text('{net_name}')").count() > 0, \
-        "Network disappeared after cancelled delete"
+    assert page.locator(f"tr:has-text('{net_name}')").count() > 0, "Network disappeared after cancelled delete"
 
     if docker_client:
         for n in docker_client.networks.list():
@@ -1072,6 +1103,7 @@ def test_network_delete_confirm_cancel(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Container health badge renders when container reports health status
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_container_health_badge(page, live_server, docker_client):
@@ -1090,7 +1122,7 @@ def test_container_health_badge(page, live_server, docker_client):
             healthcheck={
                 "test": ["CMD", "true"],
                 "interval": 1_000_000_000,  # 1 second in nanoseconds
-                "timeout":  3_000_000_000,
+                "timeout": 3_000_000_000,
                 "retries": 1,
             },
         )
@@ -1099,12 +1131,9 @@ def test_container_health_badge(page, live_server, docker_client):
     page.wait_for_selector(f"text={name}", timeout=MEDIUM)
 
     # Wait up to MEDIUM for the health badge to appear (healthcheck runs after ~1s)
-    page.wait_for_selector(
-        f"tr:has-text('{name}') .health-badge", timeout=MEDIUM
-    )
+    page.wait_for_selector(f"tr:has-text('{name}') .health-badge", timeout=MEDIUM)
     badge_text = page.locator(f"tr:has-text('{name}') .health-badge").first.text_content()
-    assert badge_text in ("healthy", "unhealthy", "starting"), \
-        f"Unexpected health badge text: {badge_text!r}"
+    assert badge_text in ("healthy", "unhealthy", "starting"), f"Unexpected health badge text: {badge_text!r}"
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -1115,6 +1144,7 @@ def test_container_health_badge(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine unreachable — helpful empty state (LAST test: kills the SSH tunnel)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_engine_unreachable_shows_helpful_empty_state(browser, live_server):
@@ -1142,7 +1172,9 @@ def test_engine_unreachable_shows_helpful_empty_state(browser, live_server):
         # ── Kill the tunnel ──────────────────────────────────────────────────
         subprocess.run(
             ["ssh", "-S", ctl_sock, "-O", "exit", E2E_SSH_TUNNEL],
-            capture_output=True, check=False, timeout=5,
+            capture_output=True,
+            check=False,
+            timeout=5,
         )
         try:
             os.unlink(_SOCKET_PATH)  # remove dead socket so new tunnel can rebind
@@ -1175,9 +1207,9 @@ def test_engine_unreachable_shows_helpful_empty_state(browser, live_server):
             # The empty-state paragraph must name a runtime or tunnel guidance so the
             # user has an actionable next step (not just "cannot reach").
             body = pg.locator(".empty-state").text_content()
-            assert body and any(
-                h in body.lower() for h in ("runtime", "tunnel", "reload", "reconnect", "docker")
-            ), f"empty-state lacks actionable guidance: {body!r}"
+            assert body and any(h in body.lower() for h in ("runtime", "tunnel", "reload", "reconnect", "docker")), (
+                f"empty-state lacks actionable guidance: {body!r}"
+            )
         finally:
             context.close()
 
@@ -1185,14 +1217,22 @@ def test_engine_unreachable_shows_helpful_empty_state(browser, live_server):
         # ── Restore the SSH tunnel ───────────────────────────────────────────
         restore = subprocess.run(
             [
-                "ssh", "-fNM",
-                "-S", new_ctl,
-                "-o", "ControlPersist=yes",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=10",
-                "-o", "ServerAliveInterval=30",
-                "-o", "ServerAliveCountMax=6",
-                "-L", f"{_SOCKET_PATH}:/var/run/docker.sock",
+                "ssh",
+                "-fNM",
+                "-S",
+                new_ctl,
+                "-o",
+                "ControlPersist=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=6",
+                "-L",
+                f"{_SOCKET_PATH}:/var/run/docker.sock",
                 E2E_SSH_TUNNEL,
             ],
             capture_output=True,

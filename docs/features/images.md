@@ -37,8 +37,10 @@ Primary: `dev`. Secondary: all other personas.
 - Audit events: `image.pulled`, `image.pushed`, `image.tagged`,
   `image.delete_queued`, `image.deleted`.
 - Threat model: tag operations can rewrite existing repository:tag
-  pointers — SKIFF doesn't treat that as destructive, but a future
-  enhancement could undo-wrap tag operations on existing tags.
+  pointers, orphaning the previous image as dangling. The UI checks for
+  an existing tag pointer before calling the endpoint and prompts for
+  explicit confirmation when the target already resolves to a different
+  image id; the server does not currently gate this.
 
 ## Tests
 - Unit: `tests/test_images.py`, `tests/test_coverage_images.py`.

@@ -79,6 +79,7 @@ def _discover_local_docker_host() -> str:
     the same runtimes.
     """
     from skiff.config import _TOML_DOCKER_PROBE
+
     for raw in _TOML_DOCKER_PROBE["paths"]:
         p = os.path.expanduser(raw)
         if os.path.exists(p):
@@ -90,27 +91,24 @@ def _discover_local_docker_host() -> str:
 # When E2E_SSH_TUNNEL is set, the caller is expected to also set
 # E2E_DOCKER_HOST to the tunnel-side path (typically /tmp/docker.sock).
 E2E_DOCKER_HOST = (
-    os.environ.get("E2E_DOCKER_HOST")
-    or str(_CONFIG.get("docker_host") or "")
-    or _discover_local_docker_host()
+    os.environ.get("E2E_DOCKER_HOST") or str(_CONFIG.get("docker_host") or "") or _discover_local_docker_host()
 )
 
 # Socket path extracted from DOCKER_HOST for tunnel target and docker_client
-_SOCKET_PATH = (
-    E2E_DOCKER_HOST.removeprefix("unix://")
-    if E2E_DOCKER_HOST.startswith("unix://")
-    else None
-)
+_SOCKET_PATH = E2E_DOCKER_HOST.removeprefix("unix://") if E2E_DOCKER_HOST.startswith("unix://") else None
 
 
 # ── SSH tunnel ──────────────────────────────────────────────────────────────
+
 
 def _kill_stale_tunnels(target_host: str, socket_path: str | None) -> None:
     """Kill any orphaned SSH processes forwarding the same target/socket."""
     try:
         result = subprocess.run(
             ["pgrep", "-f", f"ssh.*{target_host}"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         for pid in result.stdout.split():
             try:
@@ -160,14 +158,21 @@ def ssh_tunnel():
     ctl_socket = f"/tmp/skiff-e2e-ssh-ctl-{os.getpid()}.sock"
     cmd = [
         "ssh",
-        "-fNM",                          # background + ControlMaster
-        "-S", ctl_socket,               # control socket path
-        "-o", "ControlPersist=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "ConnectTimeout=10",
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=6",
-        "-L", f"{_SOCKET_PATH}:/var/run/docker.sock",
+        "-fNM",  # background + ControlMaster
+        "-S",
+        ctl_socket,  # control socket path
+        "-o",
+        "ControlPersist=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=6",
+        "-L",
+        f"{_SOCKET_PATH}:/var/run/docker.sock",
         E2E_SSH_TUNNEL,
     ]
     try:
@@ -201,6 +206,90 @@ def ssh_tunnel():
 
 # ── Live server ─────────────────────────────────────────────────────────────
 
+
+@pytest.fixture
+def isolated_server():
+    """Spawn a short-lived uvicorn on a unique port with custom env.
+
+    Use for tests that need server-side knob overrides that the shared
+    session-scoped `live_server` can't provide — e.g. `SETUP_WINDOW_SECS=3`
+    for the setup-window expiry regression, or `WS_AUTH_LOCKOUT_SECS=5`
+    for the WS lockout banner test. Yields `(base_url, proc)`; teardown
+    kills the process.
+
+    Usage::
+
+        def test_x(page, isolated_server):
+            url, _proc = isolated_server(env={"SETUP_WINDOW_SECS": "3",
+                                              "API_TOKEN": ""})
+            page.goto(url)
+            ...
+    """
+    procs: list[subprocess.Popen] = []
+    ports_used: list[int] = []
+
+    def _spawn(env: dict[str, str], port: int | None = None) -> tuple[str, subprocess.Popen]:
+        # Pick a port that doesn't collide with the session live_server.
+        # Shift from E2E_PORT in 10-port increments so parallel test runs
+        # don't clobber each other's isolated instances.
+        chosen = port or (E2E_PORT + 10 + len(ports_used))
+        full_env = {
+            **os.environ,
+            "ALLOWED_REGISTRIES": E2E_ALLOWED_REGISTRIES,
+            "DOCKER_HOST": E2E_DOCKER_HOST,
+            "AUDIT_LOG": f"/tmp/skiff-isolated-{chosen}.jsonl",
+            "COMPOSE_DIR": f"/tmp/skiff-isolated-compose-{chosen}",
+            "ALLOWED_ORIGINS": f"http://127.0.0.1:{chosen}",
+            "RATE_LIMIT_SCALE": "100",
+            **env,  # caller overrides win
+        }
+        proc = subprocess.Popen(
+            [
+                "uvicorn",
+                "app:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(chosen),
+                "--no-proxy-headers",
+                "--forwarded-allow-ips",
+                "",
+            ],
+            env=full_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        base = f"http://127.0.0.1:{chosen}"
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                r = requests.get(f"{base}/health", timeout=1)
+                if r.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+        else:
+            proc.terminate()
+            raise RuntimeError(f"isolated_server did not start within 10s on :{chosen}")
+        procs.append(proc)
+        ports_used.append(chosen)
+        return base, proc
+
+    yield _spawn
+
+    # Teardown: kill every process the test spawned.
+    for proc in procs:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 @pytest.fixture(scope="session")
 def live_server(ssh_tunnel):
     """Start uvicorn on E2E_PORT, yield base URL, teardown after session."""
@@ -208,7 +297,9 @@ def live_server(ssh_tunnel):
     try:
         result = subprocess.run(
             ["lsof", "-ti", f":{E2E_PORT}"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         for pid in result.stdout.split():
             subprocess.run(["kill", "-9", pid], check=False, capture_output=True)
@@ -249,9 +340,7 @@ def live_server(ssh_tunnel):
         proc.terminate()
         proc.wait()
         out, err = proc.communicate()
-        raise RuntimeError(
-            f"Live server did not start within 15s.\nstdout: {out[:500]}\nstderr: {err[:500]}"
-        )
+        raise RuntimeError(f"Live server did not start within 15s.\nstdout: {out[:500]}\nstderr: {err[:500]}")
 
     yield BASE_URL
 
@@ -264,11 +353,12 @@ def live_server(ssh_tunnel):
 
 # ── Playwright browser (one process for the whole session) ──────────────────
 
+
 @pytest.fixture(scope="session")
 def browser(live_server):  # shadows playwright's own `browser` fixture name intentionally
     """Single headless Chromium process reused across all tests."""
     if sync_playwright is None:
-        pytest.skip("playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")
+        pytest.skip('playwright not installed — run: pip install -e ".[dev,e2e]" && playwright install chromium')
 
     pw = sync_playwright().start()
     b = pw.chromium.launch(headless=True)
@@ -278,6 +368,7 @@ def browser(live_server):  # shadows playwright's own `browser` fixture name int
 
 
 # ── Playwright page ─────────────────────────────────────────────────────────
+
 
 @pytest.fixture()
 def page(browser, live_server):
@@ -327,6 +418,7 @@ def page(browser, live_server):
 
 
 # ── Docker client for setup/teardown ────────────────────────────────────────
+
 
 @pytest.fixture(scope="session")
 def docker_client(ssh_tunnel):

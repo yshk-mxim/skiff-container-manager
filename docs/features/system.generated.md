@@ -12,6 +12,7 @@ carries the narrative and threat-model context.
 | GET | `/api/config` | — | 60/minute | — | `get_config` | Return non-secret server configuration for the UI. |
 | GET | `/api/connect-snippets` | — | 60/minute | — | `connect_snippets` | Return rendered per-tool snippets for the Connect-external-tool panel. |
 | GET | `/api/docs` | — | 120/minute | — | `api_docs_landing` | Discoverability landing page for the OpenAPI spec (CSP-safe). |
+| POST | `/api/profile/enter-reviewer` | — | 30/minute | ✓ | `enter_reviewer_mode` | One-way runtime switch into reviewer (read-only) profile. |
 | GET | `/api/system/df` | — | 5/minute | — | `system_disk_usage` | Return disk usage breakdown for images, containers, volumes, and build cache. |
 | GET | `/api/system/info` | — | 60/minute | — | `system_info` | Return Docker engine version, OS, hardware, and container counts. |
 | GET | `/api/system/metrics` | — | 60/minute | — | `system_metrics` | Prometheus text-format metrics snapshot. |

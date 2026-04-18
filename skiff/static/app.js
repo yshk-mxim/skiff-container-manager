@@ -27,15 +27,27 @@ async function undoableDelete(url, kindLabel, refresh) {
   var sep = url.indexOf('?') >= 0 ? '&' : '?';
   var resp = await apiFetch(url + sep + 'undo=1', { method: 'DELETE' });
   if (resp && resp.undo_token) {
-    // Build a toast with an inline Undo link. The toast library auto-removes
-    // after ~3s; the undo window is 5s, but the user has already seen the
-    // toast and can click Undo while it's visible.
+    // Build an undo toast with a live countdown + draining progress bar.
+    // The old version said "<kind> deleted" in past tense with no progress
+    // hint, which read as "operation completed, here's an unrelated Undo
+    // link" — easy to mistake for a failure. The new UI says "<kind> will
+    // be deleted in Ns" in pending tense, ticks the counter down every
+    // 500ms, and drains a bar at the bottom so the pending state is
+    // visually obvious for the whole window.
+    var windowSecs = Math.max(1, resp.expires_in || 5);
     var container = document.querySelector('.toast-container') ||
       document.body.appendChild(UI.el('div', { class: 'toast-container' }));
+    var undone = false;
+    var labelSpan = UI.el('span', {
+      class: 'toast-label',
+      text: t('undo.pending_label', { kind: kindLabel, seconds: windowSecs }),
+    });
     var undoLink = UI.el('span', {
       class: 'undo-link', text: t('undo.button'),
       on: {
         click: function() {
+          if (undone) return;
+          undone = true;
           apiFetch(API + '/undo/' + encodeURIComponent(resp.undo_token),
                    { method: 'POST' })
             .then(function() {
@@ -47,22 +59,47 @@ async function undoableDelete(url, kindLabel, refresh) {
         },
       },
     });
-    var toastEl = UI.el('div', { class: 'toast info' },
-      UI.el('span', { text: kindLabel + t('undo.deleted_suffix') }),
-      undoLink,
+    var bar = UI.el('div', { class: 'toast-progress-bar' });
+    var progress = UI.el('div', { class: 'toast-progress' }, bar);
+    var toastEl = UI.el('div', { class: 'toast info toast-undo' },
+      UI.el('div', { class: 'toast-row' }, labelSpan, undoLink),
+      progress,
     );
     container.appendChild(toastEl);
-    setTimeout(function() { if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl); }, 5000);
-    // After the undo window closes server-side, the queued op fires. Re-fetch
-    // so the UI reflects the final state — otherwise the user sees the row
-    // still present for 5s, then clicks elsewhere and comes back to find it
-    // gone with no feedback. expires_in is seconds; add a 500ms grace so we
-    // query after the timer has definitely fired.
-    var reload_ms = Math.max(0, (resp.expires_in || 5) * 1000) + 500;
-    setTimeout(function() { if (refresh) refresh(); }, reload_ms);
+    // Kick the progress-bar transition on the next frame so the browser
+    // renders the 100% width before animating to 0% over the window.
+    requestAnimationFrame(function() {
+      bar.style.transition = 'width ' + windowSecs + 's linear';
+      bar.style.width = '0%';
+    });
+    // Tick the countdown text every 500ms.
+    var startedAt = Date.now();
+    var tick = setInterval(function() {
+      if (undone) { clearInterval(tick); return; }
+      var remainingMs = windowSecs * 1000 - (Date.now() - startedAt);
+      var remainingS = Math.max(0, Math.ceil(remainingMs / 1000));
+      if (remainingS <= 0) {
+        labelSpan.textContent = t('undo.pending_finalizing', { kind: kindLabel });
+        undoLink.style.display = 'none';
+        clearInterval(tick);
+      } else {
+        labelSpan.textContent = t('undo.pending_label', { kind: kindLabel, seconds: remainingS });
+      }
+    }, 500);
+    // After the window expires server-side, tear down the toast and
+    // re-fetch so the row actually disappears from the list.
+    var reloadMs = windowSecs * 1000 + 500;
+    setTimeout(function() {
+      if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+      clearInterval(tick);
+      if (!undone && refresh) refresh();
+    }, reloadMs);
   } else {
     toast(kindLabel + t('undo.deleted_suffix'), 'info');
   }
+  // Refresh immediately so the row vanishes from the list while the toast
+  // tells the user they have time to click Undo. The final re-fetch above
+  // keeps the view honest once the window actually expires.
   if (refresh) refresh();
 }
 
@@ -130,13 +167,23 @@ function _applySessionTimeoutsFromConfig(appCfg) {
   // Cap the values at sane bounds so a bad value can't freeze the UI
   // (idle < 60s would lock out the user before any page finishes loading).
   if (!appCfg) return;
+  var changed = false;
   var idle = Number(appCfg.session_idle_secs);
-  if (isFinite(idle) && idle >= 60 && idle <= 24 * 60 * 60) {
+  if (isFinite(idle) && idle >= 60 && idle <= 24 * 60 * 60 && SESSION_IDLE_MS !== idle * 1000) {
     SESSION_IDLE_MS = idle * 1000;
+    changed = true;
   }
   var abs_ = Number(appCfg.session_abs_timeout);
-  if (isFinite(abs_) && abs_ >= 300 && abs_ <= 7 * 24 * 60 * 60) {
+  if (isFinite(abs_) && abs_ >= 300 && abs_ <= 7 * 24 * 60 * 60 && SESSION_ABSOLUTE_MS !== abs_ * 1000) {
     SESSION_ABSOLUTE_MS = abs_ * 1000;
+    changed = true;
+  }
+  // Re-arm the idle timer if the value changed after setToken() already
+  // scheduled one with the hardcoded default. Without this, an operator
+  // who sets SESSION_IDLE_SECS=60 stays signed-in for 900 s because the
+  // timer was scheduled before /api/config resolved.
+  if (changed && _idleTimer != null && typeof getToken === 'function' && getToken()) {
+    resetIdleTimer();
   }
 }
 
@@ -181,16 +228,69 @@ function checkSessionExpiry() {
   return false;
 }
 
+// Lead-time on the idle-session warning banner. The user sees
+// "Signing you out in Ns" 60s before the session is actually cleared,
+// giving them time to click Stay signed in (which triggers a no-op
+// apiFetch that resets both timers).
+var _SESSION_IDLE_WARN_MS = 60 * 1000;
+var _idleWarnTimer = null;
+var _absoluteWarnTimer = null;
+var _SESSION_ABS_WARN_MS = 2 * 60 * 1000;  // 2 minutes before hard cutoff
+
 function resetIdleTimer() {
   clearTimeout(_idleTimer);
+  clearTimeout(_idleWarnTimer);
+  if (window.statusBanner) {
+    window.statusBanner.clear('session_near_expiry');
+  }
+  _idleWarnTimer = setTimeout(function() {
+    if (!getToken() || !window.statusBanner) return;
+    // Paint the banner with the remaining countdown — {seconds}
+    // substitutes from expiresInMs as the ticker runs.
+    window.statusBanner.set('session_near_expiry', {
+      severity: 'warn',
+      message: (typeof t === 'function') ? t('banner.session_near_expiry') : 'Signing you out in {seconds}s for inactivity.',
+      expiresInMs: _SESSION_IDLE_WARN_MS,
+      action: {
+        label: (typeof t === 'function') ? t('banner.stay_signed_in') : 'Stay signed in',
+        onClick: function() {
+          // A cheap authenticated call resets both timers via the
+          // apiFetch path and, on 200, triggers the clear below.
+          apiFetch(API + '/config').catch(function() { /* offline ok */ });
+          resetIdleTimer();
+        },
+      },
+    });
+  }, Math.max(0, SESSION_IDLE_MS - _SESSION_IDLE_WARN_MS));
   _idleTimer = setTimeout(function() {
     if (getToken()) {
       sessionStorage.clear();
       sessionCleanup();
+      if (window.statusBanner) window.statusBanner.clear('session_near_expiry');
       toast('Session expired (idle timeout)', 'error');
       showLogin();
     }
   }, SESSION_IDLE_MS);
+}
+
+// Absolute-session warning: fires once, ~2 minutes before the hard
+// cutoff. Absolute can't be extended (that's the point), so no action
+// button — just tell the user to save their work.
+function armAbsoluteWarning() {
+  if (_absoluteWarnTimer) clearTimeout(_absoluteWarnTimer);
+  var start = parseInt(sessionStorage.getItem('session_start') || '0', 10);
+  if (!start) return;
+  var elapsed = Date.now() - start;
+  var msUntilWarning = SESSION_ABSOLUTE_MS - _SESSION_ABS_WARN_MS - elapsed;
+  if (msUntilWarning <= 0) return;  // already past — absolute check fires on next apiFetch
+  _absoluteWarnTimer = setTimeout(function() {
+    if (!getToken() || !window.statusBanner) return;
+    window.statusBanner.set('session_absolute_near_expiry', {
+      severity: 'warn',
+      message: (typeof t === 'function') ? t('banner.session_absolute_near_expiry') : 'Session ends in {seconds}s. Save your work.',
+      expiresInMs: _SESSION_ABS_WARN_MS,
+    });
+  }, msUntilWarning);
 }
 
 // Reset idle timer on user activity
@@ -234,8 +334,17 @@ function showLogin() {
   var box = document.createElement('div'); box.style.cssText = 'width:340px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.07)';
   var h3 = document.createElement('h3'); h3.textContent = 'Sign in'; h3.style.cssText = 'margin-bottom:4px;font-size:18px'; box.appendChild(h3);
   var sub = document.createElement('p'); sub.innerHTML = 'Enter the API token you saved during setup.<br><span style="font-size:11px">If you chose &ldquo;Save .env&rdquo;, the token is in that file as <code>API_TOKEN=</code>.</span>'; sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:20px'; box.appendChild(sub);
-  var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'; box.appendChild(lbl);
+  // WCAG 2.1 AA (Principle 1.3.1 F68, Principle 4.1.2 H91): the
+  // password input needs a programmatically-associated label.
+  // Setting `htmlFor` on the label + matching `id` on the input
+  // ties them for assistive tech; `aria-label` on the input itself
+  // is a belt-and-braces backup that survives any future refactor
+  // that drops the DOM sibling order.
+  var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.htmlFor = 'login-token'; lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'; box.appendChild(lbl);
   var inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'Paste your API token';
+  inp.id = 'login-token';
+  inp.setAttribute('aria-label', 'API Token');
+  inp.setAttribute('autocomplete', 'current-password');
   inp.style.cssText = 'width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--card);color:var(--text)';
   box.appendChild(inp);
   var btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Sign in'; btn.style.cssText = 'margin-top:16px;width:100%;padding:10px;font-size:14px';
@@ -251,6 +360,19 @@ function showLogin() {
       if (appCfg.docker_vm_host) _dockerVmHost = appCfg.docker_vm_host;
       if (appCfg.docker_host) _appDockerHost = appCfg.docker_host;
       _applySessionTimeoutsFromConfig(appCfg);
+      // If a prior tab tripped the WS auth-lockout on this IP, paint the
+      // banner immediately instead of waiting for the next WS handshake
+      // to fail. Server returns 0 when not locked; we only surface a
+      // banner when there's a real remaining countdown.
+      var wsLock = appCfg.ws_auth_locked_remaining_secs;
+      if (window.statusBanner && typeof wsLock === 'number' && wsLock > 0) {
+        window.statusBanner.set('ws_auth_lockout', {
+          severity: 'error',
+          message: (typeof t === 'function') ? t('banner.ws_auth_lockout') : 'WebSocket locked out — try again in {seconds}s.',
+          expiresInMs: wsLock * 1000,
+        });
+      }
+      if (typeof armAbsoluteWarning === 'function') armAbsoluteWarning();
     }).catch(function() {}).finally(function() { showPage('containers'); });
   };
   inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') btn.click(); });
@@ -297,7 +419,22 @@ async function apiFetch(url, opts) {
     throw new Error('Container engine unreachable');
   }
   if (res.status === 401) { sessionStorage.removeItem('api_token'); toast('Authentication failed — check your API token', 'error'); showLogin(); throw new Error('Authentication required'); }
-  if (res.status === 429) { throw new Error('Rate limited — please wait a moment and try again'); }
+  if (res.status === 429) {
+    // Parse Retry-After so the user sees an exact countdown instead of
+    // guessing when to retry. slowapi emits seconds as an integer. The
+    // banner auto-clears on expiry, matching the actual server-side
+    // lockout window.
+    var retryAfterRaw = res.headers.get('Retry-After');
+    var retryAfter = retryAfterRaw ? parseInt(retryAfterRaw, 10) : NaN;
+    if (window.statusBanner && isFinite(retryAfter) && retryAfter > 0) {
+      window.statusBanner.set('rate_limited', {
+        severity: 'warn',
+        message: (typeof t === 'function') ? t('banner.rate_limited') : 'Rate limited — retry in {seconds}s.',
+        expiresInMs: retryAfter * 1000,
+      });
+    }
+    throw new Error('Rate limited — please wait a moment and try again');
+  }
   if (!res.ok) {
     const err = await res.json().catch(function() { return { detail: res.statusText }; });
     // Preserve structured details (e.g. {detail: {message, code, help}}) so callers
@@ -313,40 +450,43 @@ async function apiFetch(url, opts) {
 }
 
 // ── Docker status ──
+//
+// Connected state: the sidebar dot flips green and the `docker_unreachable`
+// banner is cleared. Disconnected state: sidebar dot turns red and the
+// banner module paints a per-transport recovery hint. Routed through
+// statusBanner.set/.clear so other states (setup_window_expired,
+// session_near_expiry, ws_auth_lockout, rate_limited) can coexist —
+// previous implementation owned #status-banner directly and would wipe
+// concurrent states.
 function setDockerStatus(ok, msg) {
   dockerOk = ok;
   var el = document.getElementById('sidebar-status');
-  var banner = document.getElementById('status-banner');
   if (ok) {
     el.innerHTML = '<span class="dot ok"></span> <span>Connected</span>';
-    banner.className = 'status-banner'; banner.style.display = 'none';
+    if (window.statusBanner) window.statusBanner.clear('docker_unreachable');
+    return;
+  }
+  el.innerHTML = '<span class="dot down"></span> <span>Disconnected</span>';
+  // Heuristic: tunnel-like sockets (/tmp/skiff-* or path containing
+  // "tunnel") are managed by SKIFF — direct the user to Containers page
+  // where the Reconnect button lives. Other unix:// sockets are local
+  // runtimes. tcp:// is remote Docker.
+  var isTunnelSocket = _appDockerHost && /^unix:\/\/.*(skiff|tunnel)/i.test(_appDockerHost);
+  var isTcp = _appDockerHost && /^tcp:\/\//i.test(_appDockerHost);
+  var detail;
+  if (isTunnelSocket) {
+    detail = 'SSH tunnel is down \u2014 open the Containers page to reconnect.';
+  } else if (isTcp) {
+    detail = 'Check that the remote Docker daemon is reachable at ' + _appDockerHost + ' and accepting TLS.';
   } else {
-    el.innerHTML = '<span class="dot down"></span> <span>Disconnected</span>';
-    banner.className = 'status-banner error';
-    // Build banner with DOM methods — docker_host is server-supplied and must not go into innerHTML
-    while (banner.firstChild) banner.removeChild(banner.firstChild);
-    var _strong = document.createElement('strong');
-    _strong.textContent = 'Container engine unreachable. ';
-    banner.appendChild(_strong);
-    // Heuristic: tunnel-like sockets (/tmp/skiff-* or path containing "tunnel") are
-    // managed by SKIFF — direct the user to Containers page where the Reconnect
-    // button lives. Other unix:// sockets are local runtimes. tcp:// is remote Docker.
-    var _isTunnelSocket = _appDockerHost && /^unix:\/\/.*(skiff|tunnel)/i.test(_appDockerHost);
-    var _isTcp = _appDockerHost && /^tcp:\/\//i.test(_appDockerHost);
-    if (_isTunnelSocket) {
-      banner.appendChild(document.createTextNode(
-        'SSH tunnel is down \u2014 open the Containers page to reconnect.'
-      ));
-    } else if (_isTcp) {
-      banner.appendChild(document.createTextNode(
-        'Check that the remote Docker daemon is reachable at ' + _appDockerHost + ' and accepting TLS.'
-      ));
-    } else {
-      banner.appendChild(document.createTextNode(
-        'Make sure your Docker runtime (Docker Desktop, Colima, OrbStack, dockerd, etc.) is running, then reload.'
-      ));
-    }
-    banner.style.display = 'block';
+    detail = 'Make sure your Docker runtime (Docker Desktop, Colima, OrbStack, dockerd, etc.) is running, then reload.';
+  }
+  // "Container engine unreachable." prefix retained — tests
+  // (test_e2e_resilience.py::test_r4_503_flips_banner_on_mid_session_failure)
+  // match substrings "unreachable" / "engine" on the banner text.
+  var message = 'Container engine unreachable. ' + detail;
+  if (window.statusBanner) {
+    window.statusBanner.set('docker_unreachable', { severity: 'error', message: message });
   }
 }
 
@@ -629,6 +769,13 @@ async function loadContainers() {
     _lastContainers = containers;
     _refreshInFlight = false;
     if (currentPage !== 'containers') return;
+    // Guard against the 5s refresh-timer race: a loadContainers() in
+    // flight when the user clicks Logs/Terminal/Inspect will resolve
+    // AFTER showDetail() cleared the timer, and without this check
+    // would stomp on the detail view (main.innerHTML wiped and
+    // replaced with the list). showDetail mounts #detail-content;
+    // its presence means the user has navigated away from the list.
+    if (document.getElementById('detail-content')) return;
     renderContainers(containers);
     clearInterval(refreshTimer);
     refreshTimer = managedInterval(loadContainers, 5000);
@@ -817,6 +964,14 @@ function renderContainers(containers) {
 // ── Detail view ──
 function showDetail(id, name, tab) {
   clearInterval(refreshTimer); _refreshInFlight = false;
+  // Kill every managed refresh interval from the previous tab —
+  // showStatsContent / showProcessesContent / etc. arm their own 3s
+  // poll via managedInterval() and, without this line, the old
+  // tab's refresh keeps firing against #detail-content AFTER the
+  // new tab has rendered into it, stomping on the display (e.g.
+  // switching Stats → Terminal overwrote the terminal with the
+  // stats grid every 3 seconds).
+  clearAllIntervals();
   var main = document.getElementById('main');
   if (main._ws) { try { main._ws.close(); } catch(e) {} main._ws = null; }
   main.innerHTML = '';
@@ -938,6 +1093,11 @@ function connectLogsWS(id, attempt, allLines, viewer) {
     if (ws !== viewer._ws) return;  // stale socket closed, ignore
     if (evt.code === 1000) return;  // clean close (navigation away or disconnect)
     if (evt.code === 4003) {        // session expired — do not reconnect
+      // Lockout branch: server carries `ws_auth_lockout:<N>` in
+      // evt.reason so the UI paints a banner with the remaining
+      // seconds. Non-lockout 4003s fall through to the regular
+      // session-expired toast.
+      _surfaceWsLockout(evt);
       allLines.push('\n[Session expired — please log in again]\n');
       viewer.textContent = allLines.join('');
       toast('Session expired — please log in again', 'error');
@@ -950,6 +1110,22 @@ function connectLogsWS(id, attempt, allLines, viewer) {
     }
   };
   document.getElementById('main')._ws = ws;
+}
+
+// Shared WS 4003 reason parser. The server uses
+// `reason = "ws_auth_lockout:<secs>"` only on the auth-lockout branch;
+// other 4003s (session expired, origin denied) keep reason empty.
+function _surfaceWsLockout(evt) {
+  if (!window.statusBanner) return;
+  var reason = (evt && evt.reason) ? String(evt.reason) : '';
+  if (!reason.startsWith('ws_auth_lockout:')) return;
+  var secs = parseInt(reason.split(':', 2)[1], 10);
+  if (!isFinite(secs) || secs <= 0) return;
+  window.statusBanner.set('ws_auth_lockout', {
+    severity: 'error',
+    message: (typeof t === 'function') ? t('banner.ws_auth_lockout') : 'WebSocket locked out — try again in {seconds}s.',
+    expiresInMs: secs * 1000,
+  });
 }
 
 // ── Terminal ──
@@ -997,7 +1173,38 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
   }
   var ws = registerWS(new WebSocket(wsUrl('/ws/exec/' + id)));
   document.getElementById('main')._ws = ws;
-  ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { term.textContent += '\r\n[Reconnected]\r\n'; } };
+  // Estimate PTY cols/rows from the terminal div's pixel size and a
+  // representative monospace glyph. The server consumes the
+  // {"type":"resize","cols":N,"rows":M} frame via exec_resize; without
+  // it the shell stays at 80×24 and long output wraps visibly inside
+  // a wide browser window. Not pixel-perfect, but close enough that
+  // TUI apps (htop, vim, less) render without broken line-wrap.
+  function _sendTerminalResize() {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    var rect = term.getBoundingClientRect();
+    // Approximate ch width / line-height for our terminal font stack
+    // (~8 px × 16 px in the default theme). Clamp to sane bounds so a
+    // collapsed pane can't send {cols:0, rows:0}.
+    var cols = Math.max(20, Math.floor((rect.width || 640) / 8));
+    var rows = Math.max(6, Math.floor((rect.height || 400) / 16));
+    try { ws.send(JSON.stringify({type: 'resize', cols: cols, rows: rows})); } catch (e) {}
+  }
+  // Debounced window-resize listener — clear prior timer so rapid drags
+  // coalesce into one server-side exec_resize call.
+  var _resizeTimer = null;
+  function _onWindowResize() {
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(_sendTerminalResize, 150);
+  }
+  window.addEventListener('resize', _onWindowResize);
+  ws.addEventListener('close', function() { window.removeEventListener('resize', _onWindowResize); });
+  ws.onopen = function() {
+    wsAuthOnOpen(ws);
+    if (attempt > 0) { term.textContent += '\r\n[Reconnected]\r\n'; }
+    // Send the initial size once auth completes so the shell opens
+    // at the operator's actual viewport, not the 80×24 PTY default.
+    setTimeout(_sendTerminalResize, 100);
+  };
   ws.onmessage = function(e) {
     if (isClosed()) return;
     term.textContent += e.data; term.scrollTop = term.scrollHeight;
@@ -1007,6 +1214,7 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
     if (isClosed()) { term.textContent += '\r\n[Session ended]'; return; }
     if (evt.code === 1000) return;  // clean close
     if (evt.code === 4003) {        // session expired — do not reconnect
+      _surfaceWsLockout(evt);
       term.textContent += '\r\n[Session expired — please log in again]';
       toast('Session expired — please log in again', 'error');
       return;
@@ -1817,6 +2025,15 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
     if (appCfg.docker_vm_host) _dockerVmHost = appCfg.docker_vm_host;
     if (appCfg.docker_host) _appDockerHost = appCfg.docker_host;
     _applySessionTimeoutsFromConfig(appCfg);
+    // Reviewer persona is read-only by design. Server enforces it via
+    // secure_route.mutate; the body class lets CSS hide destructive
+    // buttons so a reviewer isn't clicking into 403s.
+    if (appCfg.profile === 'reviewer') {
+      document.body.classList.add('reviewer-mode');
+      _renderReviewerBanner();
+    } else {
+      _enableProfileSwitcher();
+    }
     // Insecure-mode banner. Server-side flag, so the client can surface
     // it but can't silence it. Triggers when bind != localhost AND
     // api_token is empty (anyone on the network reaches Docker).
@@ -1824,6 +2041,37 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
   } catch(e) { /* ignore, defaults apply */ }
   showPage('containers');
 })();
+
+// Reviewer-mode switcher. One-way dropdown in the sidebar footer. An
+// admin can hand the session to a reviewer after clicking; reviewer
+// cannot exit back to a write-capable profile without a server restart.
+function _enableProfileSwitcher() {
+  var sel = document.getElementById('profile-switcher');
+  if (!sel) return;
+  sel.hidden = false;
+  sel.addEventListener('change', function() {
+    var target = sel.value;
+    sel.value = '';  // reset placeholder so a re-selection fires again
+    if (target !== 'reviewer') return;
+    if (!confirm(t('reviewer.confirm_enter'))) return;
+    apiFetch(API + '/profile/enter-reviewer', { method: 'POST' })
+      .then(function() { window.location.reload(); })
+      .catch(function(e) { toast(e.message || 'Switch failed', 'error'); });
+  });
+}
+
+// Reviewer-mode banner. Sticky strip under the title bar letting the
+// reviewer know mutations are disabled by profile, not by accident.
+function _renderReviewerBanner() {
+  if (document.getElementById('reviewer-mode-banner')) return;
+  var banner = document.createElement('div');
+  banner.id = 'reviewer-mode-banner';
+  banner.className = 'reviewer-banner';
+  var msg = document.createElement('span');
+  msg.textContent = t('reviewer.banner');
+  banner.appendChild(msg);
+  document.body.insertBefore(banner, document.body.firstChild);
+}
 
 // Insecure-mode banner. Sticky red bar above the app when the
 // server is bound to a non-loopback interface with no API_TOKEN set.

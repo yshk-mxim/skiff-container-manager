@@ -9,6 +9,7 @@ new singleton, which has an empty api_token and confuses AUTH-dependent
 tests in later files. The autouse fixture below restores the module to
 its baseline so downstream tests see a normal _Config.
 """
+
 import importlib
 import sys
 
@@ -27,14 +28,15 @@ def _restore_config_after_reload():
     state, reload, copy back.
     """
     import skiff.config as _cfg_mod
+
     # Capture attributes of the current _cfg BEFORE any reload.
     pristine = {
-        "api_token":         _cfg_mod._cfg.api_token,
-        "docker_host":       _cfg_mod._cfg.docker_host,
+        "api_token": _cfg_mod._cfg.api_token,
+        "docker_host": _cfg_mod._cfg.docker_host,
         "allowed_registries": list(_cfg_mod._cfg.allowed_registries),
-        "allowed_origins":   list(_cfg_mod._cfg.allowed_origins),
-        "docker_vm_host":    _cfg_mod._cfg.docker_vm_host,
-        "from_env":          _cfg_mod._cfg.from_env,
+        "allowed_origins": list(_cfg_mod._cfg.allowed_origins),
+        "docker_vm_host": _cfg_mod._cfg.docker_vm_host,
+        "from_env": _cfg_mod._cfg.from_env,
     }
     yield
     # monkeypatch restored env vars; reload picks up originals.
@@ -52,6 +54,7 @@ def _restore_config_after_reload():
     import skiff.auth as _auth
     import skiff.docker_client as _dc
     import skiff.validators as _val
+
     for mod in (_app, _auth, _dc, _val):
         if hasattr(mod, "_cfg"):
             mod._cfg = _cfg_mod._cfg
@@ -60,12 +63,14 @@ def _restore_config_after_reload():
 def _reimport_config(monkeypatch_env: dict):
     """Reload skiff.config under the given env — module-level constants recompute."""
     import os
+
     for k, v in monkeypatch_env.items():
         if v is None:
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
     import skiff.config as _cfg
+
     importlib.reload(_cfg)
     return _cfg
 
@@ -125,6 +130,7 @@ def test_compose_dir_env_override_wins(tmp_path, monkeypatch):
 
 # ── R11: PROFILE preset tests ────────────────────────────────────────────────
 
+
 def test_profile_ci_sets_rate_limit_scale(monkeypatch):
     monkeypatch.setenv("PROFILE", "ci")
     monkeypatch.delenv("RATE_LIMIT_SCALE", raising=False)
@@ -157,6 +163,7 @@ def test_profile_dev_is_noop(monkeypatch):
 def test_profile_unknown_raises(monkeypatch):
     monkeypatch.setenv("PROFILE", "obsessed-with-mushrooms")
     import pytest
+
     with pytest.raises(ValueError) as exc:
         _reimport_config({})
     assert "Unknown PROFILE" in str(exc.value)
@@ -165,7 +172,7 @@ def test_profile_unknown_raises(monkeypatch):
 def test_profile_explicit_env_wins_over_preset(monkeypatch):
     """Operator-specified RATE_LIMIT_SCALE beats the preset's suggestion —
     presets use setdefault, never os.environ[] =."""
-    monkeypatch.setenv("PROFILE", "ci")       # normally → 100
+    monkeypatch.setenv("PROFILE", "ci")  # normally → 100
     monkeypatch.setenv("RATE_LIMIT_SCALE", "5")  # but operator said 5
     cfg = _reimport_config({})
     assert cfg._RATE_SCALE == 5

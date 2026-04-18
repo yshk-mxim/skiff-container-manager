@@ -14,7 +14,7 @@
 async function _showVolumeInspectModal(name) {
   var body = UI.el('div', { text: t('common.loading') });
   var m = UI.modal({
-    title: t('volumes.actions.inspect') + ': ' + name,
+    title: t('volumes.modal.inspect_title', { name: name }),
     body: body,
     actions: [makeBtn(t('common.close'), function() { m.close(); })],
   });
@@ -149,7 +149,7 @@ async function loadVolumes() {
 
 function showCreateVolumeModal() {
   UI.formModal({
-    title: t('volumes.actions.create'),
+    title: t('volumes.modal.create_title'),
     fields: [{
       name: 'name',
       label: t('volumes.columns.name'),

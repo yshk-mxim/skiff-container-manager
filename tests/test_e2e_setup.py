@@ -5,6 +5,7 @@
 These tests start a server with no API_TOKEN so the wizard is shown.
 The tunnel connect test requires SSH access; it is skipped if unavailable.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,7 +19,9 @@ from tests.conftest_e2e import _CONFIG
 
 pytest_plugins = ["tests.conftest_e2e"]
 
-pytest.importorskip("playwright", reason="playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")
+pytest.importorskip(
+    "playwright", reason='playwright not installed — run: pip install -e ".[dev,e2e]" && playwright install chromium'
+)
 
 
 pytestmark = pytest.mark.e2e
@@ -26,9 +29,8 @@ pytestmark = pytest.mark.e2e
 E2E_SETUP_PORT = int(os.environ.get("E2E_SETUP_PORT", "18081"))
 SETUP_BASE = f"http://127.0.0.1:{E2E_SETUP_PORT}"
 # tunnel target comes from env → tests/e2e-config.json → empty (skip).
-E2E_SSH_TUNNEL_TARGET = (
-    os.environ.get("E2E_SSH_TUNNEL_TARGET")
-    or str(_CONFIG.get("ssh_tunnel_target") or _CONFIG.get("ssh_tunnel") or "")
+E2E_SSH_TUNNEL_TARGET = os.environ.get("E2E_SSH_TUNNEL_TARGET") or str(
+    _CONFIG.get("ssh_tunnel_target") or _CONFIG.get("ssh_tunnel") or ""
 )
 
 
@@ -93,6 +95,7 @@ def setup_page(unconfigured_server, browser):
 
 # ── Wizard visibility ──────────────────────────────────────────────────────
 
+
 def test_setup_wizard_shown_when_unconfigured(setup_page):
     """Wizard appears when server has no API_TOKEN."""
     assert setup_page.locator("text=First-run setup").count() > 0
@@ -118,6 +121,7 @@ def test_setup_wizard_ssh_tab_restores(setup_page):
 
 # ── Token generation ───────────────────────────────────────────────────────
 
+
 def test_generate_token_fills_input(setup_page):
     setup_page.locator("button:has-text('Generate')").click()
     token = setup_page.locator("#sw-token").input_value()
@@ -133,6 +137,7 @@ def test_generate_token_is_different_each_time(setup_page):
 
 
 # ── Validation ─────────────────────────────────────────────────────────────
+
 
 def test_submit_without_token_shows_error(setup_page):
     """Clicking "Save .env" without generating a token shows the validation error.
@@ -158,6 +163,7 @@ def test_submit_with_short_token_shows_error(setup_page):
 
 
 # ── SSH tunnel connect ─────────────────────────────────────────────────────
+
 
 def test_tunnel_connect_invalid_target_shows_error(setup_page):
     """Entering a bad SSH target (missing @) shows a validation error status.
@@ -191,6 +197,7 @@ def test_tunnel_connect_real_ssh(setup_page):
 
 
 # ── Session-only flow (runs last — configures the server in session memory) ─
+
 
 def test_session_only_setup_completes(setup_page, unconfigured_server):
     """Complete setup via in-memory-only path and verify main app loads.

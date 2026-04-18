@@ -1,6 +1,15 @@
 # Production Hardening Guide
 
-Operational guidance for deploying SKIFF securely. The defaults are tuned for local development — apply the steps below for any deployment that is accessible beyond your own laptop.
+> **Scope note.** This page describes deployment choices and defaults
+> the SKIFF author considered worth documenting for people running
+> SKIFF. It is not a security standard or a universal recommendation;
+> it is a first-party operator guide for a personal open-source
+> project. An operator's own risk model, regulatory context, and
+> infrastructure constraints will drive which items apply.
+
+Operational guidance for deploying SKIFF. The defaults are tuned for
+local development — the items below are what the author would apply
+for any deployment that is reachable beyond a single workstation.
 
 ---
 
@@ -59,6 +68,25 @@ Do not set `BIND_HOST=0.0.0.0` unless you have a firewall or are inside an isola
 ---
 
 ## 3. API_TOKEN Lifecycle
+
+### Setup window
+
+When SKIFF boots **without** `API_TOKEN` in the environment, the first-run wizard is reachable on `BIND_HOST:PORT` for `SETUP_WINDOW_SECS` (default 300s). On a multi-user host or an accidentally-exposed bind, the first caller during that window claims the instance with a token of their choice. See [SECURITY.md § First-run setup window](../../SECURITY.md#first-run-setup-window-wizard-race) for the threat model.
+
+**Pre-configure `API_TOKEN` so the wizard never opens.**
+
+For any deployment beyond a single-user workstation, set `API_TOKEN` in the environment **before** starting the process:
+
+```bash
+export API_TOKEN="$(openssl rand -hex 32)"
+uvicorn skiff.app:app --host 127.0.0.1 --port 8080 --no-proxy-headers
+```
+
+The server sees `from_env=true` at import time, the wizard endpoint is refused with `403`, and `/api/auth/reset-config` is disabled (so an authenticated caller can't silently reopen the window). The `security.setup_window_open` startup warning is **not** emitted on env-configured boots — seeing it means the wizard IS open, investigate immediately.
+
+Systemd deployments should put the token in the per-instance `.env` file (`/opt/skiff/<name>.env`) that `skiff@<name>.service` reads — that way the wizard never opens even on reboots.
+
+### Token rotation
 
 Generate a strong token (minimum 16 characters, 32+ recommended):
 

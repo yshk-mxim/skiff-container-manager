@@ -11,6 +11,7 @@ When the metric catalogue grows (we have exactly the basics today), this
 file becomes the contract layer between `routers/system.py::metrics` and
 any future `routers/system.py::metrics_json` or SDK export.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

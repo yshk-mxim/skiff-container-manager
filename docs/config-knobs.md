@@ -25,6 +25,7 @@ every knob with its default, type, and one-line doc. See
 | `CONTAINER_RESTART_TIMEOUT` | `10` | int | yes | no | Seconds for restart. |
 | `CONTAINER_STATS_TIMEOUT` | `10.0` | float | yes | no | Seconds for stats call. |
 | `CONTAINER_STOP_TIMEOUT` | `5` | int | yes | no | Seconds for graceful stop before kill. |
+| `DF_TIMEOUT` | `30` | int | yes | no | Max seconds for a single `/api/system/df` Docker SDK call on large hosts. |
 | `DOCKER_BACKOFF` | `5` | int | yes | no | Seconds to wait after a failed connection before retrying. |
 | `DOCKER_CLIENT_TIMEOUT` | `15` | int | yes | no | Seconds per Docker SDK HTTP request. |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` |  | yes | no | Docker daemon socket or TCP URL. Override for remote hosts or Colima. |
@@ -35,7 +36,7 @@ every knob with its default, type, and one-line doc. See
 | `GOOGLE_CLOUD_PROJECT` | `` |  | no | no | Google Cloud project ID. When set, audit log events are also mirrored to Cloud Logging. |
 | `IMAGE_PULL_TIMEOUT` | `300.0` | float | yes | no | Seconds for image pull (network slow). |
 | `MAX_AUDIT_LINES` | `2000` | int | yes | no | Max lines in a single /audit-log response. |
-| `MAX_BODY_BYTES` | `524288` | int | yes | no | Maximum request body size in bytes. 413 returned if exceeded. |
+| `MAX_BODY_BYTES` | `524288` | _validate | yes | no | Maximum request body size in bytes (min 1024). 413 returned if exceeded. Rejected at boot below 1 KiB so a zero / negative value can't make every mutation 413. |
 | `MAX_COMPOSE_SIZE` | `262144` | int | yes | no | Max compose file upload size in bytes. |
 | `MAX_CONTAINERS` | `50` | int | yes | no | Max containers the UI enumerates. |
 | `MAX_LOG_TAIL` | `5000` | int | yes | no | Max lines in a single /logs response. |
@@ -48,11 +49,12 @@ every knob with its default, type, and one-line doc. See
 | `REGISTRY_MAX_TAGS` | `20` | int | yes | no | Tags per /api/registry/tags call. |
 | `REGISTRY_SEARCH_PAGE_SIZE` | `10` | int | yes | no | Results per /api/registry/search call. |
 | `REGISTRY_TIMEOUT` | `8` | int | yes | no | Seconds for Docker Hub API requests. |
-| `SESSION_ABS_TIMEOUT` | `28800` | int | yes | no | Server-side absolute session lifetime, seconds. The client reads this via /api/config so a deployment tightening the window doesn't require a JS edit. |
-| `SESSION_IDLE_SECS` | `900` | int | yes | no | Client idle-timeout window in seconds. Read by app.js from /api/config at boot; falls back to the JS default if /api/config is unreachable. |
+| `SESSION_ABS_TIMEOUT` | `28800` | _validate | yes | no | Server-side absolute session lifetime, seconds. The client reads this via /api/config so a deployment tightening the window doesn't require a JS edit. Rejected at boot below 60 s so a zero / negative value can't lock the operator out of their own setup wizard. |
+| `SESSION_IDLE_SECS` | `900` | _validate | yes | no | Server-side + client-side idle-timeout window in seconds. Read by app.js from /api/config at boot; server enforces via `_check_session_age`. Rejected at boot below 30 s to prevent an unusable instance. |
 | `SETUP_LOCKOUT_SECS` | `300` | int | yes | no | Seconds to lock out an IP after max failed setup attempts. |
 | `SETUP_MAX_ATTEMPTS` | `3` | int | yes | no | POST /api/setup failures before IP lockout. |
 | `SETUP_WINDOW_SECS` | `300` | int | yes | no | Wizard reachable for N seconds post-boot. |
+| `SHUTDOWN_FLUSH_TIMEOUT` | `20` | int | yes | no | Max seconds the lifespan shutdown will spend draining the undo queue. |
 | `SKIFF_DEBUG_THREADS` | `0` | lambda | yes | no | Enable /debug/threads endpoint (AUTH-gated). Default disabled because thread stacks can contain sensitive local-variable reprs. |
 | `TCP_KEEPALIVE_COUNT` | `3` | int | yes | no | Probes before declaring the socket dead. |
 | `TCP_KEEPALIVE_IDLE` | `60` | int | yes | no | Seconds before first keepalive probe. |
@@ -74,7 +76,7 @@ every knob with its default, type, and one-line doc. See
 | `WS_EXEC_IDLE_TIMEOUT` | `600` | int | yes | no | Close exec session after N seconds of inactivity. |
 | `WS_EXEC_RECV_TIMEOUT` | `0.5` | float | yes | no | Exec socket recv timeout (seconds). |
 | `WS_KEEPALIVE_INTERVAL` | `15` | int | yes | no | Seconds between WebSocket ping frames. |
-| `WS_KEEPALIVE_REVALIDATE_EVERY` | `4` | int | yes | no | Revalidate session age every N keepalive ticks. |
+| `WS_KEEPALIVE_REVALIDATE_EVERY` | `1` | int | yes | no | Revalidate session age every N keepalive ticks. |
 | `WS_LOG_IDLE_TIMEOUT` | `30` | int | yes | no | Close log stream after N seconds of silence. |
 | `WS_LOG_TAIL` | `50` | int | yes | no | Initial tail lines for log streams. |
 | `WS_MAX_PER_IP` | `5` | int | yes | no | Max concurrent WS connections per IP. |

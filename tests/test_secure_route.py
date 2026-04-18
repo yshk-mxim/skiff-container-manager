@@ -13,6 +13,7 @@ Covers:
 Tests construct a minimal FastAPI app with the limiter state attached so
 slowapi doesn't complain.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -43,8 +44,10 @@ def log_capture():
 def _make_app() -> FastAPI:
     app = FastAPI()
     app.state.limiter = limiter
+
     def _rl_handler(req: Any, exc: Any) -> None:
         raise HTTPException(429, "rate limited")
+
     app.add_exception_handler(RateLimitExceeded, _rl_handler)
     return app
 
@@ -98,8 +101,7 @@ class TestSecureRouteMutate:
             return {"id": "abc123"}
 
         @r.post("/things")
-        @secure_route.mutate(RATE.WRITE, audit="container.started",
-                             audit_fields=_fields)
+        @secure_route.mutate(RATE.WRITE, audit="container.started", audit_fields=_fields)
         def create(request: Request) -> dict[str, Any]:
             return {"ok": True}
 
@@ -124,8 +126,7 @@ class TestSecureRouteMutate:
         client = TestClient(app)
         resp = client.post("/things", headers={"X-Requested-With": "ContainerManager"})
         assert resp.status_code == 200
-        drift_events = [e for e in log_capture.entries
-                        if e["event"] == "audit.undeclared_event"]
+        drift_events = [e for e in log_capture.entries if e["event"] == "audit.undeclared_event"]
         assert len(drift_events) == 1
         assert drift_events[0].get("undeclared") == "totally.fake_event"
 
@@ -189,8 +190,7 @@ class TestAuditFieldsCallableRobust:
             raise RuntimeError("introspection failed")
 
         @r.post("/things")
-        @secure_route.mutate(RATE.WRITE, audit="container.started",
-                             audit_fields=_bad_fields)
+        @secure_route.mutate(RATE.WRITE, audit="container.started", audit_fields=_bad_fields)
         def create(request: Request) -> dict[str, Any]:
             return {"ok": True}
 

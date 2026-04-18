@@ -11,6 +11,7 @@ endpoints (volumes, images, containers) use the dedicated
 `model_config.extra = "forbid"` on every model: accidental extra keys
 surface as test failures, not silently-passed payload drift.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -261,6 +262,12 @@ class ContainerSummary(BaseModel):
     health: str = "none"
     ports: dict[str, Any] = Field(default_factory=dict)
     created: str = ""
+    # Compose-project membership. When the container carries the
+    # `com.docker.compose.*` labels these surface directly on the list
+    # row so the UI can group by stack without a separate inspect call.
+    # Empty string when the container wasn't created by Compose.
+    compose_project: str = ""
+    compose_service: str = ""
 
     @classmethod
     def from_docker(cls, c: Any) -> ContainerSummary:
@@ -276,8 +283,9 @@ class ContainerSummary(BaseModel):
             image_name = c.image.tags[0] if c.image.tags else c.image.short_id
         except Exception:
             image_name = "unknown"
-        state = (c.attrs.get("State") or {})
+        state = c.attrs.get("State") or {}
         health_dict = state.get("Health") if isinstance(state.get("Health"), dict) else None
+        labels = c.labels if isinstance(c.labels, dict) else {}
         return cls(
             id=c.short_id,
             name=c.name,
@@ -287,6 +295,8 @@ class ContainerSummary(BaseModel):
             health=(health_dict or {}).get("Status", "none"),
             ports=c.ports or {},
             created=c.attrs.get("Created") or "",
+            compose_project=labels.get("com.docker.compose.project", ""),
+            compose_service=labels.get("com.docker.compose.service", ""),
         )
 
 
@@ -405,10 +415,7 @@ class NetworkSummary(BaseModel):
             scope=attrs.get("Scope") or "",
             internal=attrs.get("Internal", False),
             ipam=(attrs.get("IPAM") or {}).get("Config") or [],
-            containers={
-                cid[:12]: info.get("Name", "")
-                for cid, info in (attrs.get("Containers") or {}).items()
-            },
+            containers={cid[:12]: info.get("Name", "") for cid, info in (attrs.get("Containers") or {}).items()},
         )
 
 

@@ -1,4 +1,20 @@
-# Require review for all CI/security workflow changes, and dependency files
-/.github/           @yshk-mxim
-/pyproject.toml     @yshk-mxim
-/requirements.txt   @yshk-mxim
+# Require review for all CI/security workflow changes, dependency files,
+# and governance documents. Single-maintainer project — @yshk-mxim is
+# the required reviewer for every path below. Adding a second owner is
+# the first thing to do when the maintainer count changes.
+/.github/               @yshk-mxim
+/pyproject.toml         @yshk-mxim
+/requirements.txt       @yshk-mxim
+/SECURITY.md            @yshk-mxim
+/CHANGELOG.md           @yshk-mxim
+/NOTICE                 @yshk-mxim
+/LICENSE                @yshk-mxim
+# User-facing governance documents. A drive-by PR that rewrites the
+# "Why SKIFF" pitch or the contributor onboarding story would shift the
+# project's posture without a reviewer checking it against the code.
+/README.md              @yshk-mxim
+/CONTRIBUTING.md        @yshk-mxim
+/CODE_OF_CONDUCT.md     @yshk-mxim
+# CODEOWNERS covering itself prevents a silent edit from removing any
+# of the rules above.
+/.github/CODEOWNERS     @yshk-mxim

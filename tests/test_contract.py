@@ -8,6 +8,7 @@ Three concerns:
      `skiff.contract.events` — drift alert.
   3. Pydantic envelope models serialise/validate as expected.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,6 +28,7 @@ from skiff.contract.responses import ErrorResponse, OkResponse, UndoableResponse
 # ─────────────────────────────────────────────────────────────────────────────
 # Response envelopes
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestResponses:
     def test_ok_response_default(self) -> None:
@@ -63,6 +65,7 @@ class TestResponses:
 # ─────────────────────────────────────────────────────────────────────────────
 # Error catalogue
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestErrors:
     def test_known_codes_non_empty(self) -> None:
@@ -158,23 +161,28 @@ class TestEventCatalogue:
         """
         emitted = _emitted_event_names()
         declared = known_events()
-        reserved: frozenset[str] = frozenset({
-            # Emitted via `getattr(log, level_name)(event, ...)` in the
-            # middleware — the AST scanner in this test only picks up
-            # literal `log.info(...)` / `log.warning(...)` call sites.
-            "audit.api_access",
-            # Emitted as a secondary `event_type` on `audit.api_access`
-            # lines (from the middleware classifier) rather than as the
-            # top-level structlog event name. Catalogued so SIEM rules
-            # have an authoritative reference.
-            "api.request",
-            "rate_limit.exceeded",
-            "auth.denied",
-        })
-        unused = declared - emitted - reserved
-        assert not unused, (
-            "Catalogue declares events never emitted:\n  " + "\n  ".join(sorted(unused))
+        reserved: frozenset[str] = frozenset(
+            {
+                # Emitted via `getattr(log, level_name)(event, ...)` in the
+                # middleware — the AST scanner in this test only picks up
+                # literal `log.info(...)` / `log.warning(...)` call sites.
+                "audit.api_access",
+                # Emitted as a secondary `event_type` on `audit.api_access`
+                # lines (from the middleware classifier) rather than as the
+                # top-level structlog event name. Catalogued so SIEM rules
+                # have an authoritative reference.
+                "api.request",
+                "rate_limit.exceeded",
+                "auth.denied",
+                "auth.reviewer_denied",
+                "image.list",
+                "audit.log_read",
+                "container.logs_stream",
+                "container.exec_session",
+            }
         )
+        unused = declared - emitted - reserved
+        assert not unused, "Catalogue declares events never emitted:\n  " + "\n  ".join(sorted(unused))
 
     def test_all_event_names_are_dotted(self) -> None:
         for name in known_events():
@@ -199,6 +207,7 @@ class TestEventCatalogue:
 # ─────────────────────────────────────────────────────────────────────────────
 # Metrics
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestMetrics:
     def test_known_metrics_non_empty(self) -> None:

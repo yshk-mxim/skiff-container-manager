@@ -6,6 +6,7 @@ and the undo cancel/fire race + fire_all_now error-suppression path. Each
 uses Hypothesis where the function branches, so the test covers every
 path instead of cherry-picking example inputs.
 """
+
 from __future__ import annotations
 
 import threading
@@ -25,6 +26,7 @@ pytestmark = pytest.mark.unit
 
 # ── auth._ws_tick ────────────────────────────────────────────────────────────
 
+
 @given(ticks=st.integers(min_value=0, max_value=100))
 def test_ws_tick_before_revalidate(ticks: int) -> None:
     """When ticks+1 < WS_KEEPALIVE_REVALIDATE_EVERY → (ticks+1, False).
@@ -34,6 +36,7 @@ def test_ws_tick_before_revalidate(ticks: int) -> None:
     session-age re-check yet).
     """
     from skiff import config
+
     if ticks + 1 >= config.WS_KEEPALIVE_REVALIDATE_EVERY:
         # Outside our coverage target — the other branch returns (0, True).
         return
@@ -46,6 +49,7 @@ def test_ws_tick_before_revalidate(ticks: int) -> None:
 def test_ws_tick_at_or_past_revalidate(ticks: int) -> None:
     """At or past the revalidate threshold → counter resets to 0, flag is True."""
     from skiff import config
+
     if ticks + 1 < config.WS_KEEPALIVE_REVALIDATE_EVERY:
         return
     next_ticks, revalidate = auth_module._ws_tick(ticks)
@@ -54,6 +58,7 @@ def test_ws_tick_at_or_past_revalidate(ticks: int) -> None:
 
 
 # ── secure._find_request_arg ─────────────────────────────────────────────────
+
 
 def _fake_request() -> Request:
     """Build a Request that passes isinstance() without a live ASGI scope."""
@@ -90,6 +95,7 @@ def test_find_request_positional_property(other_args: list) -> None:
 
 # ── validators._volume_source ────────────────────────────────────────────────
 
+
 @given(s=st.text(max_size=50))
 def test_volume_source_str_passthrough(s: str) -> None:
     assert validators_module._volume_source(s) == s
@@ -122,6 +128,7 @@ def test_volume_source_non_str_non_dict_fallback(n: int) -> None:
 
 
 # ── undo._fire cancel-race + fire_all_now exception swallowing ──────────────
+
 
 def test_undo_fire_after_cancel_is_noop() -> None:
     """Line 96: timer fires AFTER cancel() removed the op from the queue.
@@ -166,12 +173,14 @@ def test_undo_fire_all_now_swallows_individual_errors() -> None:
 
 # ── auth._ws_tick Hypothesis-settles the 2^1 branch space ────────────────────
 
+
 @given(ticks=st.integers(min_value=0, max_value=1_000_000))
 @settings(max_examples=200)
 def test_ws_tick_invariants(ticks: int) -> None:
     """Both branches satisfy: output ticks ∈ [0, threshold) and the
     revalidate flag is True iff the counter hit the threshold."""
     from skiff import config
+
     out_ticks, revalidate = auth_module._ws_tick(ticks)
     assert 0 <= out_ticks < config.WS_KEEPALIVE_REVALIDATE_EVERY
     assert revalidate == (ticks + 1 >= config.WS_KEEPALIVE_REVALIDATE_EVERY)

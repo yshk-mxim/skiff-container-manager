@@ -13,13 +13,16 @@ here because only WebSocket paths reach it. The shared mutable state
 (`_ws_connections` dict, `_ws_lock` lock) is module-local — tests
 patch it at `skiff.routers.containers_ws._ws_connections` etc.
 """
+
 from __future__ import annotations
 
 import asyncio
 import collections
 import contextlib
+import json
 import threading
 import time
+from typing import Any
 
 import docker.errors
 import structlog
@@ -27,7 +30,6 @@ from fastapi import APIRouter
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from skiff import auth, config, validators
-from skiff.contract.errors import http_error
 from skiff.docker_client import get_client
 
 log = structlog.get_logger(__name__)
@@ -37,12 +39,29 @@ router = APIRouter()
 _ws_connections: dict[str, int] = collections.defaultdict(int)
 _ws_lock = threading.Lock()
 
+# Track live exec sessions so a runtime profile switch to reviewer can
+# forcibly close them. Set element is (WebSocket, container_id) so the
+# close-all path can log which session was killed. Mutated from the
+# async handler; the lock is still a threading.Lock since SIGINT / the
+# profile-switch caller can be on a different thread than the event
+# loop.
+_active_exec_ws: set = set()
 
-def _ws_acquire(ip: str) -> None:
+
+def _ws_acquire(ip: str) -> bool:
+    """Reserve one WS slot for `ip`; return True on success.
+
+    Historically this raised `HTTPException`, but WebSocket handlers
+    cannot translate an HTTPException into a close frame — the socket
+    is already upgraded by handshake time. Returning a bool lets the
+    caller close the socket with the correct WebSocket close code
+    (1013 "try again later") and then return cleanly.
+    """
     with _ws_lock:
         if _ws_connections[ip] >= config.WS_MAX_PER_IP:
-            raise http_error("ws.connections_exhausted")
+            return False
         _ws_connections[ip] += 1
+        return True
 
 
 def _ws_release(ip: str) -> None:
@@ -50,18 +69,78 @@ def _ws_release(ip: str) -> None:
         _ws_connections[ip] = max(0, _ws_connections[ip] - 1)
 
 
+def _try_register_exec_ws(websocket: WebSocket, container_id: str) -> bool:
+    """Atomic PROFILE re-check + registration under `_ws_lock`.
+
+    Returns False if PROFILE has moved to `reviewer` between the
+    handshake and the registration. Closing the lock window between
+    the check and the set insertion would reopen the TOCTOU where a
+    handler that passed the earlier guard registers AFTER
+    `close_active_exec_sessions` has snapshotted — leaving a live
+    exec shell in reviewer mode.
+    """
+    import skiff.config as _config_module
+
+    with _ws_lock:
+        if _config_module.PROFILE == "reviewer":
+            return False
+        _active_exec_ws.add((websocket, container_id))
+        return True
+
+
+def _unregister_exec_ws(websocket: WebSocket, container_id: str) -> None:
+    with _ws_lock:
+        _active_exec_ws.discard((websocket, container_id))
+
+
+async def close_active_exec_sessions(reason: str) -> int:
+    """Close every live exec WebSocket with code 4003.
+
+    Called when PROFILE transitions to reviewer at runtime so an
+    insider can't keep mutating through a pre-switch exec shell.
+    Callers MUST flip `PROFILE = "reviewer"` BEFORE invoking this —
+    `_try_register_exec_ws` relies on the flag being set under the
+    same lock, so any handler in the acquire→register gap will fail
+    the re-check and be rejected. Closes are parallel (asyncio.gather)
+    so a slow TCP send-buffer on one session does not delay the others.
+    Returns the count for audit emission.
+    """
+    with _ws_lock:
+        pending = list(_active_exec_ws)
+        _active_exec_ws.clear()
+    if not pending:
+        return 0
+
+    async def _close_one(ws: WebSocket, cid: str) -> None:
+        with contextlib.suppress(RuntimeError, OSError):
+            await ws.close(code=4003)
+        log.info("audit.ws_exec_terminated", container=cid, reason=reason)
+
+    await asyncio.gather(
+        *(_close_one(ws, cid) for ws, cid in pending),
+        return_exceptions=True,
+    )
+    return len(pending)
+
+
 # ── WebSocket: log streaming ───────────────────────────────
 
-async def _ws_close_safely(websocket: WebSocket, code: int) -> None:
+
+async def _ws_close_safely(websocket: WebSocket, code: int, reason: str = "") -> None:
     """Close a WebSocket with a specific code, tolerating already-closed state.
 
     Starlette raises `RuntimeError: Unexpected ASGI message 'websocket.close'`
     if we try to close a socket the peer has already closed; that happens
     routinely on bad-token handshakes where the client disconnects as we
     reject. Suppressing it keeps stderr clean without swallowing real bugs.
+
+    `reason` is forwarded to the peer as `evt.reason`; we use this for the
+    auth-lockout branch to carry the remaining seconds so the client can
+    paint a countdown banner without a second round-trip. Other branches
+    pass an empty reason (default).
     """
     try:
-        await websocket.close(code=code)
+        await websocket.close(code=code, reason=reason)
     except (WebSocketDisconnect, RuntimeError):
         pass
 
@@ -116,15 +195,24 @@ async def _ws_handshake(websocket: WebSocket, container_id: str) -> bool:
         return False
     if not validators.CONTAINER_ID_RE.fullmatch(container_id):
         log.warning(
-            "audit.ws_handshake_failed", reason="bad_container_id",
-            remote=client_ip, container=container_id[:32],
+            "audit.ws_handshake_failed",
+            reason="bad_container_id",
+            remote=client_ip,
+            container=container_id[:32],
         )
         await _ws_close_safely(websocket, code=4000)
         return False
     await websocket.accept()
     if not await auth._validate_ws_token_from_message(websocket):
         log.warning("audit.ws_handshake_failed", reason="auth_failed", remote=client_ip)
-        await _ws_close_safely(websocket, code=4003)
+        # If the failure tripped (or sustained) a per-IP brute-force lockout,
+        # carry the remaining seconds in the close reason so the client can
+        # paint a "WebSocket locked out — try again in Ns" banner without a
+        # second round-trip. Non-lockout bad-token failures keep an empty
+        # reason; the client distinguishes by the prefix.
+        lockout_secs = auth.ws_lockout_remaining(client_ip)
+        close_reason = f"ws_auth_lockout:{lockout_secs}" if lockout_secs > 0 else ""
+        await _ws_close_safely(websocket, code=4003, reason=close_reason)
         return False
     return True
 
@@ -142,7 +230,9 @@ async def _stream_logs_from_generator(websocket: WebSocket, gen, loop) -> None:
                 timeout=config.WS_LOG_IDLE_TIMEOUT,
             )
         except TimeoutError:
-            await websocket.send_text("\n[Idle timeout — no new logs for 5 minutes]\n")
+            await websocket.send_text(
+                f"\n[Idle timeout — no new logs for {config.WS_LOG_IDLE_TIMEOUT}s]\n",
+            )
             return
         if line is None:
             return
@@ -150,7 +240,10 @@ async def _stream_logs_from_generator(websocket: WebSocket, gen, loop) -> None:
 
 
 async def _stream_logs_session(
-    websocket: WebSocket, container_id: str, loop, ip: str,
+    websocket: WebSocket,
+    container_id: str,
+    loop,
+    ip: str,
 ) -> None:
     """Body of stream_logs after the handshake — get client, open generator, pump."""
     client = await loop.run_in_executor(None, get_client)
@@ -179,7 +272,13 @@ async def stream_logs(websocket: WebSocket, container_id: str):
     if not await _ws_handshake(websocket, container_id):
         return
     ip = websocket.client.host if websocket.client else "unknown"
-    _ws_acquire(ip)
+    if not _ws_acquire(ip):
+        # Per-IP WS cap reached. Close with 1013 (Try Again Later) —
+        # a close frame is the right ASGI-level reply here; raising
+        # HTTPException after websocket.accept() would leak up to
+        # uvicorn as an unhandled error.
+        await _ws_close_safely(websocket, code=1013)
+        return
     log.info("audit.ws_logs", container=container_id, remote=ip)
     try:
         await _stream_logs_session(websocket, container_id, asyncio.get_running_loop(), ip)
@@ -209,13 +308,23 @@ def _detect_shell(container) -> str:
     return "/bin/bash" if exit_code == 0 else "/bin/sh"
 
 
-def _start_exec_session(client, container, shell: str):
-    """Create+start a Docker exec session. Returns the raw socket object."""
+def _start_exec_session(client, container, shell: str) -> tuple[Any, str]:
+    """Create+start a Docker exec session. Returns (raw socket, exec_id).
+
+    `exec_id` is retained so the handler can later call
+    `client.api.exec_resize(exec_id, height, width)` on incoming
+    resize frames from the client — without it the PTY stays at the
+    default 80x24 and maximised browser windows render broken TUI
+    apps.
+    """
     exec_id = client.api.exec_create(container.id, shell, stdin=True, tty=True, stdout=True, stderr=True)
     sock = client.api.exec_start(exec_id, socket=True, tty=True)
     sock._sock.setblocking(True)
     sock._sock.settimeout(config.WS_EXEC_RECV_TIMEOUT)
-    return sock
+    # `exec_create` returns either {"Id": "..."} or the bare id string
+    # depending on SDK version. Normalise both shapes.
+    eid = exec_id.get("Id") if isinstance(exec_id, dict) else str(exec_id)
+    return sock, eid
 
 
 async def _exec_pump_output(websocket: WebSocket, sock, loop) -> None:
@@ -241,8 +350,46 @@ async def _exec_pump_output(websocket: WebSocket, sock, loop) -> None:
         await websocket.send_text(data.decode(errors="replace"))
 
 
+def _maybe_resize(data: str, client, exec_id: str) -> bool:
+    """If `data` is a `{"type":"resize"}` JSON frame, apply it and return True.
+
+    Resize frames are a structured protocol — `{"type":"resize","cols":int,"rows":int}` —
+    NOT shell input. Without this check the literal JSON reached the
+    PTY as input (the shell rendered "{type:: not found"). Every other
+    message is forwarded verbatim to stdin.
+    """
+    # Cheap early-out so bytes-per-keystroke input isn't JSON-parsed.
+    if not data.startswith(('{"type":"resize"', '{"type": "resize"')):
+        return False
+    try:
+        frame = json.loads(data)
+    except ValueError:
+        return False
+    if not (isinstance(frame, dict) and frame.get("type") == "resize"):
+        return False
+    try:
+        cols = int(frame.get("cols", 0))
+        rows = int(frame.get("rows", 0))
+    except (TypeError, ValueError):
+        return False
+    # Clamp into a sane range. Docker's exec_resize tolerates 1-9999
+    # but a pathological client could send {rows: -1} or 1e9; cap
+    # defensively so the TTY ioctl never sees garbage.
+    if not (4 <= cols <= 1024 and 4 <= rows <= 1024):
+        return False
+    with contextlib.suppress(docker.errors.DockerException, OSError, AttributeError):
+        client.api.exec_resize(exec_id, height=rows, width=cols)
+    return True
+
+
 async def _exec_pump_input(
-    websocket: WebSocket, sock, loop, container_id: str, ip: str,
+    websocket: WebSocket,
+    sock,
+    loop,
+    container_id: str,
+    ip: str,
+    client=None,
+    exec_id: str = "",
 ) -> None:
     """Pump text from the WebSocket to the exec socket's stdin.
 
@@ -250,9 +397,15 @@ async def _exec_pump_input(
     4008. Each input message is audit-logged with byte-count only; NO
     content is captured so that pasted credentials (`export TOKEN=…`,
     passwords echoed by sudo prompts, etc.) don't land in the audit log.
+
+    Structured `{"type":"resize","cols":N,"rows":M}` frames are handled
+    out-of-band via `exec_resize`; they do NOT reach the PTY as input.
     """
     while True:
         data = await websocket.receive_text()
+        # Resize frame — consumed here, never forwarded to stdin.
+        if client is not None and exec_id and _maybe_resize(data, client, exec_id):
+            continue
         encoded = data.encode()
         if len(encoded) > _EXEC_MAX_INPUT_BYTES:
             # Over-cap is a policy violation (oversized paste, malformed
@@ -261,7 +414,9 @@ async def _exec_pump_input(
             # only — never the content.
             log.warning(
                 "audit.ws_exec_input_oversize",
-                container=container_id, remote=ip, bytes=len(encoded),
+                container=container_id,
+                remote=ip,
+                bytes=len(encoded),
                 limit=_EXEC_MAX_INPUT_BYTES,
             )
             await _ws_close_safely(websocket, code=4008)
@@ -274,12 +429,32 @@ async def _exec_session(websocket: WebSocket, container_id: str, loop, ip: str) 
     """Body of exec_shell after the handshake — build session, run both pumps."""
     client = await loop.run_in_executor(None, get_client)
     container = await loop.run_in_executor(None, client.containers.get, container_id)
-    shell = await loop.run_in_executor(None, _detect_shell, container)
-    sock = await loop.run_in_executor(None, _start_exec_session, client, container, shell)
+    # `_detect_shell` runs `which /bin/bash` inside the container via
+    # `exec_run`, which on a frozen container under heavy load can hang
+    # indefinitely. Cap with a 5 s timeout and fall back to /bin/sh on
+    # timeout — every POSIX container has /bin/sh so the session still
+    # opens; the reviewer just doesn't get bash tab-complete niceties.
+    try:
+        shell = await asyncio.wait_for(
+            loop.run_in_executor(None, _detect_shell, container),
+            timeout=5.0,
+        )
+    except TimeoutError:
+        log.warning("ws.detect_shell_timeout", container=container_id)
+        shell = "/bin/sh"
+    sock, exec_id = await loop.run_in_executor(None, _start_exec_session, client, container, shell)
     read_task = asyncio.create_task(_exec_pump_output(websocket, sock, loop))
     keepalive_task = asyncio.create_task(auth.ws_keepalive(websocket))
     try:
-        await _exec_pump_input(websocket, sock, loop, container_id, ip)
+        await _exec_pump_input(
+            websocket,
+            sock,
+            loop,
+            container_id,
+            ip,
+            client=client,
+            exec_id=exec_id,
+        )
     except (WebSocketDisconnect, OSError, RuntimeError):
         # Disconnect: client hung up. OSError: socket gone.
         # RuntimeError: starlette on send-after-close.
@@ -293,16 +468,47 @@ async def _exec_session(websocket: WebSocket, container_id: str, loop, ip: str) 
 
 @router.websocket("/ws/exec/{container_id}")
 async def exec_shell(websocket: WebSocket, container_id: str):
-    """Open an interactive shell in a container over WebSocket."""
+    """Open an interactive shell in a container over WebSocket.
+
+    Reviewer-mode gating is enforced in two phases to close the TOCTOU
+    against a concurrent `POST /api/profile/enter-reviewer`:
+
+      Phase 1 (cheap pre-check):  reject the handshake if PROFILE is
+        already `reviewer` before we acquire any slots.
+
+      Phase 2 (atomic under `_ws_lock`):  `_try_register_exec_ws`
+        re-reads PROFILE and inserts into `_active_exec_ws` inside
+        the same lock that `close_active_exec_sessions` takes when
+        snapshotting. Any handler in the Phase-1→Phase-2 gap at the
+        moment of a profile flip fails the re-check and is closed
+        before it can execute a shell.
+    """
     if not await _ws_handshake(websocket, container_id):
         return
     ip = websocket.client.host if websocket.client else "unknown"
-    _ws_acquire(ip)
+    # Phase 1 — cheap pre-check.
+    import skiff.config as _config_module
+
+    if _config_module.PROFILE == "reviewer":
+        log.warning("audit.ws_handshake_failed", reason="reviewer_read_only", remote=ip, container=container_id)
+        await _ws_close_safely(websocket, code=4003)
+        return
+    if not _ws_acquire(ip):
+        await _ws_close_safely(websocket, code=1013)
+        return
+    # Phase 2 — atomic PROFILE re-check + registration. Must come
+    # AFTER _ws_acquire so the per-IP slot is tracked either way.
+    if not _try_register_exec_ws(websocket, container_id):
+        log.warning("audit.ws_handshake_failed", reason="reviewer_read_only", remote=ip, container=container_id)
+        _ws_release(ip)
+        await _ws_close_safely(websocket, code=4003)
+        return
     log.info("audit.ws_exec", container=container_id, remote=ip)
     try:
         await _exec_session(websocket, container_id, asyncio.get_running_loop(), ip)
     except (docker.errors.DockerException, OSError, RuntimeError) as exc:
         log.warning("ws.exec_error", container=container_id, error=str(exc))
     finally:
+        _unregister_exec_ws(websocket, container_id)
         _ws_release(ip)
         await _ws_close_quiet(websocket)

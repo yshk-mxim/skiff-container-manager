@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Image listing, pulling, pushing, tagging, inspecting; registry search proxy."""
+
 from __future__ import annotations
 
 import asyncio
 import json
+import socket as _socket
 from typing import Any
 
 import docker.errors
 import requests
 import requests.exceptions
+import urllib3.exceptions as _urllib3_exc
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from skiff import config, validators
@@ -28,6 +31,20 @@ from skiff.rate import RATE
 from skiff.secure import secure_route
 
 router = APIRouter()
+
+# Narrow tuple of "transport died mid-request" errors. Intentionally
+# does NOT include docker.errors.DockerException (APIError is a
+# subclass — a 400 "manifest not found" should surface as
+# image.pull_failed, not 503). Mirrors the transport subset of
+# DOCKER_TRANSIENT in skiff.docker_client without the base
+# DockerException catch-all.
+_TRANSPORT_ERRORS = (
+    _urllib3_exc.ProtocolError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    _socket.timeout,
+    ConnectionError,
+)
 
 
 @router.get("/api/registry/search", dependencies=AUTH, tags=["images"])
@@ -49,7 +66,7 @@ def registry_search(request: Request, q: str = Query(..., min_length=1, max_leng
         results = [
             {
                 "repo_name": item.get("repo_name") or item.get("name", ""),
-                "short_description": (item.get("short_description") or "")[:config.REGISTRY_DESC_MAX],
+                "short_description": (item.get("short_description") or "")[: config.REGISTRY_DESC_MAX],
                 "pull_count": item.get("pull_count", 0),
                 "is_official": bool(item.get("is_official")),
             }
@@ -71,6 +88,15 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
     # Reject anything outside Docker Hub's repo-name alphabet — belt and
     # braces on top of FastAPI's length limit so we never interpolate an
     # exotic codepoint into the upstream URL.
+    # SSRF posture: the host is HARD-CODED to `hub.docker.com` below.
+    # `repo` is additionally constrained by `HUB_REPO_RE` which excludes
+    # `@`, `:`, backslash, and any scheme-introducing character, so the
+    # f-string cannot be redirected to an attacker-controlled origin.
+    # `allow_redirects=False` refuses any 3xx response so hub.docker.com
+    # itself cannot bounce us off-host either. Semgrep's `ssrf-requests`
+    # rule is a generic warning for `requests.get(f"...{var}...")` and
+    # does not see the regex constraint; the finding is a false positive
+    # under this combined-mitigation posture.
     if not validators.HUB_REPO_RE.fullmatch(repo):
         raise http_error("validation.bad_image_name")
     try:
@@ -82,11 +108,8 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
         )
         resp.raise_for_status()
         data = resp.json()
-        tags = [
-            t["name"] for t in data.get("results", [])
-            if isinstance(t.get("name"), str) and t["name"]
-        ]
-        return {"image": image, "tags": tags[:config.REGISTRY_MAX_TAGS]}
+        tags = [t["name"] for t in data.get("results", []) if isinstance(t.get("name"), str) and t["name"]]
+        return {"image": image, "tags": tags[: config.REGISTRY_MAX_TAGS]}
     except requests.exceptions.RequestException as exc:
         raise http_error("image.tag_fetch_failed", message=f"Tag fetch failed: {exc}") from exc
 
@@ -117,7 +140,8 @@ def _first_allowed_tag(img: Any) -> AllowedImageEntry | None:
 @router.get("/api/images/allowed", dependencies=AUTH, tags=["images"])
 @secure_route.read(RATE.READ)
 def list_allowed_images(
-    request: Request, client=Depends(docker_client_dep),
+    request: Request,
+    client=Depends(docker_client_dep),
 ) -> list[AllowedImageEntry]:
     """Return images from allowed registries only."""
     images = validators.safe_docker_call(client.images.list, all=False)
@@ -127,7 +151,8 @@ def list_allowed_images(
 
 @router.post("/api/images/pull", dependencies=AUTH, tags=["images"])
 @secure_route.mutate(
-    RATE.WRITE, audit="image.pulled",
+    RATE.WRITE,
+    audit="image.pulled",
     audit_fields=lambda request, image, **kw: {"image": image},  # noqa: ARG005
 )
 async def pull_image(request: Request, image: str, client=Depends(docker_client_dep)) -> OkResponse:
@@ -141,6 +166,25 @@ async def pull_image(request: Request, image: str, client=Depends(docker_client_
         )
     except TimeoutError as exc:
         raise http_error("image.pull_timed_out") from exc
+    except docker.errors.ImageNotFound as exc:
+        # Upstream registry says the repo or tag doesn't exist
+        # (`alpine:typo`, `user/nope`). Map to the documented 404
+        # envelope instead of collapsing to the generic 400
+        # image.pull_failed — scripted callers need to distinguish
+        # "typo" from "transient network error".
+        raise http_error("image.not_found") from exc
+    except docker.errors.NotFound as exc:
+        # Older docker-py versions raise the broader NotFound for
+        # missing manifests; same semantic.
+        raise http_error("image.not_found") from exc
+    except _TRANSPORT_ERRORS as exc:
+        # Transport failure during the streamed pull (urllib3
+        # ProtocolError from a mid-stream tunnel drop, requests
+        # ConnectionError / Timeout, socket.timeout). Narrow tuple
+        # — does NOT include the broader docker.errors.DockerException
+        # because APIError is a subclass of that and a 400 "manifest
+        # not found" should surface as image.pull_failed, not 503.
+        raise http_error("system.docker_unreachable") from exc
     except docker.errors.DockerException as exc:
         raise http_error("image.pull_failed") from exc
     return OkResponse(image=image)
@@ -148,9 +192,11 @@ async def pull_image(request: Request, image: str, client=Depends(docker_client_
 
 @router.post("/api/images/{image_id}/tag", dependencies=AUTH, tags=["images"])
 @secure_route.mutate(
-    RATE.WRITE, audit="image.tagged",
-    audit_fields=lambda request, image_id, repository, tag="latest", **kw:  # noqa: ARG005
-        {"id": image_id, "repository": repository, "tag": tag},
+    RATE.WRITE,
+    audit="image.tagged",
+    audit_fields=lambda request, image_id, repository, tag="latest", **kw: (  # noqa: ARG005
+        {"id": image_id, "repository": repository, "tag": tag}
+    ),
 )
 def tag_image(
     request: Request,
@@ -196,13 +242,20 @@ async def _run_push(image: str, client) -> str | None:
         )
     except TimeoutError as exc:
         raise http_error("image.push_timed_out") from exc
+    except _TRANSPORT_ERRORS as exc:
+        # Same transport-level failure handling as pull — mid-stream
+        # tunnel death raises urllib3.ProtocolError which the bare
+        # `docker.errors.DockerException` catch misses. 503 instead
+        # of a leaked 500 + traceback.
+        raise http_error("system.docker_unreachable") from exc
     except docker.errors.DockerException as exc:
         raise http_error("image.push_failed") from exc
 
 
 @router.post("/api/images/push", dependencies=AUTH, tags=["images"])
 @secure_route.mutate(
-    RATE.WRITE, audit="image.pushed",
+    RATE.WRITE,
+    audit="image.pushed",
     audit_fields=lambda request, image, **kw: {"image": image},  # noqa: ARG005
 )
 async def push_image(request: Request, image: str, client=Depends(docker_client_dep)) -> OkResponse:
@@ -218,8 +271,11 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
 @router.delete("/api/images/{image_id}", dependencies=AUTH, tags=["images"])
 @secure_route.mutate(RATE.WRITE)
 def delete_image(
-    request: Request, image_id: str, force: bool = False,
-    undo: bool = False, client=Depends(docker_client_dep),
+    request: Request,
+    image_id: str,
+    force: bool = False,
+    undo: bool = False,
+    client=Depends(docker_client_dep),
 ) -> Any:
     """Remove a local image by ID. With `undo=true`, removal is delayed 5 s and
     the response carries an `undo_token` the caller can POST to cancel."""
@@ -227,18 +283,27 @@ def delete_image(
     img = validators.safe_docker_call(client.images.get, image_id)
     if undo:
         from skiff.undo import get_queue
+
         token = get_queue().enqueue(
-            "image", image_id,
-            validators.safe_docker_call, client.images.remove, img.id, force=force,
+            "image",
+            image_id,
+            validators.safe_docker_call,
+            client.images.remove,
+            img.id,
+            force=force,
         )
         if token is not None:
             import structlog
+
             structlog.get_logger(__name__).info(
-                "image.delete_queued", id=image_id, token_suffix=token[-6:],
+                "image.delete_queued",
+                id=image_id,
+                token_suffix=token[-6:],
             )
             return UndoableResponse(undo_token=token, expires_in=config.UNDO_DELAY_SECS)
     validators.safe_docker_call(client.images.remove, img.id, force=force)
     import structlog
+
     structlog.get_logger(__name__).info("image.deleted", id=image_id)
     return OkResponse()
 
@@ -254,6 +319,7 @@ def _history_created_to_iso(created: Any) -> str:
     operations don't blow up.
     """
     from datetime import UTC, datetime
+
     if isinstance(created, (int, float)) and created > 0:
         return datetime.fromtimestamp(created, tz=UTC).isoformat().replace("+00:00", "Z")
     return str(created or "")
@@ -283,7 +349,9 @@ def _image_history_entries(img: Any) -> list[_ImageHistoryEntry]:
 @router.get("/api/images/{image_id}/inspect", dependencies=AUTH, tags=["images"])
 @secure_route.read(RATE.READ)
 def inspect_image(
-    request: Request, image_id: str, client=Depends(docker_client_dep),
+    request: Request,
+    image_id: str,
+    client=Depends(docker_client_dep),
 ) -> ImageInspectResponse:
     """Return detailed image metadata and layer history."""
     validators.validate_image_id(image_id)

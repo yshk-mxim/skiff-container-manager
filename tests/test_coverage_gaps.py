@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Targeted tests to close coverage gaps in the refactored skiff modules."""
+
 from __future__ import annotations
 
 import os
@@ -21,6 +22,7 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── _Config: wildcard ALLOWED_ORIGINS ────────────────────────────────────────
 
+
 def test_config_wildcard_origins_raises():
     # Wildcard guard lives on the validator now (F3: config_knob refactor).
     # _Config re-instantiation would hit the duplicate-knob guard first, so
@@ -30,6 +32,7 @@ def test_config_wildcard_origins_raises():
 
 
 # ── _make_audit_handler: OSError path ────────────────────────────────────────
+
 
 def test_make_audit_handler_oserror_returns_none():
     """When the RotatingFileHandler subclass raises OSError, _make_audit_handler returns None.
@@ -44,9 +47,11 @@ def test_make_audit_handler_oserror_returns_none():
 
 # ── GCP logging init ─────────────────────────────────────────────────────────
 
+
 def test_gcp_init_import_error_swallowed():
     """When google-cloud-logging is not installed, init silently skips."""
     import sys
+
     with patch.dict(os.environ, {"GOOGLE_CLOUD_PROJECT": "test-project"}):
         with patch.dict(sys.modules, {"google": None, "google.cloud": None, "google.cloud.logging": None}):
             # Re-run the init block inline
@@ -73,6 +78,7 @@ def test_gcp_init_exception_swallowed(capsys):
 
 
 # ── _audit_file_sink: GCP path ────────────────────────────────────────────────
+
 
 def test_audit_file_sink_writes_to_gcp():
     """When _gcp_logger is set, _audit_file_sink calls log_struct."""
@@ -102,6 +108,7 @@ def test_audit_file_sink_handler_oserror_swallowed():
 
 
 # ── _build_client: keepalive exception ───────────────────────────────────────
+
 
 def test_build_client_keepalive_exception_swallowed():
     """Exception in TCP keepalive setup must be swallowed; client still returned.
@@ -140,6 +147,7 @@ def test_build_client_keepalive_tcp_success():
 
 # ── _stop_tunnel_locked / _start_tunnel ──────────────────────────────────────
 
+
 def test_stop_tunnel_locked_with_active_tunnel():
     """_stop_tunnel_locked calls ssh -O exit and unlinks socket files."""
     with (
@@ -174,6 +182,7 @@ def test_stop_tunnel_locked_unlink_oserror_swallowed():
 def test_start_tunnel_timeout():
     """SSH TimeoutExpired raises ValueError."""
     import subprocess
+
     with (
         patch("skiff.docker_client.subprocess.run", side_effect=subprocess.TimeoutExpired(["ssh"], 10)),
         patch("skiff.docker_client._stop_tunnel_locked"),
@@ -229,6 +238,7 @@ def test_start_tunnel_existing_socket_unlinked():
     from pathlib import Path as _Path
 
     from skiff.config import TUNNEL_DEFAULT_SOCKET
+
     sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
@@ -262,18 +272,22 @@ def test_start_tunnel_invalid_ssh_target():
 
 # ── _classify_ssh_stderr ──────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("stderr,expected_code", [
-    ("Permission denied (publickey).", "auth_failed"),
-    ("Permission denied (publickey,password).", "auth_failed"),
-    ("Host key verification failed.", "host_key_mismatch"),
-    ("REMOTE HOST IDENTIFICATION HAS CHANGED!", "host_key_mismatch"),
-    ("ssh: Could not resolve hostname foo: nodename nor servname provided", "unknown_host"),
-    ("ssh: connect to host foo port 22: Connection refused", "connection_refused"),
-    ("ssh: connect to host foo port 22: Operation timed out", "timeout"),
-    ("Warning: Identity file /root/.ssh/id_rsa not accessible: No such file or directory.", "no_key"),
-    ("some totally weird failure", "other"),
-    ("", "other"),
-])
+
+@pytest.mark.parametrize(
+    "stderr,expected_code",
+    [
+        ("Permission denied (publickey).", "auth_failed"),
+        ("Permission denied (publickey,password).", "auth_failed"),
+        ("Host key verification failed.", "host_key_mismatch"),
+        ("REMOTE HOST IDENTIFICATION HAS CHANGED!", "host_key_mismatch"),
+        ("ssh: Could not resolve hostname foo: nodename nor servname provided", "unknown_host"),
+        ("ssh: connect to host foo port 22: Connection refused", "connection_refused"),
+        ("ssh: connect to host foo port 22: Operation timed out", "timeout"),
+        ("Warning: Identity file /root/.ssh/id_rsa not accessible: No such file or directory.", "no_key"),
+        ("some totally weird failure", "other"),
+        ("", "other"),
+    ],
+)
 def test_classify_ssh_stderr(stderr, expected_code):
     code, help_text = docker_client_module._classify_ssh_stderr(stderr)
     assert code == expected_code
@@ -293,6 +307,7 @@ def test_tunnel_error_carries_code_and_help():
 
 
 # ── Session cache eviction when full ─────────────────────────────────────────
+
 
 def test_session_cache_evicts_oldest_when_full():
     """When session cache is full, oldest entry is evicted."""
@@ -315,6 +330,7 @@ def test_session_cache_evicts_oldest_when_full():
 
 # ── verify_auth_strict: no api_token raises 503 ──────────────────────────────
 
+
 def test_verify_auth_strict_no_token(client):
     with patch.object(config_module._cfg, "api_token", ""):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
@@ -328,6 +344,7 @@ def test_verify_auth_strict_wrong_token(client):
 
 # ── _limit() with RATE_SCALE > 1 ──────────────────────────────────────────────
 
+
 def test_limit_scaling():
     with patch.object(config_module, "_RATE_SCALE", 5):
         result = _limit("10/minute")
@@ -335,6 +352,7 @@ def test_limit_scaling():
 
 
 # ── _classify_event: api.request fallback ────────────────────────────────────
+
 
 def test_classify_event_api_request_fallback():
     event_type, _, _ = _classify_event("GET", "/api/unknown/endpoint", 200)
@@ -347,7 +365,7 @@ _RUN_URL = "/api/containers/run?image=docker.io%2Flibrary%2Fnginx%3Alatest"
 
 
 def test_run_container_too_many_ports(client, mock_docker):
-    ports = {f"{3000+i}/tcp": str(3000+i) for i in range(11)}
+    ports = {f"{3000 + i}/tcp": str(3000 + i) for i in range(11)}
     resp = client.post(_RUN_URL, json={"ports": ports}, headers=AUTH_CSRF)
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "container.port_count_exceeds_cap"
@@ -373,6 +391,7 @@ def test_run_container_privileged_host_port(client, mock_docker):
 
 # ── Command too long ─────────────────────────────────────────────────────────
 
+
 def test_run_container_command_too_long(client, mock_docker):
     resp = client.post(_RUN_URL, json={"command": "x" * 4097}, headers=AUTH_CSRF)
     assert resp.status_code == 400
@@ -380,6 +399,7 @@ def test_run_container_command_too_long(client, mock_docker):
 
 
 # ── Log endpoints: since/until params ────────────────────────────────────────
+
 
 def test_container_logs_with_since_until(client, mock_docker):
     mock_docker.containers.get.return_value.logs.return_value = b"2024-01-01 line\n"
@@ -421,6 +441,7 @@ def test_download_logs_jsonl_with_since_until(client, mock_docker):
 
 # ── _validate_ws_origin: unknown origin returns False ────────────────────────
 
+
 def test_validate_ws_origin_unknown_origin():
     """Origin not in the allowlist and not matching server host returns False."""
     ws = MagicMock()
@@ -452,6 +473,7 @@ def test_validate_ws_origin_urlparse_exception():
 
 
 # ── _validate_ws_token_from_message: session expired ─────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_validate_ws_token_session_expired():
@@ -501,6 +523,7 @@ async def test_validate_ws_token_lockout_expired():
 
 # ── ws_keepalive: exception branches ─────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_ws_keepalive_http_exception_closes_4003():
     """Session expiry during keepalive closes WS with code 4003 and exits loop."""
@@ -529,6 +552,7 @@ async def test_ws_keepalive_send_exception_breaks():
 
 
 # ── _redact_dict: all branches ───────────────────────────────────────────────
+
 
 def test_redact_dict_depth_guard():
     """Depth > 10 returns truncated sentinel."""
@@ -564,10 +588,12 @@ def test_redact_dict_non_sensitive_string():
 
 # ── Audit log: partial line and OSError ──────────────────────────────────────
 
+
 def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
     """When chunk doesn't start at file beginning, partial first line is discarded."""
     log_file = tmp_path / "audit.jsonl"
     import json as _json
+
     lines = [_json.dumps({"event": f"e{i}"}) + "\n" for i in range(1000)]
     log_file.write_text("".join(lines))
     with patch("skiff.config.AUDIT_LOG_PATH", log_file):
@@ -587,6 +613,7 @@ def test_get_audit_log_oserror_returns_empty(client, tmp_path):
 
 # ── download_audit_log: missing file ─────────────────────────────────────────
 
+
 def test_download_audit_log_missing(client, tmp_path):
     nonexistent = tmp_path / "missing.jsonl"
     with patch("skiff.config.AUDIT_LOG_PATH", nonexistent):
@@ -596,6 +623,7 @@ def test_download_audit_log_missing(client, tmp_path):
 
 
 # ── _env_keys: dict and list forms in compose_up ─────────────────────────────
+
 
 def test_compose_up_env_dict_form(client, mock_docker, tmp_path):
     """compose_up handles environment as dict (keys extracted, values not logged)."""
@@ -633,6 +661,7 @@ services:
       - PORT=8080
 """
     import io
+
     with patch("skiff.config.COMPOSE_DIR", tmp_path):
         with patch("skiff.routers.compose.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
             resp = client.post(
@@ -646,6 +675,7 @@ services:
 
 # ── RATE_LIMIT_SCALE validation ───────────────────────────────────────────────
 
+
 def test_rate_limit_scale_invalid():
     """RATE_LIMIT_SCALE outside [1,100] raises ValueError at import."""
     # We test the validation logic directly since it runs at module init
@@ -657,6 +687,7 @@ def test_rate_limit_scale_invalid():
 
 # ── Setup endpoint: stop_tunnel from_env blocked ─────────────────────────────
 
+
 def test_stop_tunnel_endpoint_blocked_when_from_env(client):
     with patch.object(config_module._cfg, "from_env", True):
         resp = client.delete("/api/setup/tunnel", headers=AUTH_CSRF)
@@ -665,6 +696,7 @@ def test_stop_tunnel_endpoint_blocked_when_from_env(client):
 
 # ── _main entrypoint ─────────────────────────────────────────────────────────
 
+
 def test_main_calls_uvicorn():
     """_main() routes config constants into uvicorn.run, including the
     TRUST_FORWARDED_HEADERS-gated proxy_headers / forwarded_allow_ips
@@ -672,6 +704,7 @@ def test_main_calls_uvicorn():
     connection)."""
     import skiff.app
     from skiff import config
+
     with patch("uvicorn.run") as mock_run:
         skiff.app._main()
     mock_run.assert_called_once_with(
@@ -687,6 +720,7 @@ def test_main_calls_uvicorn():
 
 # ── _stop_tunnel_locked: subprocess exception swallowed ──────────────────────
 
+
 def test_stop_tunnel_locked_subprocess_exception():
     """Exception from subprocess.run in _stop_tunnel_locked is swallowed."""
     with (
@@ -701,11 +735,13 @@ def test_stop_tunnel_locked_subprocess_exception():
 
 # ── _start_tunnel: OSError on unlink + success path ──────────────────────────
 
+
 def test_start_tunnel_oserror_on_unlink_swallowed():
     """OSError when unlinking existing socket before tunnel start is swallowed."""
     from pathlib import Path as _Path
 
     from skiff.config import TUNNEL_DEFAULT_SOCKET
+
     sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
@@ -744,6 +780,7 @@ def test_start_tunnel_success():
     from pathlib import Path as _Path
 
     from skiff.config import TUNNEL_DEFAULT_SOCKET
+
     sock_resolved = _Path(TUNNEL_DEFAULT_SOCKET).resolve()
     result = MagicMock()
     result.returncode = 0
@@ -771,6 +808,7 @@ def test_start_tunnel_success():
 
 # ── classify_event: fallthrough to api.request ───────────────────────────────
 
+
 def test_classify_event_fallthrough_unknown_path():
     """Path that matches no EVENT_MAP entry returns 'api.request'."""
     event_type, _, _ = _classify_event("GET", "/api/unknown/path/xyz", 200)
@@ -778,6 +816,7 @@ def test_classify_event_fallthrough_unknown_path():
 
 
 # ── do_setup: tcp host with invalid port ─────────────────────────────────────
+
 
 def test_setup_tcp_invalid_port(client):
     """TCP docker_host with invalid port returns 400."""
@@ -794,9 +833,11 @@ def test_setup_tcp_invalid_port(client):
 
 # ── GCP Cloud Logging init: exception path ───────────────────────────────────
 
+
 def test_gcp_logging_init_exception_swallowed():
     """Non-ImportError from GCP logging client init is swallowed with a warning."""
     import sys
+
     orig = config_module._GCP_PROJECT
     try:
         config_module._GCP_PROJECT = "my-project"
@@ -807,6 +848,7 @@ def test_gcp_logging_init_exception_swallowed():
         # Call the init block directly
         try:
             import google.cloud.logging as _gcl
+
             _gcp_client = _gcl.Client(project="my-project")
             _gcp_logger = _gcp_client.logger("skiff-audit")
         except ImportError:

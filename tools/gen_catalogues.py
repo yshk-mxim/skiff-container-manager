@@ -15,6 +15,7 @@ Usage:
 The --check mode is what CI runs to ensure the generated docs stay in
 sync with the catalogues. Regenerate before committing.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,7 @@ def _events_md() -> str:
         "`python tools/gen_catalogues.py` to regenerate; CI `--check`",
         "fails if this file drifts from the Python source.",
         "",
-        "Every `log.info(\"<event>\", ...)` used for audit purposes appears",
+        'Every `log.info("<event>", ...)` used for audit purposes appears',
         "here with its severity, required/optional fields, and a one-line",
         "intent for SIEM rule authors.",
         "",
@@ -102,7 +103,7 @@ def _config_knobs_md() -> str:
         # to the portable `$HOME` form so the catalogue isn't machine-
         # specific (and doesn't leak the generator's username).
         if home and default.startswith(home):
-            default = "$HOME" + default[len(home):]
+            default = "$HOME" + default[len(home) :]
         if len(default) > 48:
             default = default[:45] + "…"
         validator = spec.validator.__name__ if spec.validator and hasattr(spec.validator, "__name__") else ""
@@ -118,8 +119,7 @@ def _config_knobs_md() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true",
-                        help="Exit 1 if generated docs are stale.")
+    parser.add_argument("--check", action="store_true", help="Exit 1 if generated docs are stale.")
     args = parser.parse_args()
 
     targets = {

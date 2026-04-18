@@ -9,6 +9,7 @@ guesses an API token should NOT see for free. The extra
 
   GET /debug/threads   per-thread stack traces — AUTH + SKIFF_DEBUG_THREADS=1
 """
+
 from __future__ import annotations
 
 import sys
@@ -31,6 +32,7 @@ async def debug_threads():
     if not config.DEBUG_THREADS_ENABLED:
         raise http_error("system.debug_disabled")
     import traceback
+
     frames = sys._current_frames()
     result = {str(tid): "".join(traceback.format_stack(frame)) for tid, frame in frames.items()}
     return {"thread_count": len(frames), "threads": result}

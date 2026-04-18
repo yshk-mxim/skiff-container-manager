@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """WebSocket handler tests to reach 100% coverage on containers.py."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,7 @@ from skiff.routers.containers import run_container
 from skiff.routers.containers_ws import exec_shell, stream_logs
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_ws(disconnect_on_receive: bool = True, yield_before_disconnect: bool = False) -> AsyncMock:
     """Minimal WebSocket double for async tests.
@@ -28,9 +30,11 @@ def _make_ws(disconnect_on_receive: bool = True, yield_before_disconnect: bool =
     ws.headers = {"origin": "http://127.0.0.1:8080", "host": "127.0.0.1:8080"}
     if disconnect_on_receive:
         if yield_before_disconnect:
+
             async def _sleep_then_raise():
                 await asyncio.sleep(0.002)  # 2 ms — enough for thread-pool MagicMock calls
                 raise RuntimeError("client disconnect")
+
             ws.receive_text = _sleep_then_raise
         else:
             ws.receive_text = AsyncMock(side_effect=RuntimeError("client disconnect"))
@@ -44,12 +48,14 @@ def _make_ws(disconnect_on_receive: bool = True, yield_before_disconnect: bool =
 async def test_stream_logs_idle_timeout_message():
     """TimeoutError in read_logs sends idle-timeout message and exits the read loop."""
     ws = _make_ws(disconnect_on_receive=False)
+
     # receive_text sleeps briefly so that the read_logs task gets at least one
     # full event-loop cycle (including the thread-pool executor round-trip) before
     # the outer loop sees the disconnect.
     async def _sleep_then_raise():
         await asyncio.sleep(0.002)
         raise RuntimeError("client disconnect")
+
     ws.receive_text = _sleep_then_raise
 
     mock_container = MagicMock()
@@ -73,7 +79,13 @@ async def test_stream_logs_idle_timeout_message():
         mock_re.match.return_value = MagicMock()
         await stream_logs(ws, "abc1234567890123")
 
-    ws.send_text.assert_any_call("\n[Idle timeout — no new logs for 5 minutes]\n")
+    # Timeout message now reports the actual configured seconds
+    # (WS_LOG_IDLE_TIMEOUT) instead of a hardcoded "5 minutes" string.
+    from skiff import config as _cfg
+
+    ws.send_text.assert_any_call(
+        f"\n[Idle timeout — no new logs for {_cfg.WS_LOG_IDLE_TIMEOUT}s]\n",
+    )
 
 
 @pytest.mark.asyncio
@@ -281,7 +293,10 @@ async def test_exec_shell_large_input_closes_4008():
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")
 
-    ws.close.assert_any_call(code=4008)
+    # `_ws_close_safely` now forwards an empty `reason` by default (the
+    # explicit string is reserved for the lockout branch), so match the
+    # code-only assertion against the newer two-argument call shape.
+    ws.close.assert_any_call(code=4008, reason="")
 
 
 @pytest.mark.asyncio

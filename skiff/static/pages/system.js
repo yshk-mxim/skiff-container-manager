@@ -158,6 +158,7 @@ async function _renderConnectPanel(main) {
   tools.forEach(function(t) { toolsById[t.id] = t; });
 
   var sel = UI.el('select', {
+    'aria-label': 'Connect external tool',
     style: 'padding:6px 10px;font-size:13px;background:var(--card);'
          + 'border:1px solid var(--border);border-radius:6px;color:var(--text)',
   }, tools.map(function(t) {
@@ -282,7 +283,7 @@ async function loadSystem() {
     auditToolbar.append(auditRefreshBtn, auditDlBtn);
     main.appendChild(auditToolbar);
     var auditTable = document.createElement('table');
-    auditTable.innerHTML = '<thead><tr><th>Time</th><th>Event</th><th>Method</th><th>Path</th><th>Status</th><th>Remote</th></tr></thead>';
+    auditTable.innerHTML = '<thead><tr><th>Time</th><th>Event</th><th>Resource</th><th>Method</th><th>Path</th><th>Status</th><th>Remote</th></tr></thead>';
     var auditBody = document.createElement('tbody');
     auditTable.appendChild(auditBody);
     main.appendChild(auditTable);
@@ -292,11 +293,11 @@ async function loadSystem() {
 }
 
 function loadAuditLog(tbody) {
-  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
   apiFetch(API+'/system/audit-log?tail=200').then(function(rows) {
     tbody.innerHTML = '';
     if (!rows || rows.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=6; td.style.cssText='text-align:center;color:var(--muted);padding:20px'; td.textContent='No audit entries yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=7; td.style.cssText='text-align:center;color:var(--muted);padding:20px'; td.textContent='No audit entries yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
     }
     rows.slice().reverse().forEach(function(row) {
       var tr = document.createElement('tr');
@@ -319,8 +320,16 @@ function loadAuditLog(tbody) {
       td3.style.cssText = 'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
       td3.title = row.path || '';
       td3.textContent = row.path || '';
+      // Resource column: server-classified resource_type + resource_id
+      // (e.g. "container abc123", "volume my-vol"). Falls back to
+      // dashes when the line is a non-resource-scoped event like
+      // app.started / security.* warnings.
+      var resourceText = row.resource_type && row.resource_id
+        ? (row.resource_type + ' ' + row.resource_id)
+        : (row.resource_type || row.resource_id || '—');
       tr.appendChild(td0);
       tr.appendChild(_auditCell(evt));
+      tr.appendChild(_auditCell(resourceText, 'font-family:var(--mono,monospace);color:var(--muted)'));
       tr.appendChild(_auditCell(row.method || ''));
       tr.appendChild(td3);
       tr.appendChild(td4);

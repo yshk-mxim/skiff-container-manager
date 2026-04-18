@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skiff-container-manager"
-version = "1.0.0"
+version = "1.0.1.dev0"
 description = "Lightweight web UI and JSON API for Docker Engine — local socket or SSH-tunnelled remote host; no agent, no daemon."
 readme = "README.md"
 license = {text = "MIT"}
@@ -171,6 +171,14 @@ max-statements = 60
     "T201",    # print is the idiom in CLI scripts
     "E402",    # sys.path insert before imports is unavoidable here
 ]
+"scripts/**/*.py" = [
+    "T201",    # print is the idiom in advisory CLI scripts (e.g. lint-untranslated-strings.py)
+    "E402",    # relative imports / sys.path insert before imports
+    "SIM103",  # "collapse return True/return False" hurts readability in tiered rule scanners
+    "RUF001",  # unicode dash / bullet chars are intentional in whitespace-rejection regexes
+    "C901",    # complexity threshold too strict for tiered predicate-chain scanners
+    "PLR0911", # many-return-style is idiomatic in early-exit filter predicates
+]
 "tests/**/*.py" = [
     "C901",    # complexity: e2e tests encode multi-step Playwright scenarios
     "S101",    # assert in tests
@@ -231,7 +239,12 @@ omit = ["tests/*"]
 # Contributor-friendly threshold. Current main tracks ~97%, but we don't
 # want a cosmetic branch addition in an external PR to fail CI solely on
 # coverage delta. Maintainer raises locally if the suite is being hardened.
-fail_under = 90
+fail_under = 94
+# Project target is ≥95 per docs/dev/feature-development.md §7d, with
+# critical modules at 100 %. 94 as the hard floor gives a 1-point
+# buffer for transient drops while still catching genuine regressions
+# (a PR that drops total coverage more than 1 point fails CI). Bump
+# when the suite reliably clears 96 to preserve the same buffer.
 precision = 1
 show_missing = true
 exclude_lines = [

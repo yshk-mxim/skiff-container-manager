@@ -12,6 +12,7 @@ A context-manager fixture (`watch_server_log`) captures the contents of the
 e2e server's stderr for the duration of each journey and asserts no
 unexpected noise leaked out.
 """
+
 from __future__ import annotations
 
 pytest_plugins = ["tests.conftest_e2e"]
@@ -116,6 +117,7 @@ def watch_server_log():
 # J1 — Novice local run: pull alpine, run, logs, inspect, stop, delete
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_j1_novice_container_lifecycle(page, live_server, docker_client):
     """Step-by-step container lifecycle with zero hand-holding.
@@ -160,8 +162,9 @@ def test_j1_novice_container_lifecycle(page, live_server, docker_client):
         page.locator("a[data-page='containers']").click()
         page.wait_for_selector(f"text={name}", timeout=MEDIUM)
         page.locator(f"tr:has-text('{name}') button:has-text('Stop')").click()
-        page.wait_for_selector(f"tr:has-text('{name}') .status.exited, tr:has-text('{name}') .status.stopped",
-                               timeout=LONG)
+        page.wait_for_selector(
+            f"tr:has-text('{name}') .status.exited, tr:has-text('{name}') .status.stopped", timeout=LONG
+        )
 
         # Step 7: Delete
         page.on("dialog", lambda d: d.accept())
@@ -176,6 +179,7 @@ def test_j1_novice_container_lifecycle(page, live_server, docker_client):
 # J2 — Developer clone-and-edit
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_j2_developer_clone_flow(page, live_server, docker_client):
     """Run → edit memory via Inspect → Clone with changes → verify env preserved."""
@@ -185,7 +189,10 @@ def test_j2_developer_clone_flow(page, live_server, docker_client):
     _teardown_container(docker_client, clone_name)
 
     docker_client.containers.run(
-        "alpine:latest", "sleep 600", name=name, detach=True,
+        "alpine:latest",
+        "sleep 600",
+        name=name,
+        detach=True,
         mem_limit="64m",
         environment=["SECRET=shh", "DEBUG=1"],
     )
@@ -242,6 +249,7 @@ def test_j2_developer_clone_flow(page, live_server, docker_client):
 # J3 — Compose lifecycle (ported-up, logs, per-service restart, teardown)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_j3_compose_full_lifecycle(page, live_server, docker_client):
     project = "j3compose"
@@ -256,8 +264,7 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
     )
     # Pre-clean
     try:
-        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}",
-                      headers=_auth_headers(), timeout=30)
+        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}", headers=_auth_headers(), timeout=30)
     except requests.exceptions.RequestException:
         pass
 
@@ -265,11 +272,15 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
         page.locator(".sidebar a:has-text('Compose')").click()
         page.wait_for_selector("h2:has-text('Compose')", timeout=MEDIUM)
         page.locator("#compose-project").fill(project)
-        page.locator("input[type='file']").set_input_files([{
-            "name": "docker-compose.yml",
-            "mimeType": "application/x-yaml",
-            "buffer": yaml,
-        }])
+        page.locator("input[type='file']").set_input_files(
+            [
+                {
+                    "name": "docker-compose.yml",
+                    "mimeType": "application/x-yaml",
+                    "buffer": yaml,
+                }
+            ]
+        )
         # After the fix to uploadCompose, the stacks list auto-refreshes once
         # the deploy returns — no manual re-nav needed.
         page.wait_for_selector(f"h4:has-text('{project}')", timeout=LONG)
@@ -304,8 +315,7 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
 
     assert not findings, f"Unexpected server stderr during J3:\n{chr(10).join(findings)}"
     try:
-        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}",
-                      headers=_auth_headers(), timeout=30)
+        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}", headers=_auth_headers(), timeout=30)
     except requests.exceptions.RequestException:
         pass
 
@@ -313,6 +323,7 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # J4 — Engine-unreachable helpful empty state, API-level sanity
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_j4_common_endpoints_reachable_no_error_warnings(live_server):
@@ -347,6 +358,7 @@ def test_j4_common_endpoints_reachable_no_error_warnings(live_server):
 # J5 — Resource-update cap enforcement and audit trail
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_j5_security_journey_cap_and_audit(live_server, docker_client):
     """Clone a container, try to exceed caps (400), succeed within caps (200).
@@ -360,13 +372,17 @@ def test_j5_security_journey_cap_and_audit(live_server, docker_client):
         # Cap exceeded → 400
         r = requests.post(
             f"{BASE_URL}/api/containers/{cid}/update",
-            headers=_auth_headers(), json={"memory": "8Gi"}, timeout=15,
+            headers=_auth_headers(),
+            json={"memory": "8Gi"},
+            timeout=15,
         )
         assert r.status_code == 400
         # Within cap → 200
         r = requests.post(
             f"{BASE_URL}/api/containers/{cid}/update",
-            headers=_auth_headers(), json={"memory": "128Mi"}, timeout=15,
+            headers=_auth_headers(),
+            json={"memory": "128Mi"},
+            timeout=15,
         )
         assert r.status_code == 200
 

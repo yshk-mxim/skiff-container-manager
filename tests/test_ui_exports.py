@@ -9,6 +9,7 @@ but forgot to update the exports" bug without requiring a browser.
 Deep interaction tests live in the e2e suite (Playwright) — they're the
 source of truth for runtime behaviour.
 """
+
 from __future__ import annotations
 
 import re
@@ -21,15 +22,29 @@ pytestmark = pytest.mark.unit
 _UI_PATH = Path(__file__).resolve().parent.parent / "skiff" / "static" / "ui.js"
 
 # Every factory added must be listed here so the test catches drift.
-_EXPECTED_EXPORTS: frozenset[str] = frozenset({
-    "el", "kvRow", "kvSection", "copy", "copyCmd", "copyBlock",
-    "modal", "toast", "helpIcon",
-    "form", "formModal", "table", "inspect",
-    "registerPage", "getPages", "getPage",
-    # i18n — `t` also exposed as a bare window global (see ui.js); the
-    # UI-namespaced form here is for call sites that prefer `UI.t(...)`.
-    "t",
-})
+_EXPECTED_EXPORTS: frozenset[str] = frozenset(
+    {
+        "el",
+        "kvRow",
+        "kvSection",
+        "copy",
+        "copyCmd",
+        "copyBlock",
+        "modal",
+        "toast",
+        "helpIcon",
+        "form",
+        "formModal",
+        "table",
+        "inspect",
+        "registerPage",
+        "getPages",
+        "getPage",
+        # i18n — `t` also exposed as a bare window global (see ui.js); the
+        # UI-namespaced form here is for call sites that prefer `UI.t(...)`.
+        "t",
+    }
+)
 
 
 def _ui_text() -> str:
@@ -78,9 +93,7 @@ class TestUIExports:
             # Match a function decl with that name preceded by a /** ... */ block
             pattern = rf"/\*\*(?:(?!\*/).)*?\*/\s*function\s+{re.escape(name)}\s*\("
             if not re.search(pattern, text, re.DOTALL):
-                raise AssertionError(
-                    f"ui.js factory {name!r} has no /** ... */ docstring"
-                )
+                raise AssertionError(f"ui.js factory {name!r} has no /** ... */ docstring")
 
     def test_no_uses_of_raw_innerhtml_in_widget_core(self) -> None:
         """Widgets must not use innerHTML with interpolated data.

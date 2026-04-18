@@ -23,6 +23,7 @@ Invariants tested:
   E. validate_image_registry: never accepts an image whose registry prefix isn't
      in _cfg.allowed_registries (case-insensitive).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -41,10 +42,8 @@ _VALID_MEM_SUFFIXES = ("", "k", "K", "Ki", "m", "M", "Mi", "g", "G", "Gi", "t", 
 
 # A decimal number with optional fractional part, matching the parser's regex.
 _mem_numbers = st.one_of(
-    st.integers(min_value=0, max_value=10 ** 12),
-    st.floats(min_value=0, max_value=1e12, allow_nan=False, allow_infinity=False).map(
-        lambda f: f"{f:.6f}"
-    ),
+    st.integers(min_value=0, max_value=10**12),
+    st.floats(min_value=0, max_value=1e12, allow_nan=False, allow_infinity=False).map(lambda f: f"{f:.6f}"),
 )
 
 
@@ -53,6 +52,7 @@ _mem_numbers = st.one_of(
 def test_memory_parser_accepts_all_valid_shapes(n, unit, whitespace):
     """Any `<number><unit>` with optional whitespace must parse to a non-negative int."""
     from skiff.validators import parse_memory_quantity
+
     s = f"{whitespace}{n}{unit}{whitespace}"
     result = parse_memory_quantity(s)
     assert isinstance(result, int)
@@ -67,6 +67,7 @@ def test_memory_parser_rejects_garbage_cleanly(garbage):
     import re
 
     from skiff.validators import parse_memory_quantity
+
     if re.fullmatch(r"\s*\d+(?:\.\d+)?\s*(?:[KMGT]i?|[kmgt])?\s*", garbage):
         return
     try:
@@ -78,10 +79,11 @@ def test_memory_parser_rejects_garbage_cleanly(garbage):
         pytest.fail(f"Memory parser raised {type(exc).__name__} on {garbage!r}; must be HTTPException(400) only")
 
 
-@given(a=st.integers(min_value=0, max_value=10 ** 12), b=st.integers(min_value=0, max_value=10 ** 12))
+@given(a=st.integers(min_value=0, max_value=10**12), b=st.integers(min_value=0, max_value=10**12))
 def test_memory_parser_monotonicity_on_bytes(a, b):
     """Parsing raw-byte integers preserves ordering (larger in → larger out)."""
     from skiff.validators import parse_memory_quantity
+
     ra, rb = parse_memory_quantity(a), parse_memory_quantity(b)
     assert (ra < rb) == (a < b)
 
@@ -90,17 +92,18 @@ def test_memory_parser_monotonicity_on_bytes(a, b):
 # B. CPU-quantity parser
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @given(
     n=st.one_of(
-        st.integers(min_value=0, max_value=10 ** 6),
-        st.floats(min_value=0, max_value=1e6, allow_nan=False, allow_infinity=False)
-            .map(lambda f: f"{f:.3f}"),
+        st.integers(min_value=0, max_value=10**6),
+        st.floats(min_value=0, max_value=1e6, allow_nan=False, allow_infinity=False).map(lambda f: f"{f:.3f}"),
     ),
     milli=st.sampled_from(["", "m"]),
 )
 @settings(max_examples=400, deadline=None)
 def test_cpu_parser_accepts_valid_shapes(n, milli):
     from skiff.validators import parse_cpu_quantity
+
     s = f"{n}{milli}"
     result = parse_cpu_quantity(s)
     assert result >= 0
@@ -112,6 +115,7 @@ def test_cpu_parser_rejects_garbage_cleanly(garbage):
     import re
 
     from skiff.validators import parse_cpu_quantity
+
     if re.fullmatch(r"\s*\d+(?:\.\d+)?\s*m?\s*", garbage):
         return
     try:
@@ -146,6 +150,7 @@ def test_tmpfs_never_raises_non_http_exception(path, opts):
     """The validator must only throw HTTPException(400) — catching AttributeError
     or TypeError would leak 500s to an authenticated user."""
     from skiff.validators import _validate_tmpfs
+
     try:
         _validate_tmpfs({path: opts}, 10, 512)
     except HTTPException as exc:
@@ -172,6 +177,7 @@ def test_tmpfs_blocked_paths_always_rejected(base, suffix):
     the explicit blocklist so every generated case is in the sensitive space.
     """
     from skiff.validators import _validate_tmpfs
+
     path = base if base == "/" else base + suffix
     with pytest.raises(HTTPException) as exc:
         _validate_tmpfs({path: "rw"}, 10, 512)
@@ -194,6 +200,7 @@ def test_container_name_rejects_any_shell_metachar(name):
     any future shell-based integration must fail-closed.
     """
     from skiff.validators import validate_container_name
+
     if any(c in _SHELL_METACHARS for c in name):
         with pytest.raises(HTTPException) as exc:
             validate_container_name(name)
@@ -205,6 +212,7 @@ def test_container_name_rejects_any_shell_metachar(name):
 def test_project_name_rejects_path_traversal(name):
     """Project name containing .. or / must be rejected."""
     from skiff.validators import validate_project_name
+
     if ".." in name or "/" in name or "\\" in name:
         with pytest.raises(HTTPException):
             validate_project_name(name)
@@ -213,6 +221,7 @@ def test_project_name_rejects_path_traversal(name):
 # ─────────────────────────────────────────────────────────────────────────────
 # E. Image registry allowlist — case-insensitive exact-prefix match
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @given(
     image=st.text(min_size=1, max_size=200),
@@ -228,6 +237,7 @@ def test_image_registry_allowlist(image, allowed):
     """
     import skiff.config as config_module
     from skiff.validators import IMAGE_TAG_RE, validate_image_registry
+
     original = config_module._cfg.allowed_registries
     config_module._cfg.allowed_registries = list(allowed)
     try:
@@ -237,6 +247,12 @@ def test_image_registry_allowlist(image, allowed):
         # validator's exact behaviour (plain .match accepts trailing
         # characters like newlines which the validator rejects).
         if not IMAGE_TAG_RE.fullmatch(image):
+            return
+        # Validator also rejects malformed-ref shapes (trailing `:`/`@`,
+        # `::` or `:@` doublings) before the allowlist check. Mirror
+        # that here so the allowlist property only covers well-formed
+        # refs — the shape guard has its own dedicated test.
+        if image.endswith((":", "@")) or ":@" in image or "::" in image:
             return
         image_lower = image.lower()
         try:
@@ -263,8 +279,9 @@ def test_image_registry_allowlist(image, allowed):
         else:
             # Bare name → docker.io implicit
             expected = any(a.rstrip("/").lower() == "docker.io" for a in allowed)
-        assert accepted == expected, \
+        assert accepted == expected, (
             f"Registry allowlist inconsistent for {image!r} vs {allowed!r}: accepted={accepted} expected={expected}"
+        )
     finally:
         config_module._cfg.allowed_registries = original
 
@@ -274,10 +291,27 @@ def test_image_registry_allowlist(image, allowed):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _FORBIDDEN_COMPOSE_KEYS = [
-    "privileged", "cap_add", "devices", "build", "configs", "secrets",
-    "volumes_from", "extends", "env_file", "cgroup_parent", "dns",
-    "dns_search", "extra_hosts", "tmpfs", "userns_mode", "sysctls",
-    "security_opt", "shm_size", "uts", "cgroupns_mode", "storage_opt",
+    "privileged",
+    "cap_add",
+    "devices",
+    "build",
+    "configs",
+    "secrets",
+    "volumes_from",
+    "extends",
+    "env_file",
+    "cgroup_parent",
+    "dns",
+    "dns_search",
+    "extra_hosts",
+    "tmpfs",
+    "userns_mode",
+    "sysctls",
+    "security_opt",
+    "shm_size",
+    "uts",
+    "cgroupns_mode",
+    "storage_opt",
     "device_cgroup_rules",
 ]
 
@@ -286,12 +320,8 @@ _FORBIDDEN_COMPOSE_KEYS = [
 def test_compose_rejects_every_known_dangerous_key(forbidden_key):
     """Every key in the sandbox blocklist must actually block deploys when present."""
     from skiff.validators import validate_compose_file
-    yaml_body = (
-        f"services:\n"
-        f"  web:\n"
-        f"    image: docker.io/library/nginx:latest\n"
-        f"    {forbidden_key}: true\n"
-    ).encode()
+
+    yaml_body = (f"services:\n  web:\n    image: docker.io/library/nginx:latest\n    {forbidden_key}: true\n").encode()
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(yaml_body)
     assert exc.value.status_code == 400
@@ -307,10 +337,11 @@ def test_compose_bomb_bounded_by_safe_load(depth):
     the alias-expanded structure contains a forbidden key or fails schema.
     """
     from skiff.validators import validate_compose_file
+
     yaml_body = (
         "services:\n  web:\n    image: alpine:latest\n"
-        + "    labels:\n" + ("      "
-        + "&a [*a]\n" * min(depth, 5))  # small nesting — don't actually try the bomb
+        + "    labels:\n"
+        + ("      " + "&a [*a]\n" * min(depth, 5))  # small nesting — don't actually try the bomb
     ).encode()
     try:
         validate_compose_file(yaml_body)

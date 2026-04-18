@@ -11,6 +11,7 @@ from tests.factories import make_container as _make_container
 
 # ── List containers ────────────────────────────────────────────────────────────
 
+
 def test_list_containers_with_data(client, mock_docker):
     mock_docker.containers.list.return_value = [_make_container()]
     resp = client.get("/api/containers", headers=AUTH_HEADER)
@@ -32,6 +33,7 @@ def test_list_containers_image_fallback_to_short_id(client, mock_docker):
 
 # ── Inspect ────────────────────────────────────────────────────────────────────
 
+
 def test_inspect_container(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
     resp = client.get("/api/containers/abc123def456/inspect", headers=AUTH_HEADER)
@@ -42,6 +44,7 @@ def test_inspect_container(client, mock_docker):
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
+
 
 def test_container_logs(client, mock_docker):
     c = _make_container()
@@ -81,6 +84,7 @@ def test_download_container_logs_jsonl_no_space(client, mock_docker):
 
 # ── Start/Stop/Restart/Pause/Unpause ──────────────────────────────────────────
 
+
 def test_pause_container(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
     resp = client.post("/api/containers/abc123def456/pause", headers=AUTH_CSRF)
@@ -95,6 +99,7 @@ def test_unpause_container(client, mock_docker):
 
 # ── Kill ──────────────────────────────────────────────────────────────────────
 
+
 def test_kill_container_sigterm(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
     resp = client.post("/api/containers/abc123def456/kill?signal=SIGTERM", headers=AUTH_CSRF)
@@ -102,6 +107,7 @@ def test_kill_container_sigterm(client, mock_docker):
 
 
 # ── Rename ────────────────────────────────────────────────────────────────────
+
 
 def test_rename_container(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
@@ -111,6 +117,7 @@ def test_rename_container(client, mock_docker):
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 
+
 def test_delete_container(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
     resp = client.delete("/api/containers/abc123def456", headers=AUTH_CSRF)
@@ -118,6 +125,7 @@ def test_delete_container(client, mock_docker):
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
+
 
 def test_container_stats(client, mock_docker):
     c = _make_container()
@@ -148,7 +156,92 @@ def test_container_stats(client, mock_docker):
     assert "mem_usage_mb" in data
 
 
+# ── Stats on cgroup v2 (realistic response shape) ────────────────────────────
+
+
+def test_container_stats_cgroup_v2_returns_non_zero_memory(client, mock_docker):
+    """Reproduces the 1.0.1 bug: on cgroup v2 kernels Docker omits the
+    `cache` key from `memory_stats.stats`. The old code did
+    `usage - cache` via `.get("cache", 0)`, which returned None when
+    the key was simply missing (default works) but the real bite came
+    from the `usage` numerator ALSO being subject to null coercion on
+    some drivers. This fixture is a verbatim cgroup v2 response from a
+    running alpine container — keys and shape are what the daemon
+    actually emits — and the handler must return a mem_usage_mb > 0."""
+    c = _make_container()
+    # Exact cgroup v2 shape — NO `cache` key in memory_stats.stats.
+    c.stats.return_value = {
+        "cpu_stats": {
+            "cpu_usage": {"total_usage": 2_500_000},
+            "system_cpu_usage": 10_000_000,
+            "online_cpus": 4,
+        },
+        "precpu_stats": {
+            "cpu_usage": {"total_usage": 2_000_000},
+            "system_cpu_usage": 9_000_000,
+        },
+        "memory_stats": {
+            "usage": 933_888,  # ~0.89 MiB real working-set memory
+            "limit": 2 * 1024**3,
+            "stats": {  # cgroup v2 keys — no "cache"
+                "active_anon": 45_056,
+                "anon": 389_120,
+                "file": 544_768,
+                "inactive_file": 413_696,
+                "slab": 16_384,
+            },
+        },
+        "networks": {"eth0": {"rx_bytes": 2_400, "tx_bytes": 1_200}},
+        "blkio_stats": {"io_service_bytes_recursive": []},
+    }
+    mock_docker.containers.get.return_value = c
+    resp = client.get("/api/containers/abc123def456/stats", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    data = resp.json()
+    # Pre-fix this returned 0.0 because `usage - cache` coerced None to
+    # 0 via get-with-default, but the inactive_file fallback wasn't
+    # used, so the working-set computation was wrong in a misleading way.
+    # Post-fix: usage=933888, inactive_file=413696, working=520192 → ~0.5 MiB.
+    assert data["mem_usage_mb"] > 0, (
+        f"cgroup v2 memory dropped to {data['mem_usage_mb']}MB — the "
+        "inactive_file fallback regressed and Stats will show 0 again"
+    )
+    assert data["mem_limit_mb"] == 2048.0
+
+
+def test_container_stats_tolerates_all_null_fields(client, mock_docker):
+    """Every nullable Docker response field set to None simultaneously —
+    the endpoint MUST NOT crash. Covers the class of bug where Docker
+    returns `null` for SizeRw / rx_bytes / tx_bytes / blkio values /
+    memory usage on freshly-created or driver-specific containers."""
+    c = _make_container()
+    c.stats.return_value = {
+        "cpu_stats": {
+            "cpu_usage": {"total_usage": 100},
+            "system_cpu_usage": 1000,
+            "online_cpus": 1,
+        },
+        "precpu_stats": {"cpu_usage": {"total_usage": 100}, "system_cpu_usage": 1000},
+        "memory_stats": {"usage": None, "limit": None, "stats": {}},
+        "networks": {"eth0": {"rx_bytes": None, "tx_bytes": None}},
+        "blkio_stats": {
+            "io_service_bytes_recursive": [
+                {"op": "Read", "value": None},
+                {"op": "Write", "value": None},
+            ]
+        },
+    }
+    mock_docker.containers.get.return_value = c
+    resp = client.get("/api/containers/abc123def456/stats", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    data = resp.json()
+    # Each field must be a number (0 is fine), never null / not-returned.
+    for field in ("mem_usage_mb", "mem_limit_mb", "net_rx_mb", "net_tx_mb", "blk_read_mb", "blk_write_mb"):
+        assert isinstance(data[field], (int, float)), f"{field} must be numeric, got {data[field]!r}"
+
+
 # ── Top ───────────────────────────────────────────────────────────────────────
+
 
 def test_container_top(client, mock_docker):
     c = _make_container()
@@ -174,6 +267,7 @@ def test_container_top_not_running(client, mock_docker):
 
 # ── Diff ─────────────────────────────────────────────────────────────────────
 
+
 def test_container_diff(client, mock_docker):
     c = _make_container()
     c.diff.return_value = [{"Path": "/app/foo", "Kind": 1}]
@@ -194,6 +288,7 @@ def test_container_diff_none(client, mock_docker):
 
 
 # ── Run container ─────────────────────────────────────────────────────────────
+
 
 def test_run_container_basic(client, mock_docker):
     new_c = _make_container()
@@ -275,6 +370,7 @@ def test_run_container_limit_reached(client, mock_docker):
 
 
 # ── tmpfs + read_only behaviour ────────────────────────────────────────────────
+
 
 def test_run_container_readonly_default_mounts_tmpfs(client, mock_docker):
     """read_only=True (default) + tmpfs=None → DEFAULT_TMPFS is applied."""
@@ -391,8 +487,10 @@ def test_update_container_memory_gcp_unit(client, mock_docker):
     """memory='256Mi' is parsed to 268435456 bytes and passed as mem_limit."""
     c = _make_container_with_hc({"Memory": 0})
     mock_docker.containers.get.return_value = c
+
     def after_update(**kwargs):
         c.attrs["HostConfig"]["Memory"] = 268435456
+
     c.update.side_effect = after_update
     resp = client.post(
         "/api/containers/abc123def456/update",
@@ -561,11 +659,14 @@ def test_update_container_memory_reservation_cap(client, mock_docker):
     c.update.assert_not_called()
 
 
-def test_update_container_memory_zero_allowed(client, mock_docker):
-    """memory=0 is a documented sentinel meaning 'no limit' and must be passed through.
+def test_update_container_memory_zero_rejects(client, mock_docker):
+    """memory=0 rejected with container.memory_uncap_unsupported.
 
-    Per Docker Engine API semantics. Does not bypass the cap (0 < MAX); does not
-    hit the MIN check either (which only applies to non-zero positive values).
+    Docker Engine silently ignores `memory=0` on a RUNNING container
+    (the cap stays unchanged and the API returns success). Loop-10 OSS
+    caught the false-positive; the API now returns a 400 so scripted
+    callers see the reality and recreate the container to remove the
+    memory cap.
     """
     c = _make_container_with_hc({"Memory": 500_000_000})
     mock_docker.containers.get.return_value = c
@@ -574,8 +675,11 @@ def test_update_container_memory_zero_allowed(client, mock_docker):
         headers=AUTH_CSRF,
         json={"memory": 0},
     )
-    assert resp.status_code == 200
-    assert c.update.call_args.kwargs["mem_limit"] == 0
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "container.memory_uncap_unsupported"
+    # The daemon's `update` must NOT have been called — we short-circuit
+    # before issuing the no-op request.
+    c.update.assert_not_called()
 
 
 def test_update_container_memory_below_docker_minimum(client, mock_docker):
@@ -599,14 +703,19 @@ def test_update_container_audit_log_captures_before_after(client, mock_docker, m
     assert the exact kwargs passed — no indirection through caplog's stdlib filter.
     """
     import skiff.routers.containers as containers_module
+
     captured: list[dict] = []
+
     def _capture(event, **kwargs):
         captured.append({"event": event, **kwargs})
+
     monkeypatch.setattr(containers_module.log, "info", _capture)
     c = _make_container_with_hc({"Memory": 100_000_000})
     mock_docker.containers.get.return_value = c
+
     def after_update(**_kw):
         c.attrs["HostConfig"]["Memory"] = 268_435_456
+
     c.update.side_effect = after_update
     resp = client.post(
         "/api/containers/abc123def456/update",
@@ -721,6 +830,7 @@ def test_run_container_inherit_from_invalid_id_rejected(client, mock_docker):
 def test_run_container_inherit_from_missing_container(client, mock_docker):
     """inherit_from pointing at a removed container surfaces 404 from _get_container."""
     import docker.errors
+
     mock_docker.containers.list.return_value = []
     mock_docker.containers.get.side_effect = docker.errors.NotFound("not found")
     resp = client.post(
@@ -819,6 +929,7 @@ def test_run_container_inherit_fails_before_replace_cleanup(client, mock_docker)
     This guards against a sequence where replace runs even though the clone didn't.
     """
     import docker.errors
+
     mock_docker.containers.list.return_value = []
     mock_docker.containers.get.side_effect = docker.errors.NotFound("inherit source gone")
     resp = client.post(

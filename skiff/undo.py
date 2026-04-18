@@ -18,6 +18,7 @@ Security + correctness invariants:
   caller, which falls back to synchronous execution — fail-closed,
   never silently dropped.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -26,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import docker.errors
 import structlog
 
 from skiff import config
@@ -36,9 +38,9 @@ log = structlog.get_logger(__name__)
 @dataclass
 class _PendingOp:
     token: str
-    kind: str                # "container" | "image" | "volume"
-    resource_id: str         # short id / name for audit log
-    fn: Callable[..., Any]   # the Docker SDK call to perform on firing
+    kind: str  # "container" | "image" | "volume"
+    resource_id: str  # short id / name for audit log
+    fn: Callable[..., Any]  # the Docker SDK call to perform on firing
     args: tuple = ()
     kwargs: dict = field(default_factory=dict)
     timer: threading.Timer | None = None
@@ -57,8 +59,12 @@ class UndoQueue:
         self._fire_failures: int = 0
 
     def enqueue(
-        self, kind: str, resource_id: str,
-        fn: Callable[..., Any], *args: Any, **kwargs: Any,
+        self,
+        kind: str,
+        resource_id: str,
+        fn: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
     ) -> str | None:
         """Schedule `fn(*args, **kwargs)` to run after the undo window elapses.
 
@@ -71,15 +77,13 @@ class UndoQueue:
             if len(self._ops) >= config.UNDO_QUEUE_MAX_DEPTH:
                 log.warning("undo.queue_full", depth=len(self._ops), kind=kind)
                 return None
-            op = _PendingOp(token=token, kind=kind, resource_id=resource_id,
-                            fn=fn, args=args, kwargs=kwargs)
+            op = _PendingOp(token=token, kind=kind, resource_id=resource_id, fn=fn, args=args, kwargs=kwargs)
             t = threading.Timer(self._delay, self._fire, args=(token,))
             t.daemon = True
             op.timer = t
             self._ops[token] = op
         t.start()
-        log.info("undo.enqueued", token_suffix=token[-6:], kind=kind, id=resource_id,
-                 expires_in=self._delay)
+        log.info("undo.enqueued", token_suffix=token[-6:], kind=kind, id=resource_id, expires_in=self._delay)
         return token
 
     def _fire(self, token: str) -> None:
@@ -89,6 +93,20 @@ class UndoQueue:
         if op is None:
             return  # cancelled between timer schedule and fire
         op.fired = True
+        # Reviewer-mode gate: the queueing request's authority has been
+        # demoted since it was scheduled. Honouring a pending destroy
+        # would surface a mutation to a reviewer AFTER the read-only
+        # switch visibly took effect. Skip the op, log for audit.
+        import skiff.config as _config_module
+
+        if _config_module.PROFILE == "reviewer":
+            log.warning(
+                "undo.cancelled_by_reviewer",
+                token_suffix=token[-6:],
+                kind=op.kind,
+                id=op.resource_id,
+            )
+            return
         # Intentionally broad: this runs on a Timer thread after the client
         # has already received 200. Any unhandled exception would crash the
         # thread and leave the undo op silently dropped with no audit trail.
@@ -97,14 +115,24 @@ class UndoQueue:
         try:
             op.fn(*op.args, **op.kwargs)
             log.info("undo.fired", token_suffix=token[-6:], kind=op.kind, id=op.resource_id)
+        except docker.errors.NotFound:
+            # The target resource was already gone by the time the
+            # timer fired (external delete, rebuild, GC). That's the
+            # desired end-state for an undo-delete, not a failure —
+            # don't bump fire_failures or poison /ready.
+            log.info(
+                "undo.fired_already_gone",
+                token_suffix=token[-6:],
+                kind=op.kind,
+                id=op.resource_id,
+            )
         except Exception as exc:
             # A failed fire leaves the resource in an unknown state. Bump a
             # process-local counter so the health endpoint can surface the
             # failure count without having to tail the audit log.
             with self._lock:
                 self._fire_failures += 1
-            log.error("undo.fire_failed", token_suffix=token[-6:], kind=op.kind,
-                      id=op.resource_id, error=str(exc))
+            log.error("undo.fire_failed", token_suffix=token[-6:], kind=op.kind, id=op.resource_id, error=str(exc))
 
     def cancel(self, token: str) -> bool:
         """Cancel a pending op. Returns True if there was something to cancel."""
@@ -146,6 +174,14 @@ class UndoQueue:
         for op in pending:
             if op.timer is not None:
                 op.timer.cancel()
+            # Double-fire guard: the Timer may have already fired
+            # `_fire` in a narrow window after our snapshot. `op.fired`
+            # is set under the `_lock` by `_fire` before the callable
+            # runs; checking it here prevents running `op.fn` twice
+            # on the same op.
+            if op.fired:
+                continue
+            op.fired = True
             # Intentionally broad: test/shutdown helper. One failing op must
             # not block the rest. Errors go to `undo.fire_failed` at the
             # natural catch site.
@@ -153,15 +189,26 @@ class UndoQueue:
                 op.fn(*op.args, **op.kwargs)
                 log.info(
                     "undo.fired_on_shutdown",
-                    token_suffix=op.token[-6:], kind=op.kind, id=op.resource_id,
+                    token_suffix=op.token[-6:],
+                    kind=op.kind,
+                    id=op.resource_id,
+                )
+            except docker.errors.NotFound:
+                log.info(
+                    "undo.fired_already_gone",
+                    token_suffix=op.token[-6:],
+                    kind=op.kind,
+                    id=op.resource_id,
                 )
             except Exception as exc:
                 with self._lock:
                     self._fire_failures += 1
                 log.error(
                     "undo.fire_failed",
-                    token_suffix=op.token[-6:], kind=op.kind,
-                    id=op.resource_id, error=str(exc),
+                    token_suffix=op.token[-6:],
+                    kind=op.kind,
+                    id=op.resource_id,
+                    error=str(exc),
                 )
 
 

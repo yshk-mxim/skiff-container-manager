@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Unit tests for the setup wizard endpoints (/api/setup-state, /api/setup, /api/setup/tunnel)."""
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,8 @@ import skiff.routers.setup as _setup_mod
 def _as_loopback(monkeypatch):
     """Include starlette TestClient's `testclient` sentinel as loopback."""
     monkeypatch.setattr(
-        _setup_mod, "_LOOPBACK_HOSTS",
+        _setup_mod,
+        "_LOOPBACK_HOSTS",
         frozenset({*_setup_mod._LOOPBACK_HOSTS, "testclient"}),
     )
 
@@ -61,6 +63,89 @@ def test_setup_state_unconfigured(client, monkeypatch):
     assert data["from_env"] is False
     assert "tunnel_active" in data
     assert "tunnel_socket" in data
+    # Window-expiry timers let the wizard paint a live countdown + an
+    # "expired" banner without needing a second round-trip.
+    assert data["window_open"] is True
+    assert isinstance(data["window_expires_in"], int)
+    assert data["window_expires_in"] >= 0
+    assert data["lockout_remaining_secs"] is None
+
+
+def test_setup_state_includes_window_fields_for_non_loopback(client, monkeypatch):
+    """Network-reachable callers get the window-expiry fields but not
+    the tunnel-socket path (reserved for loopback). Timers aren't secret."""
+
+    class _FakeClient:
+        host = "10.0.0.1"
+
+    def _patch_request(fn):
+        orig = fn.__globals__["setup_state"]
+
+        def wrapper(request):
+            request._client = _FakeClient()  # type: ignore[attr-defined]
+            return orig(request)
+
+        return wrapper
+
+    # Direct handler call with a stubbed request avoids plumbing a network
+    # IP through TestClient. Validates the same code path the wizard hits.
+    from starlette.requests import Request
+
+    import skiff.routers.setup as _setup_module
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/setup-state",
+        "client": ("10.0.0.1", 54321),
+        "headers": [],
+    }
+    resp = _setup_module.setup_state(Request(scope))
+    assert resp["configured"] is False
+    assert resp["window_open"] is True
+    assert isinstance(resp["window_expires_in"], int)
+    assert resp["lockout_remaining_secs"] is None
+    # Non-loopback caller: tunnel path MUST NOT leak.
+    assert "tunnel_socket" not in resp
+    assert "tunnel_active" not in resp
+
+
+def test_setup_state_reports_lockout_remaining(client, monkeypatch):
+    """After three failed /api/setup posts from the caller's IP, the
+    setup-state endpoint surfaces the remaining lockout seconds so the
+    wizard can paint a banner immediately (before the next POST fails)."""
+    import skiff.routers.setup as _setup_module
+
+    _as_loopback(monkeypatch)
+    _setup_module._setup_failures.clear()
+    # Simulate three failures from the loopback IP used by TestClient.
+    import time as _time
+
+    _setup_module._setup_failures["testclient"] = (
+        _setup_module.config.SETUP_MAX_ATTEMPTS,
+        _time.monotonic(),
+    )
+    try:
+        r = client.get("/api/setup-state")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data["lockout_remaining_secs"], int)
+        assert data["lockout_remaining_secs"] > 0
+    finally:
+        _setup_module._setup_failures.clear()
+
+
+def test_config_reports_ws_lockout_remaining(client):
+    """/api/config carries ws_auth_locked_remaining_secs so the UI can
+    paint a banner on page load when a prior tab tripped the lockout.
+
+    In this fixture api_token is "" so auth is disabled — the field is
+    always emitted regardless of the caller's IP, defaulting to 0 when
+    not locked out.
+    """
+    r = client.get("/api/config", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json().get("ws_auth_locked_remaining_secs") == 0
 
 
 def test_setup_state_configured(client, monkeypatch):
@@ -82,12 +167,17 @@ def test_setup_state_from_env(client, monkeypatch):
 
 # ── /api/setup ────────────────────────────────────────────────────────────
 
+
 def test_setup_success(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "a" * 16,
-        "allowed_registries": "docker.io,ghcr.io",
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "a" * 16,
+            "allowed_registries": "docker.io,ghcr.io",
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert config_module._cfg.api_token == "a" * 16
@@ -96,52 +186,139 @@ def test_setup_success(client):
 
 
 def test_setup_token_too_short(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "short",
-        "allowed_registries": "",
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "short",
+            "allowed_registries": "",
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 400
     assert "16" in r.json()["detail"]["message"]
 
 
+def test_setup_token_too_long_rejected():
+    """Tokens longer than _MAX_TOKEN_LENGTH (512) must be refused — defends
+    against a pathological upload that would try to DoS HMAC compare paths
+    or bloat audit lines. The rejection path also ensures the per-IP
+    failure counter increments so a scripted enumeration doesn't sidestep
+    the lockout."""
+    from fastapi.testclient import TestClient
+
+    from app import app
+    from skiff import config as config_module
+    from skiff.routers import setup as setup_module
+
+    original_token = config_module._cfg.api_token
+    config_module._cfg.api_token = ""  # first-boot window
+    setup_module._setup_failures.clear()
+    try:
+        with TestClient(app, raise_server_exceptions=True) as tc:
+            r = tc.post(
+                "/api/setup",
+                json={
+                    "docker_host": "unix:///var/run/docker.sock",
+                    "api_token": "a" * (setup_module._MAX_TOKEN_LENGTH + 1),
+                    "allowed_registries": "",
+                },
+                headers=CSRF,
+            )
+            assert r.status_code == 400
+            assert "at most 512" in r.json()["detail"]["message"]
+    finally:
+        config_module._cfg.api_token = original_token
+        setup_module._setup_failures.clear()
+
+
+def test_setup_token_bad_charset_rejected():
+    """Tokens containing non-allowed characters (whitespace, shell
+    metacharacters) must be refused with a `setup.token_bad_charset`
+    envelope — keeps audit / log parsing contract clean and rejects an
+    obvious copy-paste error before the token lands in `_cfg`."""
+    from fastapi.testclient import TestClient
+
+    from app import app
+    from skiff import config as config_module
+    from skiff.routers import setup as setup_module
+
+    original_token = config_module._cfg.api_token
+    config_module._cfg.api_token = ""
+    setup_module._setup_failures.clear()
+    try:
+        with TestClient(app, raise_server_exceptions=True) as tc:
+            r = tc.post(
+                "/api/setup",
+                json={
+                    "docker_host": "unix:///var/run/docker.sock",
+                    # 16+ char token, but contains space — bad charset.
+                    "api_token": "abcdefghij klmnop",
+                    "allowed_registries": "",
+                },
+                headers=CSRF,
+            )
+            assert r.status_code == 400
+            assert r.json()["detail"]["code"] == "setup.token_bad_charset"
+    finally:
+        config_module._cfg.api_token = original_token
+        setup_module._setup_failures.clear()
+
+
 def test_setup_missing_docker_host(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "",
-        "api_token": "a" * 16,
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "",
+            "api_token": "a" * 16,
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 400
 
 
 def test_setup_disabled_when_from_env(client, monkeypatch):
     monkeypatch.setattr(config_module._cfg, "from_env", True)
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "a" * 16,
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "a" * 16,
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 403
 
 
 def test_setup_disabled_when_already_configured(client, monkeypatch):
     monkeypatch.setattr(config_module._cfg, "api_token", "already-configured-token")
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "new-token-16chars",
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "new-token-16chars",
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 403
 
 
 def test_setup_empty_registries_allowed(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "a" * 16,
-        "allowed_registries": "",
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "a" * 16,
+            "allowed_registries": "",
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 200
     assert config_module._cfg.allowed_registries == []
 
 
 # ── /api/setup/tunnel ─────────────────────────────────────────────────────
+
 
 def test_tunnel_invalid_target(client):
     r = client.post("/api/setup/tunnel", json={"ssh_target": "not-valid"}, headers=CSRF)
@@ -153,10 +330,14 @@ def test_tunnel_extra_fields_ignored(client, monkeypatch):
     """Unknown fields in the JSON body are silently ignored — server always uses its
     own constant socket path, so socket_path in the body has no effect."""
     monkeypatch.setattr(docker_client_module, "_start_tunnel", lambda *_: None)
-    r = client.post("/api/setup/tunnel", json={
-        "ssh_target": "user@host",
-        "socket_path": "/etc/evil",  # ignored — server uses TUNNEL_DEFAULT_SOCKET
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup/tunnel",
+        json={
+            "ssh_target": "user@host",
+            "socket_path": "/etc/evil",  # ignored — server uses TUNNEL_DEFAULT_SOCKET
+        },
+        headers=CSRF,
+    )
     # _start_tunnel returns None (no error) → endpoint returns 200, not 400
     assert r.status_code == 200
 
@@ -176,8 +357,10 @@ def test_tunnel_disabled_when_configured(client, monkeypatch):
 def test_tunnel_start_success(client, monkeypatch):
     # Mock _start_tunnel — it now takes only ssh_target; socket path is internal constant.
     started = []
+
     def fake_start(ssh_target):
         started.append(ssh_target)
+
     monkeypatch.setattr(docker_client_module, "_start_tunnel", fake_start)
     r = client.post("/api/setup/tunnel", json={"ssh_target": "user@myhost"}, headers=CSRF)
     assert r.status_code == 200
@@ -189,6 +372,7 @@ def test_tunnel_start_success(client, monkeypatch):
 def test_tunnel_start_failure(client, monkeypatch):
     def fake_start(ssh_target):
         raise docker_client_module.TunnelError("SSH failed: Connection refused")
+
     monkeypatch.setattr(docker_client_module, "_start_tunnel", fake_start)
     r = client.post("/api/setup/tunnel", json={"ssh_target": "user@badhost"}, headers=CSRF)
     assert r.status_code == 502
@@ -205,12 +389,14 @@ def test_tunnel_start_failure(client, monkeypatch):
 def test_tunnel_start_classified_auth_failure(client, monkeypatch):
     """TunnelError with code=auth_failed surfaces to the client for UI guidance."""
     from skiff.docker_client import TunnelError
+
     def fake_start(ssh_target):
         raise TunnelError(
             "SSH failed: Permission denied (publickey)",
             "auth_failed",
             "Your SSH key isn't installed on the remote host.",
         )
+
     monkeypatch.setattr(docker_client_module, "_start_tunnel", fake_start)
     r = client.post("/api/setup/tunnel", json={"ssh_target": "user@host"}, headers=CSRF)
     assert r.status_code == 502
@@ -237,6 +423,7 @@ def test_setup_state_reflects_tunnel(client, monkeypatch):
     data reaches os.path.exists (CodeQL path-injection defence).
     """
     from pathlib import Path as _Path
+
     _as_loopback(monkeypatch)
     # Create the socket directly under the resolved /tmp so that setup_state's
     # basename-only reconstruction points to the same file on both Linux and macOS
@@ -254,11 +441,15 @@ def test_setup_state_reflects_tunnel(client, monkeypatch):
 
 # ── Security: CSRF required on setup endpoints ────────────────────────────
 
+
 def test_setup_requires_csrf(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "unix:///var/run/docker.sock",
-        "api_token": "a" * 16,
-    })  # No X-Requested-With header
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "unix:///var/run/docker.sock",
+            "api_token": "a" * 16,
+        },
+    )  # No X-Requested-With header
     assert r.status_code == 403
 
 
@@ -274,28 +465,41 @@ def test_tunnel_stop_requires_csrf(client):
 
 # ── Security: docker_host validation ─────────────────────────────────────
 
+
 def test_setup_rejects_hostname_tcp(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "tcp://evil.example.com:2375",
-        "api_token": "a" * 16,
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "tcp://evil.example.com:2375",
+            "api_token": "a" * 16,
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 400
     assert "IP address" in r.json()["detail"]["message"]
 
 
 def test_setup_accepts_ip_tcp(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "tcp://127.0.0.1:2375",
-        "api_token": "a" * 16,
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "tcp://127.0.0.1:2375",
+            "api_token": "a" * 16,
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 200
 
 
 def test_setup_rejects_http_scheme(client):
-    r = client.post("/api/setup", json={
-        "docker_host": "http://127.0.0.1:8080",
-        "api_token": "a" * 16,
-    }, headers=CSRF)
+    r = client.post(
+        "/api/setup",
+        json={
+            "docker_host": "http://127.0.0.1:8080",
+            "api_token": "a" * 16,
+        },
+        headers=CSRF,
+    )
     assert r.status_code == 400
     assert "scheme" in r.json()["detail"]["message"]
 
@@ -322,7 +526,8 @@ def test_tunnel_status_unmanaged_when_no_target(client, monkeypatch):
     CI machine that happens to have /var/run/docker.sock."""
     _configure(monkeypatch)
     monkeypatch.setattr(
-        config_module._cfg, "docker_host",
+        config_module._cfg,
+        "docker_host",
         "unix:///tmp/skiff-definitely-does-not-exist.sock",
     )
     r = client.get("/api/tunnel/status", headers=_AUTH_CSRF)
@@ -352,8 +557,7 @@ def test_tunnel_reconnect_requires_auth(client, monkeypatch):
 def test_tunnel_reconnect_requires_csrf(client, monkeypatch):
     _configure(monkeypatch)
     # Auth but no CSRF header
-    r = client.post("/api/tunnel/reconnect",
-                    headers={"Authorization": _AUTH_CSRF["Authorization"]})
+    r = client.post("/api/tunnel/reconnect", headers={"Authorization": _AUTH_CSRF["Authorization"]})
     assert r.status_code == 403
 
 
@@ -375,7 +579,8 @@ def test_tunnel_reconnect_manual_tunnel_socket_missing(client, monkeypatch):
     the exact socket path to revive with `ssh -fNL`."""
     _configure(monkeypatch)
     monkeypatch.setattr(
-        config_module._cfg, "docker_host",
+        config_module._cfg,
+        "docker_host",
         "unix:///tmp/skiff-definitely-does-not-exist.sock",
     )
     r = client.post("/api/tunnel/reconnect", headers=_AUTH_CSRF)
@@ -393,9 +598,7 @@ def test_tunnel_reconnect_reuses_stored_target(client, monkeypatch):
     monkeypatch.setattr(docker_client_module, "_start_tunnel", called_with.append)
     monkeypatch.setattr(docker_client_module, "invalidate_client", lambda: None)
     # Attempt to poison with a client-supplied target — it must be ignored.
-    r = client.post("/api/tunnel/reconnect",
-                    json={"ssh_target": "attacker@evil"},
-                    headers=_AUTH_CSRF)
+    r = client.post("/api/tunnel/reconnect", json={"ssh_target": "attacker@evil"}, headers=_AUTH_CSRF)
     assert r.status_code == 200
     assert called_with == ["user@host"]
 
@@ -404,9 +607,10 @@ def test_tunnel_reconnect_surfaces_classified_error(client, monkeypatch):
     _configure(monkeypatch)
     monkeypatch.setattr(docker_client_module, "_tunnel_ssh_target", "user@host")
     from skiff.docker_client import TunnelError
+
     def fake_start(t):
-        raise TunnelError("SSH failed: Permission denied (publickey)",
-                          "auth_failed", "Install your key.")
+        raise TunnelError("SSH failed: Permission denied (publickey)", "auth_failed", "Install your key.")
+
     monkeypatch.setattr(docker_client_module, "_start_tunnel", fake_start)
     r = client.post("/api/tunnel/reconnect", headers=_AUTH_CSRF)
     assert r.status_code == 502
@@ -487,9 +691,12 @@ def test_rotate_token_does_not_log_token_value(client, monkeypatch):
     """CRITICAL: audit entry must NOT contain the token value, only the suffix."""
     _configure(monkeypatch)
     captured: list[dict] = []
+
     def _capture(event, **kwargs):
         captured.append({"event": event, **kwargs})
+
     import skiff.routers.setup as setup_module
+
     monkeypatch.setattr(setup_module.log, "info", _capture)
     secret = "verysensitivetoken-42chars-needs-guard"
     r = client.post(
@@ -553,6 +760,7 @@ def test_reset_config_reopens_setup_window(client, monkeypatch):
     import time as time_module
 
     import skiff.config as config_module
+
     old_start = time_module.monotonic() - 10_000
     monkeypatch.setattr(config_module, "APP_START_MONOTONIC", old_start)
     monkeypatch.setattr(docker_client_module, "stop_tunnel", lambda: None)
@@ -565,9 +773,11 @@ def test_reset_config_reopens_setup_window(client, monkeypatch):
 def test_reset_config_tunnel_cleanup_error_is_swallowed(client, monkeypatch):
     """If stop_tunnel raises, the reset still succeeds — tunnel cleanup is best-effort."""
     _configure(monkeypatch)
+
     def _raiser():
         # After R5 the router only catches (subprocess.SubprocessError, OSError).
         raise OSError("simulated tunnel stop failure")
+
     monkeypatch.setattr(docker_client_module, "stop_tunnel", _raiser)
     r = client.post("/api/auth/reset-config", headers=_AUTH_CSRF)
     assert r.status_code == 200
@@ -590,8 +800,10 @@ def test_probe_docker_returns_classification(client, monkeypatch):
     # Server is unconfigured by default via reset_config fixture
     # Mock the probe to deterministic results so we don't depend on the test host
     import skiff.routers.setup as setup_module
-    monkeypatch.setattr(setup_module, "_probe_docker_socket",
-                        lambda p: (p == "/var/run/docker.sock", p.replace("~", "/home/x")))
+
+    monkeypatch.setattr(
+        setup_module, "_probe_docker_socket", lambda p: (p == "/var/run/docker.sock", p.replace("~", "/home/x"))
+    )
     r = client.get("/api/setup/probe-docker")
     assert r.status_code == 200
     body = r.json()

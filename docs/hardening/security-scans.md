@@ -136,6 +136,81 @@ fixes don't work.
 
 ---
 
+## 5a. Extended dynamic + SAST scanners (semgrep + trivy + ZAP)
+
+Three independent scanners round out the static+CVE stack with
+dynamic HTTP-level coverage and a broader SAST rule set. All three
+run as Docker containers — no host toolchain changes required.
+
+### Cadence
+
+| Scanner | CI trigger | Local | Rationale |
+|---|---|---|---|
+| **Semgrep** (`p/owasp-top-ten` + `p/python` + `p/security-audit`) | every PR | `make security-scan` | low false-positive rate on SKIFF's tree, fast (< 30 s) |
+| **Trivy fs** (vuln + secret + misconfig) | every PR | `make security-scan` | independent CVE DB to pip-audit, cross-validated coverage |
+| **OWASP ZAP Baseline** | weekly schedule | `make security-scan` | dynamic HTTP audit, too slow for per-PR; passive-header signal is a cumulative posture check |
+
+### Expected findings — baseline triage from pre-1.0.1 local run
+
+- **Semgrep**: one inline-annotated finding at `skiff/routers/images.py`
+  (SSRF rule). `HUB_REPO_RE` excludes scheme-introducing characters,
+  host is hardcoded to `hub.docker.com`, `allow_redirects=False` —
+  the combined mitigation is documented on-site so a future reader
+  doesn't strip the regex without understanding why.
+- **Trivy fs**: zero findings at HEAD on hash-pinned
+  `requirements.txt`.
+- **ZAP Baseline**: four WARNs permanently allowlisted in
+  `.zap/baseline.conf` with documented justification
+  (suspicious-comments = user-facing UI strings, storable-content
+  = public static, private-IP = wizard example, COEP-missing = N/A
+  for same-origin SPA).
+
+### Triage playbook
+
+A new finding in any of the three scanners follows this decision tree:
+
+1. **Is the finding technically accurate?** If the scanner
+   misidentifies the code (SSRF rule hitting a hardcoded-host
+   endpoint; secret rule hitting a UI string) → false positive.
+   Either add an inline annotation (semgrep) or an allowlist
+   entry (ZAP `.zap/baseline.conf`, Trivy `.trivyignore`).
+2. **Is the finding accurate AND exploitable?** Fix in code.
+   Never silence a true positive with an allowlist.
+3. **Is the finding accurate but defence-in-depth only?**
+   Apply the strengthening if it's cheap (e.g. the Loop-10
+   CSP-directive-fallback fix); otherwise document the deferral
+   in the CHANGELOG Known Gaps and open a tracking issue.
+
+### Reproducing locally
+
+```bash
+# Full run — semgrep + trivy + ZAP (requires docker, boots a local
+# SKIFF on port 18300 for the dynamic scan)
+make security-scan
+
+# Just one scanner
+docker run --rm -v "$PWD:/src:ro" returntocorp/semgrep:latest \
+    semgrep scan --config=p/owasp-top-ten --config=p/python /src
+
+docker run --rm -v "$PWD:/repo:ro" aquasec/trivy:latest \
+    fs --scanners vuln,secret,misconfig /repo
+```
+
+Reports land in `/tmp/skiff-security-scans-local/`.
+
+### Supply-chain note
+
+Every scanner in the CI workflow is pinned to a specific commit SHA
+(`aquasecurity/trivy-action@…`, `returntocorp/semgrep-action@…`,
+`zaproxy/action-baseline@…`), not a floating `@v<major>` tag.
+Dependabot opens update PRs on a weekly cadence; CODEOWNERS on
+`.github/` requires maintainer review before a SHA change merges.
+This limits the supply-chain blast radius to the pinned commit —
+even if a tool's release artefacts are later poisoned, SKIFF keeps
+running the audited version until the maintainer explicitly bumps.
+
+---
+
 ## 5. SBOM + dependency drift
 
 **Generate:**

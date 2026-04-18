@@ -7,6 +7,7 @@ Every e2e file was growing its own `_login`, `_nav_to`, `_teardown_container`,
 `h2:has-text('Containers')`) made cross-file refactors brittle. This module
 is the one place they live.
 """
+
 from __future__ import annotations
 
 from typing import Any

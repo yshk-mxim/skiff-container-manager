@@ -9,6 +9,7 @@ MIT License:
 - slowapi (https://github.com/laurentS/slowapi) — Laurent Savaete
 - Pydantic (https://github.com/pydantic/pydantic) — Samuel Colvin and contributors
 - Click (https://github.com/pallets/click) — Pallets / Armin Ronacher (BSD-3-Clause, sibling MIT libs)
+- charset-normalizer (https://github.com/jawah/charset_normalizer) — Ahmed TAHRI
 
 Apache-2.0 License:
 - Docker SDK for Python (https://github.com/docker/docker-py) — Docker, Inc.
@@ -30,8 +31,8 @@ Mozilla Public License 2.0:
 Optional — Apache-2.0 (GCP extras only, installed via `pip install 'skiff-container-manager[gcp]'`):
 - google-cloud-logging (https://github.com/googleapis/python-logging) — Google LLC
 
-Other permissive:
-- charset-normalizer (https://github.com/jawah/charset_normalizer) — Ahmed TAHRI (MIT)
+(charset-normalizer was historically listed under "Other permissive"
+here; its license IS MIT, so it now appears in the MIT section above.)
 
 Full dependency list with licenses available via:
   pip install pip-licenses && pip-licenses --from=mixed --format=markdown

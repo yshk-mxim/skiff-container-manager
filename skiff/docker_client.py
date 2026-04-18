@@ -5,6 +5,7 @@
 Imports only from skiff.config to avoid circular imports.
 structlog is configured by skiff.logging_setup before this module is used.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -30,6 +31,7 @@ from skiff.contract.errors import http_error
 
 log = structlog.get_logger(__name__)
 
+
 def _close_fd_quiet(fd: int) -> None:
     """Best-effort os.close(); swallows the one error os.close can raise."""
     with contextlib.suppress(OSError):
@@ -40,6 +42,8 @@ def _close_fd_quiet(fd: int) -> None:
 # Narrow set: only errors that realistically mean "daemon is temporarily
 # unreachable over the transport". Bare `OSError` is deliberately OUT —
 # disk-full, EMFILE, etc. should surface as 500, not be downgraded to 503.
+import urllib3.exceptions  # noqa: E402 — grouped with transient transports
+
 DOCKER_TRANSIENT = (
     docker.errors.DockerException,
     requests.exceptions.ConnectionError,
@@ -47,6 +51,11 @@ DOCKER_TRANSIENT = (
     socket.timeout,
     ConnectionError,
     TimeoutError,
+    # Mid-request tunnel death (ssh killed during a stream) surfaces as
+    # urllib3.exceptions.ProtocolError, not DockerException. Without it
+    # in this tuple, `safe_docker_call` missed the retry path and the
+    # error leaked as a plain 500 + traceback past SKIFF's middleware.
+    urllib3.exceptions.ProtocolError,
 )
 
 # ── Docker client singleton ────────────────────────────────
@@ -253,6 +262,7 @@ class TunnelError(Exception):
     `skiff.routers.setup` maps the code into the `system.tunnel_failed`
     HTTP error.
     """
+
     def __init__(self, msg: str, code: str = "other", help_text: str = "") -> None:
         super().__init__(msg)
         self.code = code
@@ -294,9 +304,11 @@ def _classify_ssh_stderr(stderr: str) -> tuple[str, str]:
     """
     s = stderr.lower()
     if "permission denied" in s and ("publickey" in s or "password" in s):
-        return ("auth_failed",
-                "Your SSH key isn't installed on the remote host. "
-                "In your terminal, run `ssh-copy-id <target>`, then retry.")
+        return (
+            "auth_failed",
+            "Your SSH key isn't installed on the remote host. "
+            "In your terminal, run `ssh-copy-id <target>`, then retry.",
+        )
     for needles, code, help_text in _SSH_ERROR_PATTERNS:
         if needles and all(n in s for n in needles):
             return (code, help_text)
@@ -408,12 +420,7 @@ class _TunnelBuilder:
         user, _, host = self.ssh_target.partition("@")
         fd, path = tempfile.mkstemp(suffix=".conf")
         self.conf_path = path
-        payload = (
-            "Include ~/.ssh/config\n"
-            f"Host {self._HOST_ALIAS}\n"
-            f"  Hostname {host}\n"
-            f"  User {user}\n"
-        ).encode()
+        payload = (f"Include ~/.ssh/config\nHost {self._HOST_ALIAS}\n  Hostname {host}\n  User {user}\n").encode()
         try:
             os.write(fd, payload)
         except OSError:
@@ -433,6 +440,7 @@ class _TunnelBuilder:
         validator) but the attacker's prediction window is removed.
         """
         import secrets
+
         suffix = secrets.token_hex(8)  # 16 hex chars = 64 bits unguessable
         self.ctl_sock = f"/tmp/skiff-tunnel-ctl-{suffix}.sock"  # noqa: S108
         cmd = ["ssh", "-F", self.conf_path or "", "-fNM", "-S", self.ctl_sock]
@@ -440,43 +448,56 @@ class _TunnelBuilder:
             cmd.extend(["-o", f"{name}={value}"])
         for name, attr in config._TOML_SSH_TUNNEL["dynamic"].items():
             cmd.extend(["-o", f"{name}={getattr(config, attr)}"])
-        cmd.extend([
-            "-L", f"{self.socket_path}:/var/run/docker.sock",
-            self._HOST_ALIAS,  # hard-coded alias, no user data in argv
-        ])
+        cmd.extend(
+            [
+                "-L",
+                f"{self.socket_path}:/var/run/docker.sock",
+                self._HOST_ALIAS,  # hard-coded alias, no user data in argv
+            ]
+        )
         return cmd
 
     def invoke_ssh(self) -> Self:
-        """Run the SSH subprocess under the tunnel lock, classify failures."""
-        with _tunnel_lock:
-            _stop_tunnel_locked()
-            if Path(self.socket_path).exists():
-                _try_unlink(self.socket_path)
-            cmd = self._build_ssh_cmd()
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    timeout=config.TUNNEL_CONNECT_TIMEOUT + 5,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise TunnelError(
-                    "SSH connection timed out", "timeout",
-                    "Connection timed out. Host unreachable or firewall blocking.",
-                ) from exc
-            except FileNotFoundError as exc:
-                raise TunnelError(
-                    "ssh binary not found", "no_ssh_binary",
-                    "The `ssh` command is not installed on the SKIFF host.",
-                ) from exc
-            if result.returncode != 0:
-                stderr = result.stderr.decode(errors="replace").strip()
-                code, help_text = _classify_ssh_stderr(stderr)
-                raise TunnelError(
-                    f"SSH failed: {stderr[:200] or 'unknown error'}",
-                    code, help_text,
-                )
+        """Run the SSH subprocess — caller MUST hold `_tunnel_lock`.
+
+        The lock is acquired by `_start_tunnel` for the FULL pipeline
+        (invoke → wait → commit) so two concurrent callers cannot
+        spawn overlapping ssh processes. Without the whole-pipeline
+        lock, caller B reads stale module globals (pre-A's ctl sock)
+        during `_stop_tunnel_locked`, fails to kill A's new ssh, and
+        leaves an orphan.
+        """
+        _stop_tunnel_locked()
+        if Path(self.socket_path).exists():
+            _try_unlink(self.socket_path)
+        cmd = self._build_ssh_cmd()
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=config.TUNNEL_CONNECT_TIMEOUT + 5,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TunnelError(
+                "SSH connection timed out",
+                "timeout",
+                "Connection timed out. Host unreachable or firewall blocking.",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise TunnelError(
+                "ssh binary not found",
+                "no_ssh_binary",
+                "The `ssh` command is not installed on the SKIFF host.",
+            ) from exc
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            code, help_text = _classify_ssh_stderr(stderr)
+            raise TunnelError(
+                f"SSH failed: {stderr[:200] or 'unknown error'}",
+                code,
+                help_text,
+            )
         return self
 
     def wait_for_socket(self) -> Self:
@@ -489,8 +510,7 @@ class _TunnelBuilder:
         raise TunnelError(
             f"Tunnel socket did not appear at {self.socket_path}",
             "socket_missing",
-            "SSH connected but the tunnel socket didn't open. "
-            "Check the remote Docker daemon is running.",
+            "SSH connected but the tunnel socket didn't open. Check the remote Docker daemon is running.",
         )
 
     def commit(self) -> Self:
@@ -501,7 +521,8 @@ class _TunnelBuilder:
         if self.ctl_sock is None:
             raise TunnelError(
                 "internal: commit() called before invoke_ssh()",
-                "internal", "",
+                "internal",
+                "",
             )
         _tunnel_ctl_sock = self.ctl_sock
         _tunnel_ssh_target = self.ssh_target
@@ -522,15 +543,16 @@ def _start_tunnel(ssh_target: str) -> None:
     `config.TUNNEL_DEFAULT_SOCKET` constant — no caller-provided path
     reaches the subprocess, eliminating command/path injection.
     """
-    with _TunnelBuilder(ssh_target) as tb:
-        (
-            tb
-            .validate_target()
-            .write_ssh_config()
-            .invoke_ssh()
-            .wait_for_socket()
-            .commit()
-        )
+    # Hold `_tunnel_lock` across the ENTIRE pipeline. Two concurrent
+    # POSTs to /api/tunnel/reconnect would otherwise interleave:
+    # caller A releases the lock before its `commit()`, caller B reads
+    # stale module globals, fails to kill A's new ssh in
+    # `_stop_tunnel_locked`, and A's ssh becomes an orphan holding the
+    # -L socket binding. The cost of holding the lock across
+    # wait_for_socket (up to TUNNEL_SOCKET_WAIT) is serialisation of
+    # reconnects, which is the correct behaviour.
+    with _tunnel_lock, _TunnelBuilder(ssh_target) as tb:
+        (tb.validate_target().write_ssh_config().invoke_ssh().wait_for_socket().commit())
 
 
 def stop_tunnel() -> None:

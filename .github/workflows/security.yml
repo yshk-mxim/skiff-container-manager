@@ -3,6 +3,12 @@ name: Security Review
 on:
   pull_request:
   workflow_dispatch:
+  # Weekly ZAP baseline + nuclei schedule. Too slow for per-PR
+  # (≈3–5 min) and the signal is cumulative — weekly is enough to
+  # catch a regression within the SLA the single-maintainer posture
+  # can support. Mondays at 07:00 UTC.
+  schedule:
+    - cron: "0 7 * * 1"
 
 permissions:
   pull-requests: write
@@ -81,3 +87,105 @@ jobs:
         uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd  # v3.29.1
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
+
+  # Semgrep SAST — runs on every PR. Three rulesets chosen for SKIFF's
+  # profile: p/owasp-top-ten (coverage baseline), p/python (lang-
+  # specific smells), p/security-audit (general security heuristics).
+  # Local triage (docs/hardening/security-scans.md §Semgrep) already
+  # annotated the one false positive at `skiff/routers/images.py` —
+  # inline comment explains the mitigation posture so this run stays
+  # clean until a new finding appears.
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d  # pinned
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/python
+            p/security-audit
+          generateSarif: "1"
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd  # v3.29.1
+        with:
+          sarif_file: semgrep.sarif
+
+  # Trivy filesystem scan — vulnerabilities + secrets + misconfigs.
+  # Runs on every PR; independent CVE DB to pip-audit so the two
+  # together give cross-validated coverage of the runtime 10 deps.
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - name: Trivy fs scan
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5  # pinned
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy.sarif
+          exit-code: "1"
+          ignore-unfixed: false
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd  # v3.29.1
+        with:
+          sarif_file: trivy.sarif
+
+  # OWASP ZAP Baseline — dynamic HTTP scan against a running SKIFF.
+  # Weekly schedule only: too slow for per-PR, and the passive-header
+  # audit is a cumulative posture check, not a per-commit regression
+  # gate. Baseline-conf allowlist lives at `.zap/baseline.conf` and
+  # documents every triaged WARN so PR noise stays zero.
+  zap-baseline:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Python + dev deps
+        uses: ./.github/actions/setup-skiff-python
+
+      - name: Start SKIFF (background)
+        env:
+          API_TOKEN: ${{ secrets.ZAP_SKIFF_TOKEN }}
+        run: |
+          nohup python3 -m uvicorn skiff.app:app \
+            --host 127.0.0.1 --port 18300 \
+            --no-proxy-headers --forwarded-allow-ips "" \
+            >zap-skiff.log 2>&1 &
+          echo $! >zap-skiff.pid
+          # Wait for /health to respond (up to 30 s)
+          for i in $(seq 1 30); do
+            curl -sSf http://127.0.0.1:18300/health >/dev/null && break
+            sleep 1
+          done
+          curl -sSf http://127.0.0.1:18300/health
+
+      - name: ZAP Baseline
+        uses: zaproxy/action-baseline@5b1d0b06f06e599ab23b9d7a53b2e54fb1a60b25  # pinned
+        with:
+          target: http://127.0.0.1:18300
+          rules_file_name: .zap/baseline.conf
+          fail_action: true
+          # Markdown issue comment is off — single-maintainer posture,
+          # the SARIF upload is the durable record.
+
+      - name: Teardown SKIFF
+        if: always()
+        run: |
+          if [ -f zap-skiff.pid ]; then
+            kill "$(cat zap-skiff.pid)" 2>/dev/null || true
+          fi

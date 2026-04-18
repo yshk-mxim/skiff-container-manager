@@ -16,6 +16,7 @@ goal is that the "oh I forgot @Depends(...)" bug is impossible to merge.
 The allowlists below must be updated *deliberately* when a new public
 or mutating-but-read-shaped endpoint is introduced.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,21 +34,23 @@ pytestmark = pytest.mark.unit
 # Adding to this list is a security decision — each entry should be
 # justified inline.
 # ─────────────────────────────────────────────────────────────────────────────
-_PUBLIC_ROUTES: frozenset[str] = frozenset({
-    "/health",
-    "/ready",
-    "/api/auth-required",       # probe used by the login page — returns a boolean
-    "/api/setup",               # first-boot bootstrap — rate-limited + per-IP lockout
-    "/api/setup-state",         # setup wizard state probe (no secrets returned)
-    "/api/setup/probe-docker",  # wizard: detect local Docker — safe, read-only
-    "/api/setup/tunnel",        # wizard: establish/teardown SSH tunnel; gated by
-                                # setup-window + per-IP lockout + token in body
-    "/api/docs",                # CSP-safe OpenAPI landing — no data, just links
-    "/docs",                    # FastAPI default (left enabled for non-CSP paths)
-    "/openapi.json",
-    "/",                        # SPA shell
-    "/{path:path}",             # catch-all SPA route
-})
+_PUBLIC_ROUTES: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/ready",
+        "/api/auth-required",  # probe used by the login page — returns a boolean
+        "/api/setup",  # first-boot bootstrap — rate-limited + per-IP lockout
+        "/api/setup-state",  # setup wizard state probe (no secrets returned)
+        "/api/setup/probe-docker",  # wizard: detect local Docker — safe, read-only
+        "/api/setup/tunnel",  # wizard: establish/teardown SSH tunnel; gated by
+        # setup-window + per-IP lockout + token in body
+        "/api/docs",  # CSP-safe OpenAPI landing — no data, just links
+        "/docs",  # FastAPI default (left enabled for non-CSP paths)
+        "/openapi.json",
+        "/",  # SPA shell
+        "/{path:path}",  # catch-all SPA route
+    }
+)
 
 
 # Routes whose mutating HTTP method is allowed without CSRF. Today this is
@@ -91,6 +94,7 @@ def _route_has_csrf_dep(route: APIRoute) -> bool:
     # Fallback: handler body calls verify_csrf(...) inline.
     try:
         import inspect
+
         if "verify_csrf" in inspect.getsource(route.endpoint):
             return True
     except (OSError, TypeError):
@@ -102,14 +106,9 @@ class TestRouteTags:
     """Every route should declare OpenAPI tags."""
 
     def test_every_api_route_has_tags(self) -> None:
-        missing = [
-            r.path for r in _api_routes()
-            if r.path.startswith("/api/")
-            and not (r.tags and len(r.tags) > 0)
-        ]
-        assert not missing, (
-            "Routes missing OpenAPI tags — add tags=[...] in the @router decorator:\n  "
-            + "\n  ".join(missing)
+        missing = [r.path for r in _api_routes() if r.path.startswith("/api/") and not (r.tags and len(r.tags) > 0)]
+        assert not missing, "Routes missing OpenAPI tags — add tags=[...] in the @router decorator:\n  " + "\n  ".join(
+            missing
         )
 
 
@@ -125,17 +124,13 @@ class TestRouteAuth:
                 continue
             if not _route_has_auth_dep(route):
                 violations.append(f"{route.path} [{','.join(sorted(route.methods or []))}]")
-        assert not violations, (
-            "/api/* routes without AUTH that are not on the public allowlist:\n  "
-            + "\n  ".join(violations)
+        assert not violations, "/api/* routes without AUTH that are not on the public allowlist:\n  " + "\n  ".join(
+            violations
         )
 
     def test_public_allowlist_still_exists(self) -> None:
         """Guard against accidentally emptying the allowlist — we do expect some public routes."""
-        seen_public = {
-            r.path for r in _api_routes()
-            if r.path in _PUBLIC_ROUTES
-        }
+        seen_public = {r.path for r in _api_routes() if r.path in _PUBLIC_ROUTES}
         # At minimum, /health should be reachable without auth
         assert "/health" in seen_public
 
@@ -154,9 +149,7 @@ class TestMutatingCsrf:
             if not (methods & _MUTATING_METHODS):
                 continue
             if not _route_has_csrf_dep(route):
-                violations.append(
-                    f"{route.path} [{','.join(sorted(methods & _MUTATING_METHODS))}]"
-                )
+                violations.append(f"{route.path} [{','.join(sorted(methods & _MUTATING_METHODS))}]")
         assert not violations, (
             "Mutating /api/* routes without CSRF protection:\n  "
             + "\n  ".join(violations)
@@ -171,9 +164,7 @@ class TestWebSocketRoutes:
 
     def test_websocket_routes_exist(self) -> None:
         """Sanity check — there should be at least one WS route (logs + exec)."""
-        assert len(_ws_routes()) >= 2, (
-            f"Expected ≥2 WebSocket routes (logs, exec); found {len(_ws_routes())}."
-        )
+        assert len(_ws_routes()) >= 2, f"Expected ≥2 WebSocket routes (logs, exec); found {len(_ws_routes())}."
 
 
 class TestCatchAllAllowlist:
@@ -199,6 +190,5 @@ class TestCatchAllAllowlist:
             violations.append(f"{route.path} [{','.join(sorted(mutating))}]")
         assert not violations, (
             "Public-allowlisted routes carrying mutating methods without "
-            "CSRF protection (and not explicitly exempted):\n  "
-            + "\n  ".join(violations)
+            "CSRF protection (and not explicitly exempted):\n  " + "\n  ".join(violations)
         )

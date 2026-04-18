@@ -33,7 +33,9 @@ Primary: `dev`. Secondary: `sre`, `homelab`.
 - Audit events: `network.created`, `network.deleted`, `network.connect`,
   `network.disconnect`, `networks.pruned`.
 - Threat model: disconnecting a container from its only network isolates
-  it silently; a future enhancement could warn before that.
+  it silently. The UI prompts for explicit confirmation before every
+  `Disconnect` click and warns that the container may lose all network
+  access; the server does not currently gate this.
 
 ## Tests
 - Unit: `tests/test_networks.py` + `tests/test_coverage_volumes_networks.py`.

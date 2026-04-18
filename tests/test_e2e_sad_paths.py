@@ -19,6 +19,7 @@ Each test uses the `page` fixture (logged-in Playwright session with the
 e2e server) or direct `requests` calls with `auth_headers()` for API-only
 sad paths. Screenshots dump on failure via the conftest_e2e hook.
 """
+
 from __future__ import annotations
 
 pytest_plugins = ["tests.conftest_e2e"]
@@ -35,6 +36,7 @@ pytestmark = pytest.mark.e2e
 
 
 # ── J4 — Token rotation invalidates old session ─────────────────────────────
+
 
 @pytest.mark.e2e
 def test_j4_token_rotation_env_managed_refuses(live_server):
@@ -70,6 +72,7 @@ def test_j4_token_rotation_rejects_short_token(live_server):
 
 # ── J5 — SSH tunnel drop + reconnect (gated by env) ─────────────────────────
 
+
 @pytest.mark.e2e
 @pytest.mark.skipif(not E2E_SSH_TUNNEL, reason="Requires E2E_SSH_TUNNEL to be set")
 def test_j5_tunnel_reconnect_after_drop(live_server):
@@ -98,6 +101,7 @@ def test_j5_tunnel_reconnect_after_drop(live_server):
 
 # ── Compose sad paths ───────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_compose_invalid_yaml_is_rejected(live_server):
     """Submitting malformed YAML returns 400 with a descriptive error."""
@@ -117,12 +121,7 @@ def test_compose_disallowed_key_is_rejected(live_server):
 
     The sandbox allowlist is in skiff/_config/compose_sandbox.toml.
     """
-    bad_compose = (
-        "services:\n"
-        "  evil:\n"
-        "    image: docker.io/library/alpine:latest\n"
-        "    privileged: true\n"
-    )
+    bad_compose = "services:\n  evil:\n    image: docker.io/library/alpine:latest\n    privileged: true\n"
     r = requests.post(
         f"{BASE_URL}/api/compose/up",
         headers=auth_headers(),
@@ -137,6 +136,7 @@ def test_compose_disallowed_key_is_rejected(live_server):
 
 
 # ── Container sad paths ─────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_container_run_image_not_found_returns_404_or_500(live_server, docker_client):
@@ -183,6 +183,7 @@ def test_container_action_on_unknown_id_returns_404(live_server):
 
 # ── Image sad paths ─────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_image_pull_from_blocked_registry_refused(live_server):
     """Pulling from a registry outside ALLOWED_REGISTRIES fails early."""
@@ -221,6 +222,7 @@ def test_image_push_to_blocked_registry_refused(live_server):
 
 # ── WebSocket sad paths ─────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_ws_logs_rejects_bad_container_id():
     """/ws/logs/<id> closes with 4000 when the id fails the regex."""
@@ -232,6 +234,7 @@ def test_ws_logs_rejects_bad_container_id():
     # websockets raises ConnectionClosed / InvalidStatusCode / WebSocketException
     # depending on where the close happens; any of them is a pass.
     from websockets.exceptions import WebSocketException
+
     with pytest.raises((WebSocketException, OSError, TimeoutError)):  # connection should close
         with connect(ws_url, open_timeout=5) as ws:
             ws.recv(timeout=2)
@@ -250,6 +253,7 @@ def test_ws_logs_rejects_missing_auth_token():
     # websockets raises ConnectionClosed / InvalidStatusCode / WebSocketException
     # depending on where the close happens; any of them is a pass.
     from websockets.exceptions import WebSocketException
+
     with pytest.raises((WebSocketException, OSError, TimeoutError)):
         with connect(ws_url, open_timeout=5) as ws:
             ws.send("AUTH wrong-token")
@@ -257,6 +261,7 @@ def test_ws_logs_rejects_missing_auth_token():
 
 
 # ── Rate-limit sad paths ────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_rate_limit_read_endpoint_returns_429(live_server):
@@ -278,6 +283,7 @@ def test_rate_limit_read_endpoint_returns_429(live_server):
 
 
 # ── Audit-log sad paths ─────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_audit_log_tail_respects_max(live_server):
@@ -301,6 +307,7 @@ def test_audit_log_download_unauthenticated_returns_401(live_server):
 
 
 # ── Auth sad paths ──────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_mutating_request_without_csrf_header_returns_403(live_server):
@@ -335,6 +342,7 @@ def test_oversize_request_body_returns_413(live_server):
 
 
 # ── UI sad-path visual checks ───────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_ui_shows_error_toast_on_blocked_registry_pull(page, live_server):

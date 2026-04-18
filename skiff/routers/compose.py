@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Docker Compose stack operations."""
+
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +27,28 @@ from skiff.secure import secure_route
 log = structlog.get_logger(__name__)
 router = APIRouter()
 
+# Per-project mutex for the compose_up / compose_down pipeline.
+# Two concurrent POST /api/compose/up calls to the SAME project_name
+# would otherwise race at the filesystem layer: each read
+# `was_created = _find_project_dir(...) is None` BEFORE the other's
+# `_resolve_project_dir` created the directory, and if one failed,
+# both would attempt `rmtree` on the shared dir. Rate limits narrow
+# this, but a per-project lock gives correct serialisation even if an
+# operator double-submits the form. Keyed by `safe_name` so only
+# collisions on the same project serialise; different projects run
+# in parallel.
+_project_locks_guard = threading.Lock()
+_project_locks: dict[str, threading.Lock] = {}
+
+
+def _lock_for_project(safe_name: str) -> threading.Lock:
+    with _project_locks_guard:
+        lock = _project_locks.get(safe_name)
+        if lock is None:
+            lock = threading.Lock()
+            _project_locks[safe_name] = lock
+        return lock
+
 
 @router.get("/api/compose/stacks", dependencies=AUTH, tags=["compose"])
 @secure_route.read(RATE.READ)
@@ -39,12 +64,14 @@ def list_compose_stacks(request: Request, client=Depends(docker_client_dep)):
             stacks[project] = {"name": project, "services": [], "status": "stopped"}
         service = (c.labels or {}).get("com.docker.compose.service", "")
         svc_state = c.attrs.get("State", {}).get("Status", "unknown")
-        stacks[project]["services"].append({
-            "name": service,
-            "container_id": c.short_id,
-            "status": c.status,
-            "state": svc_state,
-        })
+        stacks[project]["services"].append(
+            {
+                "name": service,
+                "container_id": c.short_id,
+                "status": c.status,
+                "state": svc_state,
+            }
+        )
         if svc_state == "running":
             stacks[project]["status"] = "running"
     return list(stacks.values())
@@ -68,27 +95,36 @@ def _sanitize_project_name(project_name: str) -> str:
     return m.group(0)
 
 
-def _resolve_project_dir(safe_name: str) -> Path:
-    """Return an existing project dir matching `safe_name`, creating it if needed.
+def _find_project_dir(safe_name: str) -> Path | None:
+    """Return the existing project dir for `safe_name`, or None.
 
-    Derives the Path from the filesystem (iterdir + name==safe_name) rather
-    than from user input concatenation, to break CodeQL `py/path-injection`
-    taint. Equality comparison doesn't propagate taint.
+    Read-only helper. Safe to use from compose_down (we don't want a
+    `down` on a never-deployed project to silently create an empty
+    project dir). Derives the Path from the filesystem (iterdir +
+    name==safe_name) to break CodeQL `py/path-injection` taint.
+    """
+    if not config.COMPOSE_DIR.exists():
+        return None
+    compose_root = config.COMPOSE_DIR.resolve()
+    for entry in compose_root.iterdir():
+        if entry.is_dir() and entry.name == safe_name:
+            return entry
+    return None
+
+
+def _resolve_project_dir(safe_name: str) -> Path:
+    """Return the project dir for `safe_name`, creating it if needed.
+
+    Used by the `up` code path, which WANTS to create the dir on first
+    deploy. `compose_down` should call `_find_project_dir` instead.
     """
     config.COMPOSE_DIR.mkdir(parents=True, exist_ok=True)
-    compose_root = config.COMPOSE_DIR.resolve()
-
-    def _find() -> Path | None:
-        for entry in compose_root.iterdir():
-            if entry.is_dir() and entry.name == safe_name:
-                return entry
-        return None
-
-    found = _find()
+    found = _find_project_dir(safe_name)
     if found is not None:
         return found
+    compose_root = config.COMPOSE_DIR.resolve()
     (compose_root / safe_name).mkdir(parents=True, exist_ok=True)  # lgtm[py/path-injection]
-    found = _find()
+    found = _find_project_dir(safe_name)
     if found is None:
         raise http_error("compose.project_dir_create_failed")
     return found
@@ -113,7 +149,9 @@ def _services_summary(parsed: dict) -> dict[str, dict[str, Any]]:
 
 
 def _prepare_compose_file(
-    compose_path: Path, uploaded: UploadFile | None, project_name: str,
+    compose_path: Path,
+    uploaded: UploadFile | None,
+    project_name: str,
 ) -> None:
     """Ensure compose_path has validated YAML on disk before the subprocess call.
 
@@ -127,7 +165,8 @@ def _prepare_compose_file(
         parsed = validators.validate_compose_file(content)
         log.info(
             "compose.upload",
-            project=project_name, services=_services_summary(parsed),
+            project=project_name,
+            services=_services_summary(parsed),
         )
         compose_path.write_bytes(content)
         return
@@ -166,8 +205,11 @@ def _run_compose_up(compose_path: Path, project_name: str) -> subprocess.Complet
     try:
         return subprocess.run(
             [*config.COMPOSE_CMD, "-f", str(compose_path), "-p", project_name, "up", "-d"],
-            capture_output=True, text=True, env=_compose_subprocess_env(),
-            timeout=config.COMPOSE_UP_TIMEOUT, check=False,
+            capture_output=True,
+            text=True,
+            env=_compose_subprocess_env(),
+            timeout=config.COMPOSE_UP_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise http_error("compose.timeout", message="Compose up timed out (2 min limit)") from exc
@@ -175,9 +217,11 @@ def _run_compose_up(compose_path: Path, project_name: str) -> subprocess.Complet
 
 @router.post("/api/compose/up", dependencies=AUTH, tags=["compose"])
 @secure_route.mutate(
-    RATE.AUTH_SENSITIVE, audit="compose.up",
-    audit_fields=lambda request, file=None, project_name="dev", **kw:  # noqa: ARG005
-        {"project": project_name},
+    RATE.AUTH_SENSITIVE,
+    audit="compose.up",
+    audit_fields=lambda request, file=None, project_name="dev", **kw: (  # noqa: ARG005
+        {"project": project_name}
+    ),
 )
 def compose_up(
     request: Request,
@@ -197,15 +241,39 @@ def compose_up(
     """
     validators.validate_project_name(project_name)
     safe_name = _sanitize_project_name(project_name)
-    project_dir = _resolve_project_dir(safe_name)
-    compose_path = project_dir / "docker-compose.yml"
-    _prepare_compose_file(compose_path, file, project_name)
-    result = _run_compose_up(compose_path, project_name)
-    if result.returncode != 0:
-        log.warning("compose.up_failed", project=project_name, stderr=result.stderr[:500])
-        detail = validators._sanitize_stderr(result.stderr) if result.stderr \
-            else "Compose deployment failed. Check compose file syntax and image availability."
-        raise http_error("compose.deploy_failed", message=detail)
+    # Serialise concurrent compose_up calls for the SAME project so two
+    # accidental double-submits don't race at the filesystem layer
+    # (see `_lock_for_project` docstring).
+    with _lock_for_project(safe_name):
+        # Track whether THIS request created the project dir so we can
+        # clean it up on validation failure. Otherwise a rejected upload
+        # (privileged / host mount / network_mode:host) leaves an empty
+        # directory on disk that appears as a phantom stack in the UI.
+        was_created = _find_project_dir(safe_name) is None
+        project_dir = _resolve_project_dir(safe_name)
+        compose_path = project_dir / "docker-compose.yml"
+        try:
+            _prepare_compose_file(compose_path, file, project_name)
+            result = _run_compose_up(compose_path, project_name)
+        except Exception:
+            # Only tear down the dir we created in this request. If a
+            # previous deploy left a working stack here, don't disturb
+            # it on a validation failure of the NEW upload.
+            if was_created:
+                shutil.rmtree(project_dir, ignore_errors=True)
+            raise
+        if result.returncode != 0:
+            log.warning("compose.up_failed", project=project_name, stderr=result.stderr[:500])
+            detail = (
+                validators._sanitize_stderr(result.stderr)
+                if result.stderr
+                else "Compose deployment failed. Check compose file syntax and image availability."
+            )
+            # Compose itself refused the file (e.g. image not found).
+            # Same cleanup rule: only remove the dir if we just created it.
+            if was_created:
+                shutil.rmtree(project_dir, ignore_errors=True)
+            raise http_error("compose.deploy_failed", message=detail)
     return OkResponse(output=str(result.stdout) if result.stdout is not None else None)
 
 
@@ -225,10 +293,7 @@ def _find_compose_containers(client, project_name: str, service_name: str | None
     filters: dict[str, str] = {"label": f"com.docker.compose.project={project_name}"}
     containers = validators.safe_docker_call(client.containers.list, all=True, filters=filters)
     if service_name:
-        containers = [
-            c for c in containers
-            if (c.labels or {}).get("com.docker.compose.service") == service_name
-        ]
+        containers = [c for c in containers if (c.labels or {}).get("com.docker.compose.service") == service_name]
     if not containers:
         raise http_error("compose.not_found")
     return containers
@@ -276,12 +341,15 @@ def compose_project_logs(
 
 @router.post(
     "/api/compose/{project_name}/services/{service_name}/restart",
-    dependencies=AUTH, tags=["compose"],
+    dependencies=AUTH,
+    tags=["compose"],
 )
 @secure_route.mutate(
-    RATE.WRITE, audit="compose.service_restarted",
-    audit_fields=lambda request, project_name, service_name, **kw:  # noqa: ARG005
-        {"project": project_name, "service": service_name},
+    RATE.WRITE,
+    audit="compose.service_restarted",
+    audit_fields=lambda request, project_name, service_name, **kw: (  # noqa: ARG005
+        {"project": project_name, "service": service_name}
+    ),
 )
 def compose_service_restart(
     request: Request,
@@ -303,14 +371,20 @@ def compose_service_restart(
 
 @router.post("/api/compose/down", dependencies=AUTH, tags=["compose"])
 @secure_route.mutate(
-    RATE.AUTH_SENSITIVE, audit="compose.down",
+    RATE.AUTH_SENSITIVE,
+    audit="compose.down",
     audit_fields=lambda request, project_name="dev", **kw: {"project": project_name},  # noqa: ARG005
 )
 def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
     """Tear down a running Compose stack."""
     validators.validate_project_name(project_name)
     safe_name = _sanitize_project_name(project_name)
-    project_dir = _resolve_project_dir(safe_name)
+    project_dir = _find_project_dir(safe_name)
+    if project_dir is None:
+        # No deploy ever happened for this name — return 404 instead of
+        # creating an empty project dir just to `docker compose down`
+        # against a nonexistent stack (which would fail + leave a dir).
+        raise http_error("compose.not_found", project=project_name)
     compose_path = project_dir / "docker-compose.yml"
     # `docker compose down -p <name>` without `-f` resolves the compose file
     # from the subprocess CWD; here we pass `-f` so teardown works regardless
@@ -321,8 +395,11 @@ def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
     try:
         result = subprocess.run(
             compose_args,
-            capture_output=True, text=True, env=_compose_subprocess_env(),
-            timeout=config.COMPOSE_DOWN_TIMEOUT, check=False,
+            capture_output=True,
+            text=True,
+            env=_compose_subprocess_env(),
+            timeout=config.COMPOSE_DOWN_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise http_error("compose.timeout", message="Compose down timed out") from exc
@@ -330,4 +407,8 @@ def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
         log.warning("compose.down_failed", project=project_name, stderr=result.stderr[:500])
         detail = validators._sanitize_stderr(result.stderr) if result.stderr else "Compose teardown failed"
         raise http_error("compose.deploy_failed", message=detail)
+    # Successful teardown: remove the project dir so `GET /api/compose/stacks`
+    # doesn't list a phantom project that has no running containers and no
+    # way for the operator to know whether cleanup needs a manual rm -rf.
+    shutil.rmtree(project_dir, ignore_errors=True)
     return OkResponse(output=str(result.stdout) if result.stdout is not None else None)

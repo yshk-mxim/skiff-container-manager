@@ -107,6 +107,23 @@ Rules:
         Exempt: `skiff/config.py`, `skiff/_config/**`, doc tables that
         are auto-generated.
 
+    AP015  ``.get("FieldName", 0)`` on a Docker-API field known to
+        return ``null``
+        ``dict.get(key, default)`` returns the default only when the
+        key is MISSING; if the key exists with value ``None`` it
+        returns ``None``. Docker's JSON sets ``null`` (not ``0``) for
+        unpopulated numeric fields — e.g. ``SizeRw`` on a container
+        with no RW-layer writes, ``cache`` on cgroup-v2 kernels,
+        ``UsageData.Size`` on volumes without usage stats. A
+        downstream ``sum(d.get("SizeRw", 0) for d in ...)`` then
+        silently yields 0 or crashes, depending on how the None is
+        consumed. Fix: ``(d.get("SizeRw") or 0)`` — treats both
+        missing-key AND null-value as 0.
+        This was the root cause of the 1.0.1-era System/df "0MB
+        containers" + "0MB build cache" bug and the Stats-tab
+        cgroup-v2 "0MB memory" bug. The scanner flags the call site
+        so future contributors can't reintroduce the shape.
+
 Run:
 
     python tools/lint_antipatterns.py           # scan skiff/
@@ -114,6 +131,7 @@ Run:
 
 Exits 0 with "ok: N files, 0 findings" when clean.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -125,40 +143,67 @@ import sys
 # Modules from which bulky imports are OK — they're content catalogues,
 # so callers typically only pull one or two names anyway, and expanding
 # them to ``contract.responses.FooResponse`` hurts readability.
-_BULK_IMPORT_EXEMPT = frozenset({
-    "skiff.contract.responses",
-    "skiff.contract.requests",
-    "skiff.contract.errors",
-    "skiff.secure",
-    "skiff.routers",          # app.py aggregates every router module here
-    "skiff",                  # "from skiff import config, auth, ..." is encouraged
-})
+_BULK_IMPORT_EXEMPT = frozenset(
+    {
+        "skiff.contract.responses",
+        "skiff.contract.requests",
+        "skiff.contract.errors",
+        "skiff.secure",
+        "skiff.routers",  # app.py aggregates every router module here
+        "skiff",  # "from skiff import config, auth, ..." is encouraged
+    }
+)
 _BULK_IMPORT_CAP = 6
 
 # Objects whose attribute surface is defined by Starlette/FastAPI/Python
 # exception classes — getattr with a default is a legitimate interop
 # pattern for these, not a code smell.
-_GETATTR_FRAMEWORK_TARGETS = frozenset({
-    "route", "endpoint", "app", "request", "req",
-    "websocket", "ws", "scope",
-    "exc", "error", "err",
-})
+_GETATTR_FRAMEWORK_TARGETS = frozenset(
+    {
+        "route",
+        "endpoint",
+        "app",
+        "request",
+        "req",
+        "websocket",
+        "ws",
+        "scope",
+        "exc",
+        "error",
+        "err",
+    }
+)
 
 # Keyword-argument names that carry policy values. When one of these is
 # passed a literal int/str/list in skiff/*.py (outside config.py), the
 # value is a hardcoded default that should have been sourced from config.
 # NOTE: deliberately excludes `title`, `description`, `summary`, `doc` —
 # those are documentation strings, not policy values.
-_POLICY_KWARGS = frozenset({
-    "port", "host", "bind_host",
-    "workers", "log_level", "log_format",
-    "maxBytes", "max_bytes", "backupCount", "backup_count",
-    "maxBackups", "max_backups",
-    "timeout", "timeout_seconds",
-    "allow_methods", "allow_headers", "allow_origins",
-    "allow_credentials",
-    "max_body_bytes", "max_size", "max_pool_size",
-})
+_POLICY_KWARGS = frozenset(
+    {
+        "port",
+        "host",
+        "bind_host",
+        "workers",
+        "log_level",
+        "log_format",
+        "maxBytes",
+        "max_bytes",
+        "backupCount",
+        "backup_count",
+        "maxBackups",
+        "max_backups",
+        "timeout",
+        "timeout_seconds",
+        "allow_methods",
+        "allow_headers",
+        "allow_origins",
+        "allow_credentials",
+        "max_body_bytes",
+        "max_size",
+        "max_pool_size",
+    }
+)
 
 # Files/paths where policy literals are legitimate. Matched by suffix.
 #   skiff/config.py            — the source of truth for every knob
@@ -166,12 +211,8 @@ _POLICY_KWARGS = frozenset({
 #                                response schemas). ``description=`` /
 #                                ``message=`` literals are the DATA.
 #   tools/                     — one-off CLI helpers; no policy surface
-_CONFIG_FILE_SUFFIXES = (
-    "skiff/config.py",
-)
-_CONFIG_DIR_SUFFIXES = (
-    "skiff/contract",
-)
+_CONFIG_FILE_SUFFIXES = ("skiff/config.py",)
+_CONFIG_DIR_SUFFIXES = ("skiff/contract",)
 
 # Env vars whose reads are legitimate outside config.py (subprocess env
 # pass-through for compose, etc.). Not policy values — we're just
@@ -201,6 +242,46 @@ _IDENTIFIER_REGEX_HINT = re.compile(r"^\^\[.+\{[0-9]+,[0-9]+\}")
 # Files that legitimately define identifier patterns and can't reference
 # validators (which imports from these modules, causing cycles).
 _REGEX_ALLOWLIST_SUFFIXES = ("skiff/validators.py", "skiff/contract/errors.py")
+
+# AP015: Docker-API response keys that the daemon sets to JSON `null`
+# (not 0) when unpopulated. Using `.get(key, 0)` on these returns None
+# when the key exists with value null, breaking downstream arithmetic.
+# Keep this list TIGHT — adding a key here flags every call site, so
+# we only list fields we've seen return null in real Docker responses.
+# Add entries as new bugs surface; don't speculatively expand.
+_NULLABLE_DOCKER_FIELDS = frozenset(
+    {
+        # Image / container / volume sizes — Docker often returns null
+        # when it hasn't walked the layer tree yet (SizeRw on containers
+        # with no RW writes; Size on build-cache entries without a
+        # materialised layer; Size on volumes on some storage drivers).
+        "Size",
+        "SizeRw",
+        "SizeRootFs",
+        # Memory stats — cgroup v1 includes `cache` / `rss`; cgroup v2
+        # omits them (uses `file` / `anon` / `inactive_file`). Code that
+        # subtracts `cache` from `usage` with a `.get(cache, 0)` default
+        # returns None instead of 0 on v2.
+        "cache",
+        "rss",
+        "usage",
+        "limit",
+        "max_usage",
+        # Network stats — `rx_bytes` / `tx_bytes` are null on some
+        # runtimes when the container has no interfaces attached.
+        "rx_bytes",
+        "tx_bytes",
+        "rx_packets",
+        "tx_packets",
+        "rx_errors",
+        "tx_errors",
+        "rx_dropped",
+        "tx_dropped",
+        # Blkio stats entries — `value` can be null on freshly-created
+        # containers that haven't issued any I/O.
+        "value",
+    }
+)
 
 # Rows in the code-quality-guide that document the AP0## rules themselves
 # legitimately contain the marker shapes as examples. Matches any MD table
@@ -306,15 +387,22 @@ class _AntiPatternVisitor(ast.NodeVisitor):
     def visit_Try(self, node: ast.Try) -> None:
         self._try_depth += 1
         if self._try_depth >= 2:
-            self.findings.append((
-                node.lineno, "AP001", "nested try/except — extract a _quiet/_fallback helper",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP001",
+                    "nested try/except — extract a _quiet/_fallback helper",
+                )
+            )
         if self._try_body_branches_on_its_own_output(node):
-            self.findings.append((
-                node.lineno, "AP002",
-                "try/except with if branching on a name the try assigned — "
-                "split the success / fail axes into sequential blocks",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP002",
+                    "try/except with if branching on a name the try assigned — "
+                    "split the success / fail axes into sequential blocks",
+                )
+            )
         self.generic_visit(node)
         self._try_depth -= 1
 
@@ -347,11 +435,14 @@ class _AntiPatternVisitor(ast.NodeVisitor):
         if mod in _BULK_IMPORT_EXEMPT:
             return
         if mod.startswith("skiff") and len(node.names) > _BULK_IMPORT_CAP:
-            self.findings.append((
-                node.lineno, "AP003",
-                f"bulky import ({len(node.names)} names from {mod!r}) — "
-                f"prefer `from skiff import X` + namespace access",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP003",
+                    f"bulky import ({len(node.names)} names from {mod!r}) — "
+                    f"prefer `from skiff import X` + namespace access",
+                )
+            )
 
     # ── AP004 ──
     @staticmethod
@@ -371,20 +462,54 @@ class _AntiPatternVisitor(ast.NodeVisitor):
         # the right call, not a smell.
         return not (isinstance(target, ast.Name) and target.id in _GETATTR_FRAMEWORK_TARGETS)
 
-    # ── AP004 / AP005 / AP006 / AP011 — Call-site checks ──
+    # ── AP004 / AP005 / AP006 / AP011 / AP015 — Call-site checks ──
     def visit_Call(self, node: ast.Call) -> None:
         if self._is_bad_getattr(node):
-            self.findings.append((
-                node.lineno, "AP004",
-                "getattr(obj, 'literal', non-None default) — prefer a dict "
-                "lookup or typed attribute",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP004",
+                    "getattr(obj, 'literal', non-None default) — prefer a dict lookup or typed attribute",
+                )
+            )
         if not self._is_config_file:
             self._check_policy_kwargs(node)
             self._check_os_environ(node)
             if not self._is_regex_allowlisted():
                 self._check_inline_identifier_regex(node)
+        self._check_docker_null_default(node)
         self.generic_visit(node)
+
+    # ── AP015 ──
+    def _check_docker_null_default(self, node: ast.Call) -> None:
+        """Flag ``d.get("FieldName", 0)`` where FieldName is a Docker-API
+        key that the daemon sets to ``null`` (not 0) for unpopulated
+        entries.
+
+        Matches are limited to a known allowlist of nullable fields —
+        extending to every ``.get(..., 0)`` would flood false positives
+        on truly-always-numeric keys (``status``, ``num_cpus``, etc).
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "get":
+            return
+        if len(node.args) != 2:
+            return
+        key_node, default_node = node.args
+        if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+            return
+        if not (isinstance(default_node, ast.Constant) and default_node.value == 0):
+            return
+        if key_node.value not in _NULLABLE_DOCKER_FIELDS:
+            return
+        self.findings.append(
+            (
+                node.lineno,
+                "AP015",
+                f".get({key_node.value!r}, 0) on a Docker-API field that may be null — "
+                f"use (x.get({key_node.value!r}) or 0) so null coerces to 0",
+            )
+        )
 
     # ── AP011 ──
     def _is_regex_allowlisted(self) -> bool:
@@ -400,11 +525,14 @@ class _AntiPatternVisitor(ast.NodeVisitor):
             return
         if not _IDENTIFIER_REGEX_HINT.match(first.value):
             return
-        self.findings.append((
-            node.lineno, "AP011",
-            f"inline identifier regex {first.value!r} — move to "
-            f"skiff/validators.py as a named constant and reference it",
-        ))
+        self.findings.append(
+            (
+                node.lineno,
+                "AP011",
+                f"inline identifier regex {first.value!r} — move to "
+                f"skiff/validators.py as a named constant and reference it",
+            )
+        )
 
     @staticmethod
     def _is_re_pattern_call(node: ast.Call) -> bool:
@@ -423,11 +551,14 @@ class _AntiPatternVisitor(ast.NodeVisitor):
             if kw.arg is None or kw.arg not in _POLICY_KWARGS:
                 continue
             if self._is_literal_value(kw.value):
-                self.findings.append((
-                    kw.value.lineno, "AP005",
-                    f"literal value for policy kwarg `{kw.arg}=` — "
-                    f"reference `config.X` instead of embedding the default",
-                ))
+                self.findings.append(
+                    (
+                        kw.value.lineno,
+                        "AP005",
+                        f"literal value for policy kwarg `{kw.arg}=` — "
+                        f"reference `config.X` instead of embedding the default",
+                    )
+                )
 
     @staticmethod
     def _is_literal_value(expr: ast.expr) -> bool:
@@ -435,10 +566,7 @@ class _AntiPatternVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.Constant):
             return isinstance(expr.value, (int, str, bool))
         if isinstance(expr, (ast.List, ast.Tuple)):
-            return all(
-                isinstance(e, ast.Constant) and isinstance(e.value, (int, str, bool))
-                for e in expr.elts
-            )
+            return all(isinstance(e, ast.Constant) and isinstance(e.value, (int, str, bool)) for e in expr.elts)
         return False
 
     # ── AP006 ──
@@ -459,12 +587,15 @@ class _AntiPatternVisitor(ast.NodeVisitor):
             return
         if name in _ENVIRON_PASSTHROUGH:
             return
-        self.findings.append((
-            node.lineno, "AP006",
-            f"os.environ.get({name!r}, ...) outside skiff/config.py — "
-            f"declare this as a config_knob(...) so the default, validator, "
-            f"and doc live in one place",
-        ))
+        self.findings.append(
+            (
+                node.lineno,
+                "AP006",
+                f"os.environ.get({name!r}, ...) outside skiff/config.py — "
+                f"declare this as a config_knob(...) so the default, validator, "
+                f"and doc live in one place",
+            )
+        )
 
     @staticmethod
     def _is_os_environ_get(node: ast.Call) -> bool:
@@ -483,11 +614,14 @@ class _AntiPatternVisitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
         if self._is_os_environ_subscript(node):
-            self.findings.append((
-                node.lineno, "AP006",
-                "os.environ[...] outside skiff/config.py — env vars belong to "
-                "config_knob() so the default, validator, and doc live in one place",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP006",
+                    "os.environ[...] outside skiff/config.py — env vars belong to "
+                    "config_knob() so the default, validator, and doc live in one place",
+                )
+            )
         self.generic_visit(node)
 
     @staticmethod
@@ -510,12 +644,15 @@ class _AntiPatternVisitor(ast.NodeVisitor):
         """Walk `node.body`, report if any branch nests > _NESTING_CEILING."""
         worst = self._max_block_depth(node.body, depth=0)
         if worst > _NESTING_CEILING:
-            self.findings.append((
-                node.lineno, "AP007",
-                f"function `{node.name}` nests blocks {worst} levels deep "
-                f"(max {_NESTING_CEILING}) — extract helpers or collapse "
-                f"with early returns",
-            ))
+            self.findings.append(
+                (
+                    node.lineno,
+                    "AP007",
+                    f"function `{node.name}` nests blocks {worst} levels deep "
+                    f"(max {_NESTING_CEILING}) — extract helpers or collapse "
+                    f"with early returns",
+                )
+            )
 
     def _max_block_depth(self, stmts: list[ast.stmt], depth: int) -> int:
         worst = depth
@@ -555,20 +692,19 @@ class _AntiPatternVisitor(ast.NodeVisitor):
     def _scan_function_for_isinstance_ladder(self, node: ast.FunctionDef) -> None:
         for n in ast.walk(node):
             if isinstance(n, ast.If) and self._is_isinstance_ladder_head(n):
-                self.findings.append((
-                    n.lineno, "AP008",
-                    f"isinstance ladder with {self._isinstance_ladder_length(n)} "
-                    f"arms in `{node.name}` — consider a Pydantic discriminated "
-                    f"union or a dict-based factory",
-                ))
+                self.findings.append(
+                    (
+                        n.lineno,
+                        "AP008",
+                        f"isinstance ladder with {self._isinstance_ladder_length(n)} "
+                        f"arms in `{node.name}` — consider a Pydantic discriminated "
+                        f"union or a dict-based factory",
+                    )
+                )
 
     @staticmethod
     def _is_isinstance_call(expr: ast.expr) -> bool:
-        return (
-            isinstance(expr, ast.Call)
-            and isinstance(expr.func, ast.Name)
-            and expr.func.id == "isinstance"
-        )
+        return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "isinstance"
 
     def _isinstance_ladder_length(self, node: ast.If) -> int:
         length = 0
@@ -591,12 +727,15 @@ class _AntiPatternVisitor(ast.NodeVisitor):
             if isinstance(n, ast.If):
                 length = self._if_chain_length(n)
                 if length >= _ELIF_CHAIN_MIN and not self._is_chain_continuation(node, n):
-                    self.findings.append((
-                        n.lineno, "AP009",
-                        f"if/elif chain with {length} branches in "
-                        f"`{node.name}` — extract a dispatch table "
-                        f"(dict[key, handler]) or a builder sequence",
-                    ))
+                    self.findings.append(
+                        (
+                            n.lineno,
+                            "AP009",
+                            f"if/elif chain with {length} branches in "
+                            f"`{node.name}` — extract a dispatch table "
+                            f"(dict[key, handler]) or a builder sequence",
+                        )
+                    )
 
     @staticmethod
     def _if_chain_length(node: ast.If) -> int:
@@ -610,10 +749,7 @@ class _AntiPatternVisitor(ast.NodeVisitor):
     def _is_chain_continuation(self, fn: ast.FunctionDef, target: ast.If) -> bool:
         """True when `target` is the `elif` tail of another If in the same fn."""
         for n in ast.walk(fn):
-            if (
-                isinstance(n, ast.If) and n is not target
-                and len(n.orelse) == 1 and n.orelse[0] is target
-            ):
+            if isinstance(n, ast.If) and n is not target and len(n.orelse) == 1 and n.orelse[0] is target:
                 return True
         return False
 
@@ -627,11 +763,14 @@ class _AntiPatternVisitor(ast.NodeVisitor):
         if not val.startswith(_ABS_PATH_PREFIXES):
             return
         # Allow when the line already carries a security-waiver suppression.
-        self.findings.append((
-            node.lineno, "AP010",
-            f"hardcoded absolute path {val!r} — move to config_knob() so "
-            f"operators can override without a source change",
-        ))
+        self.findings.append(
+            (
+                node.lineno,
+                "AP010",
+                f"hardcoded absolute path {val!r} — move to config_knob() so "
+                f"operators can override without a source change",
+            )
+        )
 
 
 def _scan_comment_archaeology(text: str, path: pathlib.Path) -> list[tuple[int, str, str]]:
@@ -653,11 +792,14 @@ def _scan_comment_archaeology(text: str, path: pathlib.Path) -> list[tuple[int, 
         for rx in _ARCHAEOLOGY_MARKERS:
             m = rx.search(comment)
             if m:
-                findings.append((
-                    lineno, "AP012",
-                    f"archaeological marker {m.group(0)!r} in comment — "
-                    f"describe the current state or delete the line",
-                ))
+                findings.append(
+                    (
+                        lineno,
+                        "AP012",
+                        f"archaeological marker {m.group(0)!r} in comment — "
+                        f"describe the current state or delete the line",
+                    )
+                )
                 hit_012 = True
                 break
         if hit_012 or not scan_ap014:
@@ -666,12 +808,15 @@ def _scan_comment_archaeology(text: str, path: pathlib.Path) -> list[tuple[int, 
         for rx in _POLICY_LITERAL_PATTERNS:
             m = rx.search(comment)
             if m:
-                findings.append((
-                    lineno, "AP014",
-                    f"hardcoded policy literal {m.group(0)!r} in comment — "
-                    f"point at config.py / rate.toml instead so the doc "
-                    f"can't rot when the knob is tuned",
-                ))
+                findings.append(
+                    (
+                        lineno,
+                        "AP014",
+                        f"hardcoded policy literal {m.group(0)!r} in comment — "
+                        f"point at config.py / rate.toml instead so the doc "
+                        f"can't rot when the knob is tuned",
+                    )
+                )
                 break
     return findings
 
@@ -682,7 +827,8 @@ def _docstring_ap012(doc: str, lineno: int) -> tuple[int, str, str] | None:
         m = rx.search(doc)
         if m:
             return (
-                lineno, "AP012",
+                lineno,
+                "AP012",
                 f"archaeological marker {m.group(0)!r} in docstring — "
                 f"describe the current behaviour or delete the phrase",
             )
@@ -694,9 +840,9 @@ def _docstring_ap013(doc: str, lineno: int) -> tuple[int, str, str] | None:
     for section in _BLOAT_SECTIONS:
         if section in doc:
             return (
-                lineno, "AP013",
-                f"docstring contains bloat section {section!r} — "
-                f"collapse to a single invariant sentence",
+                lineno,
+                "AP013",
+                f"docstring contains bloat section {section!r} — collapse to a single invariant sentence",
             )
     return None
 
@@ -707,7 +853,8 @@ def _docstring_ap014(doc: str, lineno: int) -> tuple[int, str, str] | None:
         m = rx.search(doc)
         if m:
             return (
-                lineno, "AP014",
+                lineno,
+                "AP014",
                 f"hardcoded policy literal {m.group(0)!r} in docstring — "
                 f"point at config.py / _config/*.toml instead so the "
                 f"doc can't rot when the knob is tuned",
@@ -758,10 +905,7 @@ def _scan(path: pathlib.Path) -> list[tuple[pathlib.Path, int, str, str]]:
 
 
 def _iter_python_files(root: pathlib.Path) -> list[pathlib.Path]:
-    return sorted(
-        p for p in root.rglob("*.py")
-        if "__pycache__" not in p.parts
-    )
+    return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
 
 
 def _iter_text_files_for_archaeology(root: pathlib.Path) -> list[pathlib.Path]:
@@ -778,10 +922,15 @@ def _iter_text_files_for_archaeology(root: pathlib.Path) -> list[pathlib.Path]:
       - `.toml` — config files an operator reads to tune behaviour.
     """
     patterns = ("*.js", "*.md", "*.html", "*.css", "*.toml")
+    # Third-party vendored bundles (Swagger UI) live under skiff/static/swagger-ui/.
+    # They're minified and carry their own upstream comment style that trips
+    # AP012 — we don't own or edit those files, so they're excluded from
+    # project-level anti-pattern scans. Treated like a vendored `node_modules`.
+    skip_dirs = (".git", "__pycache__", "node_modules", ".venv", "swagger-ui")
     seen: set[pathlib.Path] = set()
     for pat in patterns:
         for p in root.rglob(pat):
-            if any(skip in p.parts for skip in (".git", "__pycache__", "node_modules", ".venv")):
+            if any(skip in p.parts for skip in skip_dirs):
                 continue
             seen.add(p)
     return sorted(seen)
@@ -810,11 +959,15 @@ def _scan_archaeology_text(path: pathlib.Path) -> list[tuple[pathlib.Path, int, 
             continue
         for rx in _ARCHAEOLOGY_MARKERS:
             if rx.search(line):
-                out.append((
-                    path, lineno, "AP012",
-                    f"archaeological marker in {path.suffix[1:]} file — "
-                    "describe the current state or delete the line",
-                ))
+                out.append(
+                    (
+                        path,
+                        lineno,
+                        "AP012",
+                        f"archaeological marker in {path.suffix[1:]} file — "
+                        "describe the current state or delete the line",
+                    )
+                )
                 break
     return out
 
@@ -822,11 +975,14 @@ def _scan_archaeology_text(path: pathlib.Path) -> list[tuple[pathlib.Path, int, 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "paths", nargs="*", default=["skiff"],
+        "paths",
+        nargs="*",
+        default=["skiff"],
         help="Files or directories to scan (default: skiff/).",
     )
     parser.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="CI mode: exit non-zero if any findings.",
     )
     args = parser.parse_args()

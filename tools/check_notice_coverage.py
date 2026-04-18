@@ -21,6 +21,7 @@ Usage:
 
 Exit codes: 0 complete, 1 missing attribution.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -66,13 +67,27 @@ def _direct_dep_names() -> set[str]:
 # Packages we don't require attribution for: development / test tools
 # that aren't shipped to adopters. Extras-only deps and runtime deps
 # DO require attribution.
-_DEV_ONLY_PACKAGES: frozenset[str] = frozenset(_normalise(n) for n in (
-    "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout",
-    "pytest-playwright", "playwright", "httpx",
-    "hypothesis", "ruff", "pip-audit", "pip-tools", "pip-compile",
-    "cyclonedx-bom", "cyclonedx-python-lib",
-    "pre-commit", "coverage",
-))
+_DEV_ONLY_PACKAGES: frozenset[str] = frozenset(
+    _normalise(n)
+    for n in (
+        "pytest",
+        "pytest-asyncio",
+        "pytest-cov",
+        "pytest-timeout",
+        "pytest-playwright",
+        "playwright",
+        "httpx",
+        "hypothesis",
+        "ruff",
+        "pip-audit",
+        "pip-tools",
+        "pip-compile",
+        "cyclonedx-bom",
+        "cyclonedx-python-lib",
+        "pre-commit",
+        "coverage",
+    )
+)
 
 
 def _notice_text() -> str:
@@ -89,7 +104,8 @@ def _mentions(notice: str, name: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="CI mode: exit 1 if any direct runtime dep is unattributed.",
     )
     args = parser.parse_args()
@@ -102,8 +118,7 @@ def main() -> int:
     if missing:
         print(
             "NOTICE is missing attribution for these direct runtime "
-            "dependencies declared in pyproject.toml:\n  "
-            + "\n  ".join(sorted(missing)),
+            "dependencies declared in pyproject.toml:\n  " + "\n  ".join(sorted(missing)),
             file=sys.stderr,
         )
         return 1 if args.check else 0

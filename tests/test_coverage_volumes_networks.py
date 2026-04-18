@@ -12,6 +12,7 @@ from tests.factories import make_volume as _make_volume
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 
+
 def test_list_volumes(client, mock_docker):
     mock_docker.volumes.list.return_value = [_make_volume()]
     mock_docker.containers.list.return_value = []
@@ -75,6 +76,7 @@ def test_prune_volumes(client, mock_docker):
 
 
 # ── Networks ──────────────────────────────────────────────────────────────────
+
 
 def test_list_networks(client, mock_docker):
     mock_docker.networks.list.return_value = [_make_network()]
@@ -173,14 +175,17 @@ def test_prune_networks(client, mock_docker):
 
 # ── Phase 6: Volume inspect endpoint ──────────────────────────────────────────
 
+
 def test_volume_inspect_happy_path(client, mock_docker):
     v = _make_volume("analytics")
-    v.attrs.update({
-        "Scope": "local",
-        "Options": {"type": "nfs", "o": "addr=10.0.0.5,rw"},
-        "UsageData": {"Size": 42 * 1024 * 1024, "RefCount": 2},
-        "Labels": {"env": "prod"},
-    })
+    v.attrs.update(
+        {
+            "Scope": "local",
+            "Options": {"type": "nfs", "o": "addr=10.0.0.5,rw"},
+            "UsageData": {"Size": 42 * 1024 * 1024, "RefCount": 2},
+            "Labels": {"env": "prod"},
+        }
+    )
     mock_docker.volumes.get.return_value = v
     mock_docker.containers.list.return_value = []
     resp = client.get("/api/volumes/analytics/inspect", headers=AUTH_HEADER)
@@ -217,6 +222,7 @@ def test_volume_inspect_invalid_name(client, mock_docker):
 
 def test_volume_inspect_missing_volume(client, mock_docker):
     import docker.errors
+
     mock_docker.volumes.get.side_effect = docker.errors.NotFound("no such volume")
     resp = client.get("/api/volumes/ghostvol/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 404

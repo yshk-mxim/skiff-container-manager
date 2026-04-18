@@ -10,6 +10,7 @@ for "audit" in the codebase find exactly the audit-log HTTP surface here.
   GET /api/system/audit-log           last N lines (tail=N, N ≤ MAX_AUDIT_LINES)
   GET /api/system/audit-log/download  full file, streamed as JSONL
 """
+
 from __future__ import annotations
 
 import json
@@ -57,7 +58,9 @@ def _parse_audit_line(raw: str) -> dict | None:
 
 
 @router.get(
-    "/api/system/audit-log", dependencies=[Depends(auth.verify_auth_strict)], tags=["audit"],
+    "/api/system/audit-log",
+    dependencies=[Depends(auth.verify_auth_strict)],
+    tags=["audit"],
 )
 @secure_route.read(RATE.READ)
 def get_audit_log(request: Request, tail: int = Query(default=200, le=config.MAX_AUDIT_LINES, ge=1)):

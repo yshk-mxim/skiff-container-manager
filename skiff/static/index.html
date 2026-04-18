@@ -32,6 +32,14 @@
     <div class="sidebar-status" id="sidebar-status"><span class="dot"></span> <span>Connecting...</span></div>
     <div class="sidebar-footer col">
       <button id="sidebar-logout" class="sidebar-logout">Sign out</button>
+      <!-- Profile switcher: one-way entry into reviewer (read-only) mode.
+           Hidden by default; app.js shows it once /api/config returns a
+           non-reviewer profile. Clicking confirms, calls the server, and
+           reloads so the UI picks up the reviewer-mode banner / CSS. -->
+      <select id="profile-switcher" class="profile-switcher" aria-label="Profile mode" hidden>
+        <option value="" disabled selected>Switch profile…</option>
+        <option value="reviewer">Enter reviewer mode (read-only)</option>
+      </select>
       <!-- Theme toggle — three-state cycle (System → Light → Dark → System).
            Icons rendered inline to stay in the CSP-safe static file. Active
            state is driven by data-theme-pref on the <html> element which the
@@ -50,7 +58,7 @@
         </div>
       </div>
       <div>SKIFF Container Manager</div>
-      <div class="attr">&copy; 2026 Yakov Shkolnikov</div>
+      <div class="attr">&copy; 2026 Yakov Shkolnikov and contributors</div>
       <div class="attr"><a href="/api/docs" target="_blank">API docs</a> · <a href="/LICENSE" target="_blank">MIT License</a></div>
     </div>
   </nav>
@@ -64,6 +72,9 @@
 <script src="/static/strings.en.js"></script>
 <script src="/static/ui.js"></script>
 <script src="/static/core/theme.js"></script>
+<!-- Shared status-banner module. Loaded early so wizard.js + app.js can
+     both call statusBanner.set() during init. No deps beyond DOM ready. -->
+<script src="/static/core/statusBanner.js"></script>
 <!-- Wizard loads BEFORE app.js because app.js's init IIFE calls
      checkSetupState() synchronously (before any await resolves). Wizard
      module defines only functions that reference app.js globals inside

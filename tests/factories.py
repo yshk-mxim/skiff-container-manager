@@ -18,6 +18,7 @@ Design:
 - Builders are pure functions — no shared state, no class hierarchy.
   New variants are ONE function call with overrides, not a subclass.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -70,14 +71,18 @@ def make_container(
             "User": "",
             "Healthcheck": {},
         },
-        "HostConfig": host_config if host_config is not None else {
+        "HostConfig": host_config
+        if host_config is not None
+        else {
             "Memory": 2 * 1024**3,
             "CpuShares": 0,
             "RestartPolicy": {"Name": "no"},
             "ReadonlyRootfs": False,
             "SecurityOpt": ["no-new-privileges:true"],
         },
-        "NetworkSettings": network_settings if network_settings is not None else {
+        "NetworkSettings": network_settings
+        if network_settings is not None
+        else {
             "Networks": {
                 "bridge": {"IPAddress": "172.17.0.2", "Gateway": "172.17.0.1", "MacAddress": "02:42:ac:11:00:02"}
             },
@@ -199,6 +204,7 @@ def make_image(
 
 
 # ── Helpers frequently repeated in test bodies ────────────────────────────────
+
 
 def set_container_hc(container: MagicMock, **hc_fields: Any) -> None:
     """Mutate a make_container()'s HostConfig in place. Used when a test needs

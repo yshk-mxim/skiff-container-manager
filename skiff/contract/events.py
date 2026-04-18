@@ -15,6 +15,7 @@ This is a *catalogue*, not a schema validator — the required-fields set
 is a hint, not enforced by default. When we ship `emit_audit()` later,
 it'll enforce required fields via this table.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -78,6 +79,17 @@ _EVENTS: dict[str, _EventSpec] = {
         optional=("msg",),
         description="Server started without API_TOKEN — no auth enforced.",
     ),
+    "security.setup_window_open": _EventSpec(
+        severity="warning",
+        optional=("msg", "bind", "port", "window_secs", "lockout_attempts"),
+        description=(
+            "First-run setup wizard is reachable on BIND_HOST for "
+            "SETUP_WINDOW_SECS after boot. Anyone with reach to that "
+            "socket can claim the instance with their own token during "
+            "the window (rate-limited; per-IP lockout). Set API_TOKEN "
+            "in the environment to skip the wizard entirely."
+        ),
+    ),
     "security.empty_api_token_env": _EventSpec(
         severity="warning",
         optional=("msg",),
@@ -116,6 +128,65 @@ _EVENTS: dict[str, _EventSpec] = {
         severity="warning",
         required=("remote", "remaining"),
         description="Setup endpoint tripped the per-IP lockout threshold.",
+    ),
+    "audit.ws_auth_lockout": _EventSpec(
+        severity="warning",
+        required=("remote", "attempts", "lockout_secs"),
+        description=(
+            "WebSocket authentication tripped the per-IP brute-force "
+            "lockout. Emitted on the exact attempt that crosses "
+            "WS_AUTH_MAX_ATTEMPTS so SIEM alerts on activation, not "
+            "on every failed attempt."
+        ),
+    ),
+    # ── Audit-middleware-classified event_types ───────────────────────────
+    # `_classify_event` in logging_setup.py emits these directly as the
+    # `event_type` field of an `audit.api_access` line — they are NOT
+    # round-tripped through the @secure_route.mutate audit= hook, so they
+    # bypass the catalogue-drift guard in secure.py. Declaring them here
+    # keeps the SIEM catalogue honest. (`auth.denied`, `api.request`,
+    # `rate_limit.exceeded` are declared further down alongside the
+    # handler-emitted counterparts so SIEM rule authors find them in
+    # one place.)
+    "auth.reviewer_denied": _EventSpec(
+        severity="warning",
+        optional=("remote", "path", "method"),
+        description=(
+            "Audit-middleware classification for a 403 whose envelope "
+            "carries `auth.reviewer_read_only`. Separated from the "
+            "generic `auth.denied` so SIEM can whitelist reviewer-mode "
+            "noise while still alerting on stolen-token mutations."
+        ),
+    ),
+    "image.list": _EventSpec(
+        optional=("remote", "path"),
+        description="Audit-middleware classification for GET /api/images.",
+    ),
+    "audit.log_read": _EventSpec(
+        optional=("remote", "path"),
+        description=(
+            "Audit-middleware classification for GET /api/system/audit-log "
+            "(and downloads). Distinct from the catch-all so SIEM rules "
+            "can alert specifically on audit-tail exfil attempts."
+        ),
+    ),
+    "container.logs_stream": _EventSpec(
+        optional=("remote", "container"),
+        description=(
+            "Audit-middleware classification for WS upgrades to "
+            "/ws/logs/{id}. The handler emits `audit.ws_logs` separately "
+            "with the container id; this classification fires on the "
+            "HTTP upgrade side."
+        ),
+    ),
+    "container.exec_session": _EventSpec(
+        optional=("remote", "container"),
+        description=(
+            "Audit-middleware classification for WS upgrades to "
+            "/ws/exec/{id}. The handler emits `audit.ws_exec` separately "
+            "with the container id; this classification fires on the "
+            "HTTP upgrade side."
+        ),
     ),
     "setup.configured": _EventSpec(
         required=("docker_host", "registries"),
@@ -170,17 +241,34 @@ _EVENTS: dict[str, _EventSpec] = {
     ),
     "container.replace_noop": _EventSpec(
         severity="warning",
-        required=("id", "replace_id"),
-        description="Clone target differs from replace_id; replace skipped.",
+        required=("id",),
+        optional=("reason",),
+        description=(
+            "Clone target already IS the replace_id — replace skipped. "
+            "`id` is the new container's short id; `reason` explains why."
+        ),
     ),
     "container.replaced": _EventSpec(
         required=("new_id", "old_id"),
         description="Clone replaced an older container in-place.",
     ),
+    "container.exited_early": _EventSpec(
+        severity="warning",
+        required=("id", "name", "image", "exit_code"),
+        description=(
+            "A container exited within ~800 ms of `/run`. "
+            "Response includes exit_code + tail of logs so the UI can "
+            "surface the failure without a separate logs call."
+        ),
+    ),
     "container.replace_cleanup_failed": _EventSpec(
         severity="warning",
-        required=("replace_id", "error"),
-        description="Failed to remove the old container during a replace — manual cleanup needed.",
+        required=("new_id", "old_id", "error"),
+        description=(
+            "Failed to remove the old container during a replace — "
+            "manual cleanup needed. `new_id` is the successful clone; "
+            "`old_id` is what we could not clean up."
+        ),
     ),
     # ── Image ─────────────────────────────────────────────────────────────
     "image.pulled": _EventSpec(required=("image",), description="Image pulled from a registry."),
@@ -285,6 +373,74 @@ _EVENTS: dict[str, _EventSpec] = {
         required=("space_mb",),
         description="Docker build cache pruned.",
     ),
+    "profile.switched": _EventSpec(
+        required=("old", "new"),
+        optional=("exec_sessions_closed",),
+        description=(
+            "Runtime PROFILE changed from `old` to `new` via "
+            "POST /api/profile/enter-reviewer (one-way to reviewer). "
+            "Emitted regardless of caller — the UI dropdown is one "
+            "trigger, curl / CI / SIEM health checks are also in scope."
+        ),
+    ),
+    "audit.ws_exec_terminated": _EventSpec(
+        required=("container", "reason"),
+        severity="warning",
+        description=("A live exec WebSocket was force-closed by the server (e.g. profile switched to reviewer)."),
+    ),
+    "audit.extras_invalid": _EventSpec(
+        optional=("path", "method"),
+        severity="warning",
+        description=(
+            "Audit middleware could not build _AuditExtras for a request "
+            "(e.g. over-long resource id). Line emitted without the extras."
+        ),
+    ),
+    "undo.cancelled_by_reviewer": _EventSpec(
+        required=("token_suffix", "kind", "id"),
+        severity="warning",
+        description=(
+            "Undo timer fired after PROFILE transitioned to reviewer; "
+            "the queued destructive op was skipped, not executed."
+        ),
+    ),
+    "undo.shutdown_flush_timeout": _EventSpec(
+        severity="error",
+        required=("remaining", "timeout"),
+        description=(
+            "Lifespan shutdown hit SHUTDOWN_FLUSH_TIMEOUT while draining "
+            "the undo queue. `remaining` ops stay in-memory and are lost "
+            "when the process exits."
+        ),
+    ),
+    "ws.detect_shell_timeout": _EventSpec(
+        severity="warning",
+        required=("container",),
+        description=("The 5 s timeout on `which /bin/bash` fired; session opened with /bin/sh fallback."),
+    ),
+    "security.bind_non_loopback": _EventSpec(
+        severity="warning",
+        required=("bind_host", "msg"),
+        description=("SKIFF bound to a non-loopback interface at startup. Emitted once per process boot."),
+    ),
+    "security.ci_profile_needs_token": _EventSpec(
+        severity="warning",
+        required=("msg",),
+        description=(
+            "PROFILE=ci booted without an API_TOKEN. The automation "
+            "persona does not fit a wizard-driven first run; emit a "
+            "loud warning so the operator fixes the env before a "
+            "headless CI runner hits a setup wizard."
+        ),
+    ),
+    "undo.fired_already_gone": _EventSpec(
+        required=("token_suffix", "kind", "id"),
+        description=(
+            "Undo timer fired but the target resource was already "
+            "absent (external delete or rebuild). Desired end-state "
+            "reached; not counted as a failure."
+        ),
+    ),
     # ── Tunnel ────────────────────────────────────────────────────────────
     "tunnel.started": _EventSpec(
         required=("target", "socket"),
@@ -379,7 +535,7 @@ _EVENTS: dict[str, _EventSpec] = {
             "AuditLogMiddleware. `event_type` carries the classified action "
             "name (api.request, container.started, compose.up, image.pulled, "
             "rate_limit.exceeded, auth.denied, …) and is what SIEM rules "
-            "typically filter on. `channel=\"audit\"` distinguishes this "
+            'typically filter on. `channel="audit"` distinguishes this '
             "from debug/info lines from the same structlog configuration."
         ),
     ),

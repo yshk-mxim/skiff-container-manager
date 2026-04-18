@@ -1,0 +1,87 @@
+name: Accessibility (WCAG 2.1 AA)
+
+on:
+  pull_request:
+    paths:
+      - "skiff/static/**"
+      - "skiff/_config/security_headers.toml"
+      - ".github/workflows/a11y.yml"
+  workflow_dispatch:
+  schedule:
+    # Weekly full re-scan so an externally-introduced regression
+    # (browser rule update, dep change) surfaces even without a
+    # static/**/* edit.
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pa11y:
+    name: pa11y WCAG 2.1 AA baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Python + deps (runtime only — no dev extras)
+        uses: ./.github/actions/setup-skiff-python
+        with:
+          install-extras: ""   # runtime deps are enough to boot SKIFF
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Start SKIFF (background)
+        env:
+          API_TOKEN: ${{ secrets.A11Y_SKIFF_TOKEN || 'a11y-test-token-16chars' }}
+        run: |
+          nohup python3 -m uvicorn skiff.app:app \
+            --host 127.0.0.1 --port 18301 \
+            --no-proxy-headers --forwarded-allow-ips "" \
+            >skiff-a11y.log 2>&1 &
+          echo $! >skiff-a11y.pid
+          for i in $(seq 1 30); do
+            curl -sSf http://127.0.0.1:18301/health >/dev/null && break
+            sleep 1
+          done
+
+      - name: pa11y scan (login page)
+        run: |
+          # pa11y brings its own chromium via puppeteer.
+          # Exit 2 = issues found → CI fails. Exit 0 = clean.
+          npx --yes pa11y@latest \
+            --standard WCAG2AA \
+            --reporter cli \
+            http://127.0.0.1:18301
+
+      - name: Teardown SKIFF
+        if: always()
+        run: |
+          if [ -f skiff-a11y.pid ]; then
+            kill "$(cat skiff-a11y.pid)" 2>/dev/null || true
+          fi
+
+  axe-full-spa:
+    # Playwright + axe-core walk of every authenticated page (containers,
+    # images, volumes, networks, compose, system). The pa11y job above
+    # covers the pre-auth entry; this one walks the SPA.
+    #
+    # Needs: Docker daemon (ubuntu-latest ships one), chromium (via the
+    # Playwright install step), and the `[dev,e2e]` extras.
+    name: Playwright + axe-core full-SPA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Python + e2e extras
+        uses: ./.github/actions/setup-skiff-python
+        with:
+          install-extras: "dev,e2e"
+
+      - name: Install chromium (Playwright)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run full-SPA axe-core sweep
+        run: pytest -v tests/test_e2e_accessibility.py --tb=short

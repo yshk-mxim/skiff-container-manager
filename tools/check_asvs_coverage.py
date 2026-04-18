@@ -23,6 +23,7 @@ Usage:
 
 Exit codes: 0 complete, 1 missing rows.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -59,7 +60,8 @@ def _found_chapters(text: str) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="CI mode: exit 1 if any chapter is missing (default: print only).",
     )
     args = parser.parse_args()
@@ -80,8 +82,7 @@ def main() -> int:
         if unexpected:
             print(
                 "SECURITY.md ASVS table has unexpected chapter ids "
-                "(ASVS v5.0 only declares V1-V18): "
-                + ", ".join(sorted(unexpected, key=lambda s: int(s[1:]))),
+                "(ASVS v5.0 only declares V1-V18): " + ", ".join(sorted(unexpected, key=lambda s: int(s[1:]))),
                 file=sys.stderr,
             )
         return 1 if args.check else 0

@@ -16,6 +16,7 @@ with monkeypatch.setattr in the same test. Free functions pass through
 Keeps AUTH headers centralised so changing the token format (future
 R2b secret-str lift, OAuth2, ...) is one file edit.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -74,11 +75,11 @@ def put(client, path: str, *, json: Any = None, headers: dict | None = None, **p
 
 # ── Shortcut helpers for common shapes ─────────────────────────────
 
+
 def ok(resp) -> dict:
     """Assert 2xx and return resp.json(). One-liner replacement for
     `assert r.status_code == 200; data = r.json()`."""
-    assert 200 <= resp.status_code < 300, \
-        f"expected 2xx got {resp.status_code}: {resp.text[:200]}"
+    assert 200 <= resp.status_code < 300, f"expected 2xx got {resp.status_code}: {resp.text[:200]}"
     return resp.json()
 
 

@@ -13,14 +13,15 @@ Primary: `dev`, `homelab`. Secondary: `sre` (bulk prune).
 - Create button → modal with a `name` field (validated against
   `_VOLUME_NAME_RE`).
 - Each row shows driver, mountpoint, in-use/container list.
-- Row → *Delete* opens a confirmation; if the operator chose the
-  5-second undo path the toast includes an *Undo* button.
+- Row → *Remove* opens a confirmation; if the operator chose the
+  undo window the toast includes an *Undo* button.
 - Row → *Inspect* opens a detail modal with scope, options, UsageData.
 
-User-facing strings (add to `../dev/copy.md` when extended):
-- "Delete volume?" modal title
-- "Undo" action label
-- "Volume deleted" / "Deletion cancelled" toast
+User-facing strings (authoritative values live in
+`skiff/static/strings.en.js`; this list is informational):
+- `volumes.confirm.remove` — confirmation prompt
+- `undo.button` — "Undo" action label
+- `volumes.toast.removed` / `undo.toast` — outcome toasts
 
 ## API surface
 | Method | Path | Request | Response | Error codes |

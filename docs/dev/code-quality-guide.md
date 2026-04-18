@@ -125,14 +125,15 @@ These are intentional, non-obvious security decisions. Do not remove or weaken t
 | Registry allowlist case-insensitive match | `skiff/validators.py:validate_image_registry` | Prevent `DOCKER.IO` bypass of `docker.io` allowlist entry |
 | Compose sandbox: `ipc: host` and `ipc: shareable` blocked | `skiff/validators.py:BLOCKED_IPC_MODES` | `shareable` allows containers to read/write each other's IPC namespace |
 | Compose sandbox: host path mounts blocked | `skiff/validators.py:validate_compose_file` | Prevents access to host filesystem via bind-mount |
-| Setup endpoint lockout (3 failures → 429 for 300 s) | `skiff/routers/system.py:_setup_fail` | Mirror of WS auth lockout; prevents insider token-fishing on a running instance |
-| Setup-state minimal response when configured | `skiff/routers/system.py:setup_state` | Avoid leaking tunnel socket paths to unauthenticated callers on live server |
-| Audit log read: 5 req/min; download: 2 req/min | `skiff/routers/system.py` | Prevent high-volume log scraping by a compromised session |
+| Setup endpoint lockout (3 failures → 429 for 300 s) | `skiff/routers/setup.py:_fail` | Mirror of WS auth lockout; prevents insider token-fishing on a running instance |
+| Setup-state minimal response when configured | `skiff/routers/setup.py:setup_state` | Avoid leaking tunnel socket paths to unauthenticated callers on live server |
+| Audit log read: 5 req/min; download: 2 req/min | `skiff/routers/audit.py` | Prevent high-volume log scraping by a compromised session |
 | DOCKER_HOST HTTP guard (non-localhost) | `skiff/app.py` lifespan | Warn when Docker API is exposed unencrypted over network |
 | WebSocket close 4003 → no reconnect | `skiff/static/app.js` | Session expiry during live WS must not auto-reconnect (would use stale token) |
 | SSH tunnel credentials cleared from sessionStorage after use | `skiff/static/app.js:swConnectTunnel` | `tunnelUser`/`tunnelHost` removed once tunnel is established; no need to retain |
-| WS input size: `len(data.encode()) > 65536` | `skiff/routers/containers.py` | Byte length, not character count; 65536 UTF-8 chars = up to 256 KB |
+| WS input size: `_EXEC_MAX_INPUT_BYTES` (65536) | `skiff/routers/containers_ws.py` | Byte length, not character count; 65536 UTF-8 chars = up to 256 KB |
 | Token input in setup wizard: `type="password"` | `skiff/static/app.js` | Prevents token appearing in clipboard history and screenshots |
+| Reviewer profile: mutations blocked server-side + exec WS force-closed on switch | `skiff/secure.py:_reject_if_reviewer`, `skiff/routers/containers_ws.py:exec_shell` | Insider handoff to a reviewer must not leave shells / mutations open |
 
 ---
 
@@ -184,6 +185,8 @@ The rules encode the lessons from the v3 architecture review:
 | **AP011** | Inline `re.compile` / `re.match` of an anchored identifier regex (`^[...]...{N,M}...$`) outside `skiff/validators.py` | Identifier patterns (container IDs, volume names, image tags, labels) live in `skiff/validators.py` as named constants so every router references the same rule. Handler-local patterns (e.g. port `\d{1,5}`, env `KEY=VALUE`, URL path templates) don't match the heuristic and stay inline. |
 | **AP012** | Archaeological marker (`R17`, `F6 migration`, `Previously`, `was here but moved`, `Migrated from`, `Historical note`, `as of R22`) in a `#` comment or docstring | Release comments describe WHY / what-is-true-now, not project history. `git log` owns the past. Fix: rephrase as the current-state invariant, or delete the line. `Phase N` is deliberately NOT flagged because pipeline docs ("Phase 1: cache; Phase 2: ping; Phase 3: rebuild") are a legitimate use. |
 | **AP013** | Bloat section heading inside a docstring (`Design goals:`, `Design properties:`, `Migration path:`, `Historical note:`, `Rationale:`, `Trade-offs:`) | These are PR-review narratives. The one non-obvious invariant each section carried belongs in a single paragraph, not a labelled list. |
+| **AP014** | Hardcoded policy literal (number / string / list) in a `#` comment or docstring outside `skiff/config.py` | Policy literals in prose rot the moment someone bumps the knob. Reference the `config_knob` name instead (e.g. "see `SESSION_IDLE_SECS`"). Values that ARE the name (`"POST"`, `"GET"`, `"Bearer"`) or mathematical constants (`pi`, `1024`) stay inline. |
+| **AP015** | `d.get("FieldName", 0)` where `FieldName` is a Docker-API key the daemon sets to `null` | `dict.get(key, default)` returns `default` **only when the key is missing**; if the key exists with value `None`, it returns `None`. Docker sets `null` (not `0`) for unpopulated numeric fields — `SizeRw` on containers with no RW-layer writes, `cache` on cgroup-v2 kernels, `UsageData.Size` on volumes without usage stats. A downstream `sum(d.get("SizeRw", 0) for d in ...)` then silently yields 0 or crashes. Fix: `(d.get("SizeRw") or 0)` — treats both missing-key AND null-value as 0. The linter's allowlist is in `tools/lint_antipatterns.py:_NULLABLE_DOCKER_FIELDS`; extend it when new null-prone keys surface. |
 
 ### Related ruff rule families (also enforced)
 

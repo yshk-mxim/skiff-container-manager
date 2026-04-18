@@ -26,9 +26,153 @@ async function checkSetupState() {
     return false;
 }
 
+// Polling interval (ms) for /api/setup-state after the wizard renders.
+// 10s is the floor — /api/setup-state sits in the PUBLIC rate-limit tier
+// (120/min shared per-IP). 10s = 6 req/min, safe headroom. 5s offers no
+// UX benefit and burns the shared tier.
+const _WIZARD_POLL_INTERVAL_MS = 10_000;
+let _wizardPollTimer = null;
+// Local 1s ticker between server polls so the counter updates smoothly
+// every second instead of jumping in 10-second chunks. Holds the
+// absolute deadline (Date.now() + remaining_secs*1000) from the last
+// server response so no drift accumulates.
+let _wizardLocalTick = null;
+let _wizardDeadlineMs = 0;
+
+function _formatRemaining(secs) {
+    if (secs >= 60) {
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+    }
+    return secs + 's';
+}
+
+function _paintCountdown(secs) {
+    const el = document.getElementById('sw-countdown');
+    if (!el) return;
+    if (secs <= 0) {
+        el.textContent = '';
+        el.style.display = 'none';
+        return;
+    }
+    // Self-labelling copy — previous "Nm Ss left" didn't say what was
+    // counting down, so reviewers thought it was their session.
+    el.textContent = 'Setup window closes in ' + _formatRemaining(secs);
+    el.style.display = '';
+}
+
+function _applyWizardState(state) {
+    const countdown = document.getElementById('sw-countdown');
+    const wrap = document.getElementById('sw-wrap');
+    const submitBtn = document.getElementById('sw-btn-save');
+    const sessionBtn = document.getElementById('sw-btn-session');
+    if (!countdown || !wrap) return;  // wizard DOM already torn down
+    const remaining = (state && typeof state.window_expires_in === 'number')
+        ? state.window_expires_in : null;
+    const open = (state && typeof state.window_open === 'boolean')
+        ? state.window_open : (remaining === null ? true : remaining > 0);
+    if (open && remaining !== null) {
+        _wizardDeadlineMs = Date.now() + (remaining * 1000);
+        _paintCountdown(remaining);
+        // Kick a 1s ticker if not already running — self-computes from
+        // _wizardDeadlineMs so each server poll just re-anchors the deadline.
+        if (_wizardLocalTick === null) {
+            _wizardLocalTick = setInterval(function() {
+                const secs = Math.max(0, Math.ceil((_wizardDeadlineMs - Date.now()) / 1000));
+                _paintCountdown(secs);
+                if (secs <= 0 && _wizardLocalTick !== null) {
+                    clearInterval(_wizardLocalTick);
+                    _wizardLocalTick = null;
+                    // Flip to expired state immediately — don't wait
+                    // for the next 10s poll to notice.
+                    _applyWizardState({ window_open: false, window_expires_in: 0 });
+                }
+            }, 1000);
+        }
+        wrap.classList.remove('wizard-expired');
+        if (submitBtn) submitBtn.disabled = false;
+        if (sessionBtn && sessionBtn.dataset.tokenAck === '1') sessionBtn.disabled = false;
+        if (window.statusBanner) window.statusBanner.clear('setup_window_expired');
+    } else {
+        countdown.style.display = 'none';
+        wrap.classList.add('wizard-expired');
+        if (submitBtn) submitBtn.disabled = true;
+        if (sessionBtn) sessionBtn.disabled = true;
+        if (window.statusBanner) {
+            const msg = typeof t === 'function'
+                ? t('banner.setup_window_expired')
+                : 'Setup window expired — restart the server to try again.';
+            window.statusBanner.set('setup_window_expired', { severity: 'error', message: msg });
+        }
+        // Stop polling + local tick — the window cannot reopen without
+        // a server restart.
+        if (_wizardPollTimer !== null) { clearInterval(_wizardPollTimer); _wizardPollTimer = null; }
+        if (_wizardLocalTick !== null) { clearInterval(_wizardLocalTick); _wizardLocalTick = null; }
+    }
+    // Surface any active per-IP lockout. Separate key from window-expired
+    // so the banner can show both if they coexist (e.g. locked out late
+    // in the window).
+    if (state && typeof state.lockout_remaining_secs === 'number' && state.lockout_remaining_secs > 0) {
+        if (window.statusBanner) {
+            const tpl = typeof t === 'function'
+                ? t('banner.setup_lockout', { seconds: state.lockout_remaining_secs })
+                : 'Too many failed setup attempts — try again in ' + state.lockout_remaining_secs + 's.';
+            // Using expiresInMs so the banner auto-clears on lockout end;
+            // include {seconds} placeholder for the statusBanner ticker.
+            window.statusBanner.set('setup_lockout', {
+                severity: 'error',
+                message: 'Too many failed setup attempts — try again in {seconds}s.',
+                expiresInMs: state.lockout_remaining_secs * 1000,
+            });
+            // Fall-through use of `tpl` silences lint without second render.
+            void tpl;
+        }
+    } else if (window.statusBanner) {
+        window.statusBanner.clear('setup_lockout');
+    }
+}
+
+async function _pollSetupState() {
+    if (document.visibilityState === 'hidden') return;  // pause when tab backgrounded
+    try {
+        const r = await fetch('/api/setup-state');
+        if (!r.ok) return;
+        const state = await r.json();
+        if (state.configured) {
+            // Wizard completed — stop polling and let app.js re-render.
+            if (_wizardPollTimer !== null) { clearInterval(_wizardPollTimer); _wizardPollTimer = null; }
+            return;
+        }
+        _applyWizardState(state);
+    } catch (_e) { /* transient — next tick retries */ }
+}
+
+function _startWizardPolling(initialState) {
+    _applyWizardState(initialState);
+    if (_wizardPollTimer !== null) return;
+    _wizardPollTimer = setInterval(_pollSetupState, _WIZARD_POLL_INTERVAL_MS);
+    // Resume immediately after returning from a hidden tab.
+    document.addEventListener('visibilitychange', function _onVisibility() {
+        if (document.visibilityState === 'visible') _pollSetupState();
+    });
+}
+
 function showSetupWizard(state) {
     document.body.innerHTML = '';
+    // Restore #status-banner + #toast-container so statusBanner.set() and
+    // toast() work from inside the wizard (polling may paint an expired
+    // banner above the card). Both are at body-root per index.html.
+    const banner = document.createElement('div');
+    banner.id = 'status-banner';
+    banner.className = 'status-banner';
+    document.body.appendChild(banner);
+    const toastContainer = document.createElement('div');
+    toastContainer.id = 'toast-container';
+    toastContainer.className = 'toast-container';
+    document.body.appendChild(toastContainer);
     const wrap = document.createElement('div');
+    wrap.id = 'sw-wrap';
     wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;';
     // Use safe string values; server-supplied data assigned via textContent/value only
     const defaultSocket = String((state && state.tunnel_socket) || '/tmp/skiff-docker.sock');
@@ -42,6 +186,7 @@ function showSetupWizard(state) {
         '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
           '<svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>' +
           '<span style="color:#f1f5f9;font-size:18px;font-weight:600;">SKIFF Container Manager</span>' +
+          '<span id="sw-countdown" class="wizard-countdown" style="color:#94a3b8;font-size:12px;font-weight:400;margin-left:10px;display:none;"></span>' +
         '</div>' +
         '<p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>' +
         '<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">' +
@@ -100,6 +245,9 @@ function showSetupWizard(state) {
         btn.disabled = false;
         btn.style.opacity = '1';
         btn.removeAttribute('title');
+        // Mark as "ack'd by user so the setup-state poller doesn't re-lock
+        // this button when it re-runs _applyWizardState on the next tick.
+        btn.dataset.tokenAck = '1';
     }
     document.getElementById('sw-gen-btn').addEventListener('click', function() {
         document.getElementById('sw-token').value = Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
@@ -109,6 +257,7 @@ function showSetupWizard(state) {
         sbtn.disabled = true;
         sbtn.style.opacity = '0.6';
         sbtn.title = 'Copy the token first to unlock';
+        delete sbtn.dataset.tokenAck;  // keep the poller from auto-reenabling
     });
     document.getElementById('sw-copy-btn').addEventListener('click', function() {
         var val = document.getElementById('sw-token').value;
@@ -190,6 +339,10 @@ function showSetupWizard(state) {
         // Default tab is Local — sw-host tracks the Local input
         hostInput.value = customInput.value;
     }
+    // Kick off the setup-state poller so the countdown ticks + an expired
+    // banner paints the moment the window closes. Uses the initial `state`
+    // so the first paint happens without waiting for the first poll.
+    _startWizardPolling(state);
 }
 
 function swSetMode(mode) {
@@ -339,4 +492,3 @@ async function swSubmit(saveEnv) {
     sessionStorage.setItem('api_token', token);
     location.reload();
 }
-

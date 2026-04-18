@@ -18,6 +18,7 @@ Usage:
 
 Exit codes: 0 clean, 1 broken link(s) found.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,10 @@ def _extract_anchors(path: pathlib.Path) -> set[str]:
 
 
 def _check_one_link(
-    md_path: pathlib.Path, own_text: str, lineno: int, target: str,
+    md_path: pathlib.Path,
+    own_text: str,
+    lineno: int,
+    target: str,
 ) -> tuple[int, str, str] | None:
     """Return a (lineno, target, reason) finding for `target`, or None if clean."""
     if not target or target.startswith(_IGNORE_PREFIXES):
@@ -96,16 +100,34 @@ def _check_file(md_path: pathlib.Path) -> list[tuple[int, str, str]]:
 
 
 def _iter_md_files() -> list[pathlib.Path]:
-    return sorted(
-        p for p in ROOT.rglob("*.md")
-        if not any(skip in p.parts for skip in (".git", "__pycache__", "node_modules", "htmlcov"))
+    # `.venv`, `venv`, `env` caught so a fresh-clone contributor's
+    # virtualenv — which vendors thousands of unrelated .md files from
+    # installed packages — doesn't trip `make docs-check`. Same for
+    # `.tox`, `site-packages`, and the build / dist output dirs.
+    skip_dirs = frozenset(
+        {
+            ".git",
+            "__pycache__",
+            "node_modules",
+            "htmlcov",
+            ".venv",
+            "venv",
+            "env",
+            ".tox",
+            "site-packages",
+            "build",
+            "dist",
+            ".eggs",
+        }
     )
+    return sorted(p for p in ROOT.rglob("*.md") if not any(skip in p.parts for skip in skip_dirs))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="Exit 1 on any broken link (CI mode). Default prints a report.",
     )
     args = parser.parse_args()

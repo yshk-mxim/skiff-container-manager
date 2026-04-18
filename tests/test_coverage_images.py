@@ -2,7 +2,6 @@
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for image endpoints."""
 
-
 import docker.errors
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
@@ -15,13 +14,12 @@ def _make_image(short_id="sha256abc123", tags=None, size=100 * 1024 * 1024):
     img.attrs["Config"]["ExposedPorts"] = {"80/tcp": {}}
     img.attrs["Config"]["Env"] = ["PATH=/usr/local/bin"]
     img.attrs["Config"]["WorkingDir"] = "/app"
-    img.history.return_value = [
-        {"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}
-    ]
+    img.history.return_value = [{"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}]
     return img
 
 
 # ── List images ───────────────────────────────────────────────────────────────
+
 
 def test_list_images(client, mock_docker):
     mock_docker.images.list.return_value = [_make_image()]
@@ -60,6 +58,7 @@ def test_list_allowed_images_filters_unallowed(client, mock_docker):
 
 # ── Pull ─────────────────────────────────────────────────────────────────────
 
+
 def test_pull_image_success(client, mock_docker):
     mock_docker.images.pull.return_value = _make_image()
     resp = client.post(
@@ -91,6 +90,7 @@ def test_pull_image_api_error(client, mock_docker):
 
 # ── Push ─────────────────────────────────────────────────────────────────────
 
+
 def test_push_image_success(client, mock_docker):
     mock_docker.images.push.return_value = '{"status": "pushed"}\n'
     resp = client.post(
@@ -120,6 +120,7 @@ def test_push_image_error_in_output(client, mock_docker):
 
 # ── Tag ──────────────────────────────────────────────────────────────────────
 
+
 def test_tag_image_success(client, mock_docker):
     img = _make_image()
     mock_docker.images.get.return_value = img
@@ -133,6 +134,7 @@ def test_tag_image_success(client, mock_docker):
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 
+
 def test_delete_image(client, mock_docker):
     resp = client.delete("/api/images/abcd1234", headers=AUTH_CSRF)
     assert resp.status_code == 200
@@ -141,11 +143,10 @@ def test_delete_image(client, mock_docker):
 
 # ── Inspect ───────────────────────────────────────────────────────────────────
 
+
 def test_inspect_image(client, mock_docker):
     mock_docker.images.get.return_value = _make_image()
-    mock_docker.api.history.return_value = [
-        {"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}
-    ]
+    mock_docker.api.history.return_value = [{"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}]
     resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()

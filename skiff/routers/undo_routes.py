@@ -11,6 +11,7 @@ with system info / metrics / audit. Grepping for "undo" now surfaces:
 
   POST /api/undo/{token}  cancel a queued destructive operation
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -25,7 +26,11 @@ router = APIRouter()
 
 
 @router.post("/api/undo/{token}", dependencies=AUTH, tags=["system"])
-@secure_route.mutate(RATE.WRITE)
+# allow_in_reviewer: cancelling a queued destructive op makes state
+# more conservative, not less. A reviewer watching the undo window
+# must be able to stop an accidental destroy. CSRF + rate-limit +
+# audit guardrails are unchanged; only the reviewer gate is bypassed.
+@secure_route.mutate(RATE.WRITE, allow_in_reviewer=True)
 def undo_operation(request: Request, token: str) -> dict:
     """Cancel a pending destructive operation queued by a DELETE ?undo=1 call.
 
@@ -37,10 +42,9 @@ def undo_operation(request: Request, token: str) -> dict:
     # Token format defence: our generator uses token_urlsafe(16) which is
     # base64url (A-Z a-z 0-9 _ -), always 22 chars. Reject anything else
     # before touching the queue so garbage never reaches the internal map.
-    if not token or len(token) > 64 or not all(
-        c.isalnum() or c in ("-", "_") for c in token
-    ):
+    if not token or len(token) > 64 or not all(c.isalnum() or c in ("-", "_") for c in token):
         raise http_error("validation.bad_input")
     from skiff.undo import get_queue
+
     cancelled = get_queue().cancel(token)
     return OkResponse(cancelled=cancelled).model_dump(exclude_none=True)

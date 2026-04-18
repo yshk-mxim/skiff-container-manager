@@ -52,6 +52,10 @@ PROBE_DOCKER_TIMEOUT = 2              # seconds for the wizard's ping probe
 COMPOSE_UP_TIMEOUT = 120              # seconds — pull + up -d can be slow
 COMPOSE_DOWN_TIMEOUT = 60             # seconds — tear-down is faster
 
+# ── Shutdown + per-call budgets ───────────────────────────
+SHUTDOWN_FLUSH_TIMEOUT = 20           # cap the undo-queue flush on SIGTERM
+DF_TIMEOUT = 30                       # cap /api/system/df on large Docker hosts
+
 # ── WebSocket ──────────────────────────────────────────────
 WS_LOG_TAIL = 50                      # initial tail lines for log streams
 WS_KEEPALIVE_INTERVAL = 15            # seconds between ping frames
@@ -62,7 +66,7 @@ WS_TOKEN_TIMEOUT = 5.0                # wait for AUTH <token> first message
 WS_MAX_PER_IP = 5                     # max concurrent WS connections per IP
 WS_AUTH_MAX_ATTEMPTS = 3              # failed WS auth attempts → lockout
 WS_AUTH_LOCKOUT_SECS = 300            # lockout window seconds
-WS_KEEPALIVE_REVALIDATE_EVERY = 4     # revalidate session every N keepalive ticks
+WS_KEEPALIVE_REVALIDATE_EVERY = 1     # revalidate session on EVERY keepalive tick (was 4; lowered so a token rotation evicts live WS within one interval instead of up to 4×)
 
 # ── Undo queue ─────────────────────────────────────────────
 UNDO_DELAY_SECS = 5.0                 # grace period before an undo op fires

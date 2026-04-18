@@ -22,7 +22,9 @@ import time
 
 import pytest
 
-pytest.importorskip("playwright", reason="playwright not installed — run: pip install -e .[dev,e2e] && playwright install chromium")
+pytest.importorskip(
+    "playwright", reason='playwright not installed — run: pip install -e ".[dev,e2e]" && playwright install chromium'
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -33,6 +35,7 @@ from tests.e2e_helpers import nav_to as _nav_to
 # ─────────────────────────────────────────────────────────────────────────────
 # Authentication
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_login_with_valid_token(live_server, browser):
@@ -87,6 +90,7 @@ def test_session_persists_after_reload(page, live_server):
 # Container lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_run_container_from_popular_chip(page, live_server, docker_client):
     """Open Run modal, click alpine chip, pick latest tag, run container."""
@@ -128,9 +132,7 @@ def test_container_start_stop(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -166,8 +168,7 @@ def test_container_logs(page, live_server, docker_client):
             if c.name == container_name:
                 c.remove(force=True)
         docker_client.containers.run(
-            "alpine", "sh -c 'echo hello-from-e2e; sleep 600'",
-            name=container_name, detach=True
+            "alpine", "sh -c 'echo hello-from-e2e; sleep 600'", name=container_name, detach=True
         )
 
     _nav_to(page, "containers")
@@ -190,9 +191,7 @@ def test_container_inspect(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -217,9 +216,7 @@ def test_container_stats(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -243,9 +240,7 @@ def test_container_delete(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -268,9 +263,7 @@ def test_container_rename(page, live_server, docker_client):
             for c in docker_client.containers.list(all=True):
                 if c.name == name:
                     c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -297,6 +290,7 @@ def test_container_rename(page, live_server, docker_client):
 # Double-click / concurrency guards
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_stop_button_disabled_during_stop(page, live_server, docker_client):
     """Click Stop on a running container; second click must be ignored (button disabled)."""
@@ -305,9 +299,7 @@ def test_stop_button_disabled_during_stop(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -340,9 +332,7 @@ def test_delete_guard_prevents_double(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -369,6 +359,7 @@ def test_delete_guard_prevents_double(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Images
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_pull_image_from_hub_search(page, live_server):
@@ -441,6 +432,7 @@ def test_image_delete(page, live_server, docker_client):
 # Volumes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_create_and_delete_volume(page, live_server, docker_client):
     """Create a volume named e2e-test-vol, verify it appears, then delete it."""
@@ -452,7 +444,9 @@ def test_create_and_delete_volume(page, live_server, docker_client):
             pass
 
     _nav_to(page, "volumes")
-    page.locator("button:has-text('Create volume')").click()
+    # Toolbar Create button (label is just "Create" — the "volume" context
+    # is conveyed by the page header, not the button).
+    page.locator("#main button:has-text('Create')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
     page.locator('input[name="name"]').fill(vol_name)
     page.locator(".modal button:has-text('Create')").click()
@@ -470,6 +464,7 @@ def test_create_and_delete_volume(page, live_server, docker_client):
 # Networks
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_builtin_networks_show_badge(page, live_server):
     """Verify bridge, host, and none networks have a 'built-in' badge.
@@ -485,9 +480,7 @@ def test_builtin_networks_show_badge(page, live_server):
         # Match the row whose FIRST cell's text is exactly `net_name`
         # (possibly followed by the badge span). `>> nth=0` narrows to
         # the name cell; `has-text` on the parent row scopes it.
-        rows = page.locator("tbody tr").filter(
-            has=page.locator(f"td:first-child:text-matches('^\\s*{net_name}\\b')")
-        )
+        rows = page.locator("tbody tr").filter(has=page.locator(f"td:first-child:text-matches('^\\s*{net_name}\\b')"))
         if rows.count() == 0:
             # Network not present on this engine (e.g. custom config)
             continue
@@ -521,6 +514,7 @@ def test_create_and_delete_network(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry search
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_hub_search_returns_results(page, live_server):
@@ -590,6 +584,7 @@ def test_popular_chip_shows_tags(page, live_server):
 # System page
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_system_page_shows_docker_version(page, live_server):
     """Go to System page, verify Docker version field is populated."""
@@ -620,6 +615,7 @@ def test_audit_log_shows_requests(page, live_server):
 # Error states / fault tolerance
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_engine_unreachable_shows_tunnel_instructions():
     """Implemented at end of file (must run last to avoid breaking session tunnel)."""
@@ -629,6 +625,7 @@ def test_engine_unreachable_shows_tunnel_instructions():
 # ─────────────────────────────────────────────────────────────────────────────
 # Navigation / no leaks
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_rapid_page_navigation_no_errors(page, live_server):
@@ -648,7 +645,8 @@ def test_rapid_page_navigation_no_errors(page, live_server):
 
     # Filter out noise — only fail on genuine JS runtime errors
     real_errors = [
-        e for e in js_errors
+        e
+        for e in js_errors
         if "Failed to fetch" not in e
         and "NetworkError" not in e
         and "fetch" not in e.lower()
@@ -673,10 +671,7 @@ def test_modal_close_during_load(page, live_server):
 
     page.wait_for_timeout(500)
     real_errors = [
-        e for e in js_errors
-        if "Failed to fetch" not in e
-        and "NetworkError" not in e
-        and "fetch" not in e.lower()
+        e for e in js_errors if "Failed to fetch" not in e and "NetworkError" not in e and "fetch" not in e.lower()
     ]
     assert real_errors == [], f"JS errors after modal close: {real_errors}"
 
@@ -684,6 +679,7 @@ def test_modal_close_during_load(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry / image validation edge cases
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_pull_blocked_registry_shows_error(page, live_server):
@@ -699,7 +695,10 @@ def test_pull_blocked_registry_shows_error(page, live_server):
     # Expect an error toast — registry not in allowed list
     page.wait_for_selector(".toast", timeout=MEDIUM)
     toast_text = page.locator(".toast").first.text_content()
-    assert any(kw in toast_text.lower() for kw in ("registry", "registr", "not allow", "approved", "blocked", "error", "403", "422", "400"))
+    assert any(
+        kw in toast_text.lower()
+        for kw in ("registry", "registr", "not allow", "approved", "blocked", "error", "403", "422", "400")
+    )
 
     page.locator(".modal .actions button:has-text('Cancel')").click()
 
@@ -707,6 +706,7 @@ def test_pull_blocked_registry_shows_error(page, live_server):
 @pytest.mark.e2e
 def test_hub_search_no_results(page, live_server):
     """When the hub search API returns zero results, 'No results.' is shown."""
+
     # Intercept the registry search API to return empty results
     def _empty_results(route):
         route.fulfill(
@@ -752,7 +752,10 @@ def test_run_container_blocked_registry_shows_error(page, live_server):
 
     page.wait_for_selector(".toast", timeout=MEDIUM)
     toast_text = page.locator(".toast").first.text_content()
-    assert any(kw in toast_text.lower() for kw in ("registry", "registr", "not allow", "approved", "blocked", "error", "403", "422", "400"))
+    assert any(
+        kw in toast_text.lower()
+        for kw in ("registry", "registr", "not allow", "approved", "blocked", "error", "403", "422", "400")
+    )
 
     page.locator(".modal .actions button:has-text('Cancel')").click()
 
@@ -760,6 +763,7 @@ def test_run_container_blocked_registry_shows_error(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Container lifecycle — pause / unpause / kill
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_container_pause_unpause(page, live_server, docker_client):
@@ -769,9 +773,7 @@ def test_container_pause_unpause(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -806,9 +808,7 @@ def test_container_kill(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -826,6 +826,7 @@ def test_container_kill(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket — log streaming
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_container_log_stream_via_ws(page, live_server, docker_client):
@@ -866,6 +867,7 @@ def test_container_log_stream_via_ws(page, live_server, docker_client):
 # Volume operations
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_volume_prune_unused(page, live_server, docker_client):
     """Create an unused volume then prune it via the UI."""
@@ -880,7 +882,8 @@ def test_volume_prune_unused(page, live_server, docker_client):
     page.wait_for_selector(f"text={vol_name}", timeout=MEDIUM)
 
     page.on("dialog", lambda d: d.accept())
-    page.locator("button:has-text('Prune unused')").click()
+    # Toolbar Prune button — label "Prune" in volumes, "Prune unused" in networks.
+    page.locator("#main button:has-text('Prune')").click()
 
     # Volume should disappear after pruning
     page.wait_for_selector(f"text={vol_name}", state="detached", timeout=MEDIUM)
@@ -889,6 +892,7 @@ def test_volume_prune_unused(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Network operations
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_network_connect_modal_shows_containers(page, live_server, docker_client):
@@ -942,6 +946,7 @@ def test_network_connect_modal_shows_containers(page, live_server, docker_client
 # ─────────────────────────────────────────────────────────────────────────────
 # Keyboard shortcuts
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_keyboard_shortcut_navigation(page, live_server):
@@ -997,6 +1002,7 @@ def test_keyboard_shortcut_help_overlay(page, live_server):
 # Container filter / search
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_container_search_filter(page, live_server, docker_client):
     """Typing in the search box filters the container list."""
@@ -1038,21 +1044,15 @@ def test_container_search_filter(page, live_server, docker_client):
 # Compose
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_compose_deploy_and_teardown(page, live_server):
     """Upload a minimal compose file, deploy it, then tear it down."""
     import os
     import tempfile
 
-    compose_content = (
-        "services:\n"
-        "  web:\n"
-        "    image: alpine\n"
-        "    command: sleep 600\n"
-    )
-    with tempfile.NamedTemporaryFile(
-        suffix=".yml", mode="w", delete=False, prefix="e2e-compose-"
-    ) as f:
+    compose_content = "services:\n  web:\n    image: alpine\n    command: sleep 600\n"
+    with tempfile.NamedTemporaryFile(suffix=".yml", mode="w", delete=False, prefix="e2e-compose-") as f:
         f.write(compose_content)
         tmp_path = f.name
 
@@ -1093,6 +1093,7 @@ def test_compose_deploy_and_teardown(page, live_server):
 # Audit log download
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_audit_log_download(page, live_server):
     """Verify the audit log download link responds with content."""
@@ -1128,6 +1129,7 @@ def test_audit_log_jsonl_download(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Rate limiting — UI shows toast on 429
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_health_endpoint_public(live_server):
@@ -1175,6 +1177,7 @@ def test_unauthenticated_api_returns_401(live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Run Container modal — detailed form testing
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_run_modal_fills_name_and_command(page, live_server):
@@ -1293,8 +1296,7 @@ def test_run_modal_network_dropdown(page, live_server, docker_client):
 
     # Wait for networks to load (async fetch populates options)
     page.wait_for_function(
-        "() => document.getElementById('run-network') && "
-        "document.getElementById('run-network').options.length > 1",
+        "() => document.getElementById('run-network') && document.getElementById('run-network').options.length > 1",
         timeout=MEDIUM,
     )
 
@@ -1305,9 +1307,7 @@ def test_run_modal_network_dropdown(page, live_server, docker_client):
     # Try selecting the 'bridge' option by value (not label text) if it exists.
     # Options are built as value=n.name, text=n.name+" (driver)". The default
     # option has value="" so we need to select by value to avoid ambiguity.
-    option_values = page.locator("#run-network option").evaluate_all(
-        "(opts) => opts.map(o => o.value)"
-    )
+    option_values = page.locator("#run-network option").evaluate_all("(opts) => opts.map(o => o.value)")
     if "bridge" in option_values:
         net_sel.select_option(value="bridge")
         assert net_sel.input_value() == "bridge"
@@ -1445,6 +1445,7 @@ def test_run_container_with_env_and_volume(page, live_server, docker_client):
 # Container detail tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_container_detail_tabs_present(page, live_server, docker_client):
     """Open detail view for a running container, verify all tab labels exist."""
@@ -1506,9 +1507,7 @@ def test_container_processes_tab(page, live_server, docker_client):
     # Should show either a table with process rows or an empty-state message
     has_table = content.locator("table tbody tr").count() > 0
     has_empty = "No processes running" in content_text
-    assert has_table or has_empty, (
-        f"Expected process table rows or empty state, got: {content_text[:200]}"
-    )
+    assert has_table or has_empty, f"Expected process table rows or empty state, got: {content_text[:200]}"
 
     if has_table:
         # Verify standard 'ps' column headers are present (docker top returns PID, CMD etc.)
@@ -1562,9 +1561,7 @@ def test_container_files_diff_tab(page, live_server, docker_client):
     # Either a table with diff rows or 'No filesystem changes'
     has_table = content.locator("table tbody tr").count() > 0
     has_empty = "No filesystem changes" in content_text
-    assert has_table or has_empty, (
-        f"Expected diff table or empty state, got: {content_text[:200]}"
-    )
+    assert has_table or has_empty, f"Expected diff table or empty state, got: {content_text[:200]}"
 
     if has_table:
         # Each diff row should have a change kind badge (Added/Modified/Deleted)
@@ -1682,6 +1679,7 @@ def test_container_detail_back_button(page, live_server, docker_client):
 # Log viewer — detailed controls
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_log_viewer_search_filter(page, live_server, docker_client):
     """Open log viewer, type in search input, verify only matching lines are shown."""
@@ -1692,8 +1690,7 @@ def test_log_viewer_search_filter(page, live_server, docker_client):
                 c.remove(force=True)
         docker_client.containers.run(
             "alpine",
-            ["sh", "-c",
-             "echo 'alpha-line'; echo 'beta-line'; echo 'alpha-second'; sleep 600"],
+            ["sh", "-c", "echo 'alpha-line'; echo 'beta-line'; echo 'alpha-second'; sleep 600"],
             name=container_name,
             detach=True,
         )
@@ -1705,8 +1702,7 @@ def test_log_viewer_search_filter(page, live_server, docker_client):
 
     # Wait until log output contains our marker lines
     page.wait_for_function(
-        "() => { var el = document.getElementById('log-output');"
-        " return el && el.textContent.includes('alpha-line'); }",
+        "() => { var el = document.getElementById('log-output'); return el && el.textContent.includes('alpha-line'); }",
         timeout=LONG,
     )
 
@@ -1746,8 +1742,10 @@ def test_log_download_txt_button(page, live_server, docker_client):
             if c.name == container_name:
                 c.remove(force=True)
         docker_client.containers.run(
-            "alpine", "sh -c 'echo log-download-test; sleep 600'",
-            name=container_name, detach=True,
+            "alpine",
+            "sh -c 'echo log-download-test; sleep 600'",
+            name=container_name,
+            detach=True,
         )
 
     _nav_to(page, "containers")
@@ -1791,8 +1789,10 @@ def test_log_download_jsonl_button(page, live_server, docker_client):
             if c.name == container_name:
                 c.remove(force=True)
         docker_client.containers.run(
-            "alpine", "sh -c 'echo log-jsonl-test; sleep 600'",
-            name=container_name, detach=True,
+            "alpine",
+            "sh -c 'echo log-jsonl-test; sleep 600'",
+            name=container_name,
+            detach=True,
         )
 
     _nav_to(page, "containers")
@@ -1832,9 +1832,7 @@ def test_log_toolbar_elements_present(page, live_server, docker_client):
         for c in docker_client.containers.list(all=True):
             if c.name == container_name:
                 c.remove(force=True)
-        docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
 
     _nav_to(page, "containers")
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
@@ -1863,6 +1861,7 @@ def test_log_toolbar_elements_present(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Images — Inspect, Tag, Push
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_image_inspect_shows_details(page, live_server, docker_client):
@@ -1896,8 +1895,10 @@ def test_image_inspect_shows_details(page, live_server, docker_client):
     )
 
     # Verify the Tag form is present
-    assert page.locator(".modal input[placeholder*='latest']").count() > 0 or \
-           page.locator(".modal input[placeholder*='tag']").count() > 0
+    assert (
+        page.locator(".modal input[placeholder*='latest']").count() > 0
+        or page.locator(".modal input[placeholder*='tag']").count() > 0
+    )
 
     page.locator(".modal button:has-text('Close')").click()
     page.wait_for_selector(".modal-bg", state="detached", timeout=SHORT)
@@ -1993,7 +1994,9 @@ def test_image_tag_submit(page, live_server, docker_client):
     page.wait_for_selector(".modal", timeout=MEDIUM)
 
     # Fill the repo field (placeholder contains 'project' or 'repo')
-    repo_inputs = page.locator(".modal input[placeholder*='docker.pkg.dev'], .modal input[placeholder*='repo'], .modal input[placeholder*='project']")
+    repo_inputs = page.locator(
+        ".modal input[placeholder*='docker.pkg.dev'], .modal input[placeholder*='repo'], .modal input[placeholder*='project']"
+    )
     if repo_inputs.count() == 0:
         pytest.skip("Could not find repo input in image inspect modal")
 
@@ -2054,6 +2057,7 @@ def test_image_push_button_present(page, live_server, docker_client):
 # Networks — disconnect and prune
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_network_disconnect_container(page, live_server, docker_client):
     """Connect a container to a custom network, then disconnect it via the UI."""
@@ -2074,9 +2078,7 @@ def test_network_disconnect_container(page, live_server, docker_client):
 
         # Create network and a running container, then connect them
         net = docker_client.networks.create(net_name)
-        ctr = docker_client.containers.run(
-            "alpine", "sleep 600", name=container_name, detach=True
-        )
+        ctr = docker_client.containers.run("alpine", "sleep 600", name=container_name, detach=True)
         net.connect(ctr)
         # Verify connection took effect before navigating to the UI
         net.reload()
@@ -2096,10 +2098,10 @@ def test_network_disconnect_container(page, live_server, docker_client):
     disconnect_btn = row.locator("button:has-text('Disconnect')")
 
     if disconnect_btn.count() == 0:
-        pytest.skip(
-            f"No Disconnect button found for {net_name} — container may not be connected"
-        )
+        pytest.skip(f"No Disconnect button found for {net_name} — container may not be connected")
 
+    # Disconnect now prompts — accept the confirm dialog so the action proceeds.
+    page.on("dialog", lambda d: d.accept())
     disconnect_btn.first.click()
 
     # After disconnect, the button should disappear or the row should update
@@ -2162,6 +2164,7 @@ def test_network_prune_unused(page, live_server, docker_client):
 # System page — prune actions and info fields
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_system_page_prune_system_button(page, live_server):
     """Click 'Prune system' on the System page, confirm dialog, verify toast appears."""
@@ -2223,13 +2226,9 @@ def test_system_page_containers_count(page, live_server):
     assert containers_card.count() > 0, "Containers info card not found"
 
     value_text = containers_card.locator(".value").text_content().strip()
-    assert value_text.strip() not in ("", "undefined", "null"), (
-        f"Containers card has empty value: {value_text!r}"
-    )
+    assert value_text.strip() not in ("", "undefined", "null"), f"Containers card has empty value: {value_text!r}"
     # The value should contain a number and 'running'
-    assert "running" in value_text.lower(), (
-        f"Expected 'running' in containers value, got: {value_text!r}"
-    )
+    assert "running" in value_text.lower(), f"Expected 'running' in containers value, got: {value_text!r}"
 
 
 @pytest.mark.e2e
@@ -2243,9 +2242,7 @@ def test_system_page_disk_usage_section(page, live_server):
     disk_labels_clean = [lbl.strip() for lbl in disk_labels]
 
     for expected in ("Images", "Containers", "Volumes", "Total"):
-        assert expected in disk_labels_clean, (
-            f"Expected '{expected}' in disk usage labels, got: {disk_labels_clean}"
-        )
+        assert expected in disk_labels_clean, f"Expected '{expected}' in disk usage labels, got: {disk_labels_clean}"
 
     # All disk usage cards should have a value in 'N MB' format
     for card in page.locator("h3:has-text('Disk Usage') ~ div .info-card").all():
@@ -2263,9 +2260,7 @@ def test_system_page_audit_log_section(page, live_server):
     audit_headers = page.locator("table thead th").all_text_contents()
     headers_clean = [h.strip() for h in audit_headers]
     for col in ("Time", "Event", "Method", "Path", "Status"):
-        assert col in headers_clean, (
-            f"Expected '{col}' column in audit log table headers, got: {headers_clean}"
-        )
+        assert col in headers_clean, f"Expected '{col}' column in audit log table headers, got: {headers_clean}"
 
     # The audit log download button should be visible
     assert page.locator("button:has-text('Download .jsonl')").count() > 0
@@ -2304,6 +2299,7 @@ def test_system_page_audit_refresh_button(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Toast notification lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_toast_appears_on_successful_action(page, live_server, docker_client):
@@ -2355,7 +2351,7 @@ def test_toast_auto_dismisses(page, live_server, docker_client):
     page.wait_for_selector("table", timeout=MEDIUM)
 
     # Create a volume to trigger a success toast
-    page.locator("button:has-text('Create volume')").click()
+    page.locator("#main button:has-text('Create')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
     page.locator('input[name="name"]').fill("e2e-toast-dismiss-vol2")
     page.locator(".modal button:has-text('Create')").click()
@@ -2409,9 +2405,11 @@ def test_toast_error_styling(page, live_server):
 # Empty states
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_volumes_empty_state_message(page, live_server, docker_client):
     """When no volumes exist, the Volumes page shows an appropriate empty state."""
+
     # We test via the table empty row rather than removing all volumes
     # (removing all real volumes would be destructive).
     # Instead we use the mock/intercept route approach.
@@ -2470,6 +2468,7 @@ def test_networks_builtin_badge_display(page, live_server):
 @pytest.mark.e2e
 def test_compose_page_empty_state(page, live_server):
     """When no stacks are running, the Compose page shows the Deploy Stack section."""
+
     def _empty_stacks(route):
         route.fulfill(
             status=200,
@@ -2529,6 +2528,7 @@ def test_containers_no_match_search_empty_state(page, live_server, docker_client
 # Session / Security edge cases
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_session_expiry_toast_on_absolute_timeout(page, live_server):
     """Simulate absolute session expiry by setting session_start far in the past."""
@@ -2564,6 +2564,7 @@ def test_session_expiry_toast_on_absolute_timeout(page, live_server):
 @pytest.mark.e2e
 def test_rate_limit_toast_on_429(page, live_server):
     """When the server returns 429, the apiFetch error handler shows a toast."""
+
     # Intercept the containers API to return 429
     def _rate_limited(route):
         route.fulfill(
@@ -2613,6 +2614,7 @@ def test_logout_clears_session_and_shows_login(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar navigation elements
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_sidebar_all_links_present(page, live_server):
@@ -2692,9 +2694,7 @@ def test_sidebar_active_class_on_navigation(page, live_server):
         active_link = page.locator(".sidebar a.active")
         assert active_link.count() > 0, f"No active sidebar link after clicking {link_text}"
         active_text = active_link.first.text_content().strip()
-        assert link_text in active_text, (
-            f"Expected '{link_text}' to be active, but active is: {active_text!r}"
-        )
+        assert link_text in active_text, f"Expected '{link_text}' to be active, but active is: {active_text!r}"
 
 
 @pytest.mark.e2e
@@ -2722,6 +2722,7 @@ def test_sidebar_brand_name(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket exec terminal — full storyboard
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_terminal_disconnect_button(page, live_server, docker_client):
@@ -2774,8 +2775,7 @@ def test_terminal_tab_switch_closes_ws(page, live_server, docker_client):
     # Switch to Inspect tab
     page.locator(".detail-tab:has-text('Inspect')").click()
     page.wait_for_function(
-        "() => document.getElementById('detail-content') && "
-        "!document.getElementById('term-output')",
+        "() => document.getElementById('detail-content') && !document.getElementById('term-output')",
         timeout=MEDIUM,
     )
 
@@ -2798,6 +2798,7 @@ def test_terminal_tab_switch_closes_ws(page, live_server, docker_client):
 # ─────────────────────────────────────────────────────────────────────────────
 # Additional container lifecycle tests
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_container_inspect_shows_environment(page, live_server, docker_client):
@@ -2882,9 +2883,7 @@ def test_container_sort_by_name(page, live_server, docker_client):
     # The Name header should now show a sort indicator
     name_header = page.locator("th:has-text('Name')").first
     header_text = name_header.text_content()
-    assert "▲" in header_text or "▼" in header_text, (
-        f"Expected sort indicator in Name header, got: {header_text!r}"
-    )
+    assert "▲" in header_text or "▼" in header_text, f"Expected sort indicator in Name header, got: {header_text!r}"
 
     # Click again to reverse sort
     page.locator("th:has-text('Name')").click()
@@ -2931,7 +2930,7 @@ def test_volume_create_shows_in_list(page, live_server, docker_client):
             pass
 
     _nav_to(page, "volumes")
-    page.locator("button:has-text('Create volume')").click()
+    page.locator("#main button:has-text('Create')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
 
     # Check modal title
@@ -3013,9 +3012,7 @@ def test_container_stats_tab_all_fields(page, live_server, docker_client):
 
     stat_labels = [s.text_content().strip() for s in page.locator(".stat .label").all()]
     for expected in ("CPU", "Memory", "Net RX", "Net TX"):
-        assert expected in stat_labels, (
-            f"Expected stat card '{expected}', got labels: {stat_labels}"
-        )
+        assert expected in stat_labels, f"Expected stat card '{expected}', got labels: {stat_labels}"
 
     # All stat values should be non-empty
     for stat in page.locator(".stat").all():
@@ -3040,6 +3037,7 @@ def test_keyboard_shortcut_6_navigates_system(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # CSP-safe sidebar navigation (onclick replaced with addEventListener)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_sidebar_nav_containers_via_click(page, live_server):
@@ -3086,6 +3084,7 @@ def test_sidebar_nav_system_via_click(page, live_server):
 # Logout button
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.e2e
 def test_logout_button_visible_when_authenticated(page, live_server):
     """Logout button is present in the sidebar when a session token is set."""
@@ -3104,10 +3103,7 @@ def test_logout_button_clears_session_and_shows_login(page, live_server):
     page.locator("#sidebar-logout").click()
     # After logout the login form (h3 Sign in) should appear
     page.wait_for_selector("h3:has-text('Sign in'), button:has-text('Sign in')", timeout=SHORT)
-    assert (
-        page.locator("h3:has-text('Sign in')").count() > 0
-        or page.locator("button:has-text('Sign in')").count() > 0
-    )
+    assert page.locator("h3:has-text('Sign in')").count() > 0 or page.locator("button:has-text('Sign in')").count() > 0
     # Session storage should no longer have the token
     token = page.evaluate("() => sessionStorage.getItem('api_token')")
     assert token is None or token == ""
@@ -3116,6 +3112,7 @@ def test_logout_button_clears_session_and_shows_login(page, live_server):
 # ─────────────────────────────────────────────────────────────────────────────
 # Fetch timeout — no inline-handler CSP violations
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.e2e
 def test_no_csp_violations_on_page_load(page, live_server):

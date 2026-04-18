@@ -5,6 +5,7 @@
 Must be imported by skiff.app BEFORE any other skiff module so that
 structlog is configured before any logger is created.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,7 @@ from skiff.auth import constant_time_compare
 
 # ── Audit log file handler ─────────────────────────────────
 
+
 class _TightRotatingFileHandler(logging.handlers.RotatingFileHandler):
     """RotatingFileHandler that chmods each log file to 0600.
 
@@ -38,6 +40,7 @@ class _TightRotatingFileHandler(logging.handlers.RotatingFileHandler):
     def _fix_mode(self, path: str | None = None) -> None:
         """chmod the given path (or self.baseFilename) to 0600, tolerating absence."""
         from pathlib import Path
+
         target = Path(path if path is not None else self.baseFilename)
         try:
             target.chmod(0o600)
@@ -53,6 +56,7 @@ class _TightRotatingFileHandler(logging.handlers.RotatingFileHandler):
         super().doRollover()
         self._fix_mode()
         from pathlib import Path
+
         base = Path(self.baseFilename)
         for p in base.parent.glob(f"{base.name}.*"):
             self._fix_mode(str(p))
@@ -96,8 +100,7 @@ class _RedactQueryTokenFilter(logging.Filter):
             # Rewrite both args-formatted and already-rendered forms.
             if record.args:
                 record.args = tuple(
-                    _TOKEN_QS_RE.sub(r"\1[REDACTED]", a) if isinstance(a, str) else a
-                    for a in record.args
+                    _TOKEN_QS_RE.sub(r"\1[REDACTED]", a) if isinstance(a, str) else a for a in record.args
                 )
             record.msg = _TOKEN_QS_RE.sub(r"\1[REDACTED]", str(record.msg))
         return True
@@ -126,6 +129,7 @@ _gcp_logger = None
 if config._GCP_PROJECT:
     try:
         import google.cloud.logging as _gcl  # type: ignore[import]
+
         _gcp_client = _gcl.Client(project=config._GCP_PROJECT)
         _gcp_logger = _gcp_client.logger(config._GCP_LOG_NAME)
         print(  # noqa: T201
@@ -144,12 +148,16 @@ if config._GCP_PROJECT:
 
 # ── structlog processors ───────────────────────────────────
 
+
 def _level_to_severity(logger, method_name, event_dict):
     """Map Python log levels to Cloud Logging severity field."""
     level = event_dict.pop("level", method_name)
     severity_map = {
-        "debug": "DEBUG", "info": "INFO", "warning": "WARNING",
-        "error": "ERROR", "critical": "CRITICAL",
+        "debug": "DEBUG",
+        "info": "INFO",
+        "warning": "WARNING",
+        "error": "ERROR",
+        "critical": "CRITICAL",
     }
     event_dict["severity"] = severity_map.get(level, "DEFAULT")
     return event_dict
@@ -203,14 +211,13 @@ def _emit_loop_lag_warning(lag: float) -> None:
     """Dump every thread's stack to stderr. Separate so it can be unit-tested
     without the infinite monitor loop around it."""
     import traceback
+
     frames = sys._current_frames()
-    frame_info = [
-        f"Thread {tid}:\n{''.join(traceback.format_stack(frame))}"
-        for tid, frame in frames.items()
-    ]
+    frame_info = [f"Thread {tid}:\n{''.join(traceback.format_stack(frame))}" for tid, frame in frames.items()]
     print(  # noqa: T201 — last-resort diagnostic; structlog itself may be blocked
-        f"[LOOP_LAG] event loop blocked {lag*1000:.0f}ms\n" + "\n".join(frame_info),
-        file=sys.stderr, flush=True,
+        f"[LOOP_LAG] event loop blocked {lag * 1000:.0f}ms\n" + "\n".join(frame_info),
+        file=sys.stderr,
+        flush=True,
     )
 
 
@@ -234,13 +241,20 @@ async def _loop_lag_monitor() -> None:
 # classification, add the row with the most-specific prefix first.
 _AUDIT_EVENT_MAP: list[tuple[str, str, str]] = [
     # WebSockets — bypass @secure_route.mutate, so no decorator to read.
-    ("GET",    "/ws/logs/",               "container.logs_stream"),
-    ("GET",    "/ws/exec/",               "container.exec_session"),
+    ("GET", "/ws/logs/", "container.logs_stream"),
+    ("GET", "/ws/exec/", "container.exec_session"),
     # Reads that deserve a named event_type (rather than the catch-all).
-    ("GET",    "/api/images",             "image.list"),
-    ("GET",    "/api/system/audit-log",   "audit.log_read"),
+    ("GET", "/api/images", "image.list"),
+    ("GET", "/api/system/audit-log", "audit.log_read"),
+    # Mutations whose handlers emit audit inline (to carry computed
+    # counts) instead of via the decorator. The handler already emits
+    # `system.pruned` / `build_cache.pruned` with detail; this entry
+    # just fixes the audit.api_access `event_type` on the same request
+    # so SIEM can alert on either shape uniformly.
+    ("POST", "/api/system/prune-build-cache", "build_cache.pruned"),
+    ("POST", "/api/system/prune", "system.pruned"),
     # Catch-all for anything else under /api/.
-    ("*",      "/api/",                   "api.request"),
+    ("*", "/api/", "api.request"),
 ]
 
 # Regex-compiled table of decorator-derived (method, path-template, label).
@@ -288,20 +302,47 @@ def register_route_audit_events(app) -> None:
     derived.sort(key=lambda t: -len(t[1].pattern))
     _AUDIT_EVENT_REGEXES[:] = derived
 
-_RESOURCE_PATH_RE = re.compile(
-    r"/api/(?P<rtype>containers|images|volumes|networks|compose)/(?P<rid>[^/]+)"
+
+_RESOURCE_PATH_RE = re.compile(r"/api/(?P<rtype>containers|images|volumes|networks|compose)/(?P<rid>[^/]+)")
+
+# URL verbs that the positional regex misclassifies as `rid`. Without
+# this filter `/api/containers/run` produces `resource_id="run"` and
+# the System page's Resource column renders "container run" for every
+# new-container action. Keep every other `rid` (short ids, names) —
+# "container ab12cd34" is the useful case.
+_URL_VERB_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "run",
+        "create",
+        "prune",
+        "up",
+        "down",
+        "stacks",
+        "allowed",
+        "list",
+        "pull",
+        "push",
+        "search",
+        "tags",
+    }
 )
 
 
-def _classify_event(method: str, path: str, status: int) -> tuple[str, str, str]:
+def _classify_event(method: str, path: str, status: int, error_code: str = "") -> tuple[str, str, str]:
     """Return (event_type, resource_type, resource_id) for an API request.
 
     Precedence:
-      1. 401/403 → auth.denied (regardless of path)
-      2. 429     → rate_limit.exceeded
-      3. Decorator-derived regex table (exact FastAPI route match)
-      4. Static _AUDIT_EVENT_MAP (WS + reads + catch-all)
+      1. 403 + `auth.reviewer_read_only` → auth.reviewer_denied
+      2. 401/403 → auth.denied
+      3. 429     → rate_limit.exceeded
+      4. Decorator-derived regex table (exact FastAPI route match)
+      5. Static _AUDIT_EVENT_MAP (WS + reads + catch-all)
     """
+    if status == 403 and error_code == "auth.reviewer_read_only":
+        # Distinguish "reviewer profile tried to mutate" from the generic
+        # auth.denied bucket so SIEM can whitelist reviewer noise while
+        # still alerting on stolen-token mutation attempts.
+        return "auth.reviewer_denied", "", ""
     if status in {401, 403}:
         return "auth.denied", "", ""
     if status == 429:
@@ -310,6 +351,17 @@ def _classify_event(method: str, path: str, status: int) -> tuple[str, str, str]
     m2 = _RESOURCE_PATH_RE.match(path)
     resource_type = m2.group("rtype").rstrip("s") if m2 else ""
     resource_id = m2.group("rid") if m2 else ""
+    if resource_id in _URL_VERB_BLOCKLIST:
+        resource_id = ""
+    # Truncate at the classifier boundary so the audit middleware's
+    # Pydantic model never sees an over-long value. A caller who hits a
+    # path like `/api/images/<128+ chars>/remove` would otherwise crash
+    # the middleware with string_too_long, drop the audit line, and
+    # leak a 500 to the client. Limits are kept a hair under the
+    # _AuditExtras field caps (32 / 128) to leave headroom for any
+    # future truncation indicator.
+    resource_type = resource_type[:32]
+    resource_id = resource_id[:128]
     return event_type, resource_type, resource_id
 
 
@@ -404,8 +456,15 @@ class _AuditExtras(pydantic.BaseModel):
         return {k: v for k, v in self.model_dump().items() if v}
 
 
-def _emit_api_access_audit(scope: dict, status_code: int) -> None:
-    """Emit one `audit.api_access` line for the request that just completed."""
+def _emit_api_access_audit(scope: dict, status_code: int, error_code: str = "") -> None:
+    """Emit one `audit.api_access` line for the request that just completed.
+
+    `error_code` is extracted from the response envelope's
+    `detail.code` by the middleware; falls back to the request-scoped
+    contextvar (which works in unit tests and sync-only call sites
+    but not across the anyio boundary). The middleware is the
+    authoritative source.
+    """
     headers = dict(scope.get("headers", []))
     auth_header = headers.get(b"authorization", b"").decode(errors="replace")
     token_hint, token_suffix = _describe_auth(auth_header, status_code)
@@ -420,13 +479,34 @@ def _emit_api_access_audit(scope: dict, status_code: int) -> None:
     path = scope.get("path", "")
     method = scope.get("method", "")
     client = scope.get("client")
-    event_type, rtype, rid = _classify_event(method, path, status_code)
-    extras = _AuditExtras(
-        token_suffix=token_suffix,
-        user=forwarded_user,
-        resource_type=rtype,
-        resource_id=rid,
+    if not error_code:
+        # Fallback for any non-middleware call site. The middleware
+        # passes the authoritative code from the serialized response.
+        from skiff.contract.errors import current_error_code
+
+        error_code = current_error_code()
+    event_type, rtype, rid = _classify_event(
+        method,
+        path,
+        status_code,
+        error_code=error_code,
     )
+    try:
+        extras = _AuditExtras(
+            token_suffix=token_suffix,
+            user=forwarded_user,
+            resource_type=rtype,
+            resource_id=rid,
+        )
+    except pydantic.ValidationError:
+        # Defensive fallback: a future classifier change could miss a
+        # field cap or introduce a non-string. The audit middleware
+        # must NEVER propagate an exception into the response path —
+        # that would drop audit AND return a 500. Log the validation
+        # failure as a warning, emit the audit line with empty extras,
+        # and keep the user's response intact.
+        log.warning("audit.extras_invalid", path=path[:128], method=method)
+        extras = _AuditExtras()
     # Two audit channels coexist:
     #   `event=audit.api_access`  — this line, emitted by the middleware on
     #       every request. Always carries method/path/status/remote/auth.
@@ -458,6 +538,14 @@ class AuditLogMiddleware:
 
     Pure ASGI middleware (no BaseHTTPMiddleware) to avoid the known Starlette deadlock
     when many clients disconnect simultaneously during the http.response.start phase.
+
+    For 4xx/5xx responses, the middleware peeks at the response body to
+    extract the envelope's `code` field. `http_error()` sets a
+    `contextvars.ContextVar` but that doesn't survive the anyio task
+    boundary between FastAPI's ExceptionMiddleware and our outer
+    wrapper; reading the serialized body is the bulletproof path —
+    the response was built by FastAPI, so whatever it shipped is
+    exactly what the client sees.
     """
 
     def __init__(self, app) -> None:
@@ -469,17 +557,55 @@ class AuditLogMiddleware:
             return
 
         status_code = 500
+        body_chunks: list[bytes] = []
+        body_overflow = False
+        body_peek_limit = 4096  # more than enough for an envelope
+
+        def _maybe_capture_body(message: dict) -> None:
+            """Append response-body bytes to `body_chunks` until the
+            cap is reached. Extracted to keep `auditing_send` flat."""
+            nonlocal body_overflow
+            if body_overflow or message["type"] != "http.response.body":
+                return
+            if status_code < 400:
+                return
+            chunk = message.get("body", b"") or b""
+            total = sum(len(c) for c in body_chunks) + len(chunk)
+            if total > body_peek_limit:
+                body_overflow = True
+                return
+            body_chunks.append(chunk)
 
         async def auditing_send(message) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
+            else:
+                _maybe_capture_body(message)
             await send(message)
 
         try:
             await self.app(scope, receive, auditing_send)
         finally:
-            _emit_api_access_audit(scope, status_code)
+            error_code = ""
+            if status_code >= 400 and body_chunks:
+                error_code = _extract_envelope_code(b"".join(body_chunks))
+            _emit_api_access_audit(scope, status_code, error_code=error_code)
+
+
+def _extract_envelope_code(body: bytes) -> str:
+    """Return `detail.code` from a JSON error envelope, or ""."""
+    import json as _json
+
+    try:
+        payload = _json.loads(body or b"{}")
+    except ValueError:
+        return ""
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        code = detail.get("code", "")
+        return code if isinstance(code, str) else ""
+    return ""
 
 
 class StripForwardedHeadersMiddleware:
@@ -509,15 +635,17 @@ class StripForwardedHeadersMiddleware:
 
     # Headers dropped when the flag is off. Lowercased because ASGI
     # header tuples are bytes-level lowercase by convention.
-    _STRIPPED = frozenset([
-        b"x-forwarded-for",
-        b"x-forwarded-proto",
-        b"x-forwarded-host",
-        b"x-forwarded-user",
-        b"x-forwarded-port",
-        b"x-forwarded-prefix",
-        b"forwarded",
-    ])
+    _STRIPPED = frozenset(
+        [
+            b"x-forwarded-for",
+            b"x-forwarded-proto",
+            b"x-forwarded-host",
+            b"x-forwarded-user",
+            b"x-forwarded-port",
+            b"x-forwarded-prefix",
+            b"forwarded",
+        ]
+    )
 
     def __init__(self, app) -> None:
         self.app = app
@@ -572,18 +700,17 @@ class BodySizeLimitMiddleware:
 
     @staticmethod
     async def _send_413(send) -> None:
-        body = (
-            b'{"detail":{"code":"validation.body_too_large",'
-            b'"message":"request body exceeds size cap"}}'
+        body = b'{"detail":{"code":"validation.body_too_large","message":"request body exceeds size cap"}}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
         )
-        await send({
-            "type": "http.response.start",
-            "status": 413,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        })
         await send({"type": "http.response.body", "body": body})
 
     @staticmethod
@@ -592,14 +719,16 @@ class BodySizeLimitMiddleware:
             b'{"detail":{"code":"validation.body_timeout",'
             b'"message":"request body not received within the allowed window"}}'
         )
-        await send({
-            "type": "http.response.start",
-            "status": 408,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        })
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 408,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send) -> None:

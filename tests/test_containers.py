@@ -12,6 +12,7 @@ from tests.factories import make_container as _make_container
 
 # ── List containers ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_list_containers_empty(client, mock_docker):
     mock_docker.containers.list.return_value = []
@@ -22,9 +23,12 @@ def test_list_containers_empty(client, mock_docker):
 
 @pytest.mark.unit
 def test_list_containers_returns_fields(client, mock_docker):
-    mock_docker.containers.list.return_value = [_make_container(
-        short_id="abc123def", name="my-service",
-    )]
+    mock_docker.containers.list.return_value = [
+        _make_container(
+            short_id="abc123def",
+            name="my-service",
+        )
+    ]
     resp = client.get("/api/containers", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()
@@ -41,6 +45,7 @@ def test_list_containers_requires_auth(client):
 
 
 # ── Start / stop / restart ─────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_start_container(client, mock_docker):
@@ -73,6 +78,7 @@ def test_start_not_found_returns_404(client, mock_docker):
 
 # ── Kill ───────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_kill_valid_signal(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
@@ -89,6 +95,7 @@ def test_kill_invalid_signal_returns_400(client, mock_docker):
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_delete_container(client, mock_docker):
     mock_docker.containers.get.return_value = _make_container()
@@ -97,6 +104,7 @@ def test_delete_container(client, mock_docker):
 
 
 # ── Logs ───────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_get_logs(client, mock_docker):
@@ -119,6 +127,7 @@ def test_logs_tail_too_large_clamped(client, mock_docker):
 
 
 # ── Run container ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_run_container_blocked_registry(client, mock_docker):
@@ -195,13 +204,20 @@ def test_run_container_success(client, mock_docker):
 
 # ── Invalid container ID format ───────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("bad_id", [
-    "ABC",          # uppercase not allowed
-    "x",            # too short (< 4 hex chars)
-    "a" * 65,       # too long (> 64 chars)
-    "xyz-123",      # hyphen not allowed in hex ID
-])
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        # Invalid for BOTH the hex-id regex AND the container-name regex.
+        # Container names can now flow through this endpoint (scripts can
+        # use the friendly name instead of a hex id), so "ABC", "xyz-123"
+        # etc. are no longer rejected — they are valid names.
+        "-leading-dash",  # name must not start with punctuation
+        "a" * 129,  # > 128 chars exceeds name regex cap
+        "bad%percent",  # % not in the allowed charset (slash would split the path)
+    ],
+)
 def test_invalid_id_format_returns_400(client, bad_id):
     resp = client.post(f"/api/containers/{bad_id}/start", headers=AUTH_CSRF)
     assert resp.status_code == 400

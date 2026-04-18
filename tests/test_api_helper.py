@@ -6,6 +6,7 @@ Verifies the helper preserves semantics vs. raw client calls that
 existing tests use, so the mechanical migration of other test files
 is safe.
 """
+
 from __future__ import annotations
 
 from tests import api
@@ -34,8 +35,10 @@ def test_post_attaches_csrf_header(client, mock_docker):
     # Send an empty body and a bad registry to trigger a fast 400 without
     # touching the Docker SDK mock. CSRF+AUTH must pass (no 401/403).
     resp = api.post(
-        client, "/containers/run",
-        json={}, image="evil.example.com/img:latest",
+        client,
+        "/containers/run",
+        json={},
+        image="evil.example.com/img:latest",
     )
     assert resp.status_code == 400  # registry rejected; NOT 401/403
 
@@ -57,6 +60,7 @@ def test_delete_attaches_csrf_header(client, mock_docker):
     """DELETE without CSRF would 403 — helper wraps AUTH_CSRF so we get
     a normal response path."""
     import docker.errors
+
     mock_docker.containers.get.side_effect = docker.errors.NotFound("gone")
     resp = api.delete(client, "/containers/abc123def")
     # Returns 404 (not found) or 200 — either proves CSRF + AUTH passed.

@@ -12,6 +12,7 @@ Implementation is split across focused submodules:
   skiff.validators      — input validation, Docker helpers, compose sandboxing
   skiff.routers.*       — route handlers grouped by resource type
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +65,13 @@ log = structlog.get_logger(__name__)
 
 _LOCAL_DOCKER_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _DEPENDENCY_PACKAGES = (
-    "fastapi", "uvicorn", "docker", "structlog", "slowapi", "pyyaml", "python-multipart",
+    "fastapi",
+    "uvicorn",
+    "docker",
+    "structlog",
+    "slowapi",
+    "pyyaml",
+    "python-multipart",
 )
 
 
@@ -73,12 +80,65 @@ def _warn_missing_api_token() -> None:
         log.warning("security.no_api_token", msg="Running without auth — set API_TOKEN for production")
 
 
+def _warn_setup_window_open() -> None:
+    """Loudly announce that the first-run wizard is reachable.
+
+    When `api_token` is unset and `from_env` is false, `POST /api/setup`
+    is callable for `SETUP_WINDOW_SECS` after boot. Anyone who can reach
+    `BIND_HOST:PORT` during that window can claim the instance with
+    their own token. The warning names the bind, the duration, and the
+    mitigation so a first-run operator on a shared host isn't surprised.
+
+    Does not fire on fully-configured boots (token in env → `from_env`
+    true → wizard is dead from boot-0, so the race doesn't exist).
+    """
+    if config._cfg.api_token or config._cfg.from_env:
+        return
+    log.warning(
+        "security.setup_window_open",
+        bind=config.BIND_HOST,
+        port=_resolve_port_for_warning(),
+        window_secs=config.SETUP_WINDOW_SECS,
+        lockout_attempts=config.SETUP_MAX_ATTEMPTS,
+        msg=(
+            f"Setup wizard is reachable on {config.BIND_HOST}:{_resolve_port_for_warning()} "
+            f"for {config.SETUP_WINDOW_SECS} seconds. Anyone who can reach this socket can claim "
+            f"the instance with their own API token (rate-limited; {config.SETUP_MAX_ATTEMPTS} "
+            f"failed attempts per IP → 5-minute lockout). "
+            f"To skip the wizard entirely, set API_TOKEN in the environment before starting."
+        ),
+    )
+
+
+def _resolve_port_for_warning() -> int | str:
+    """Best-effort port for the setup-window warning — the server config
+    does not own the port (uvicorn does), so we look at argv as a hint.
+    Falls back to '?' when nothing obvious is on the CLI — the operator
+    still sees the warning, just without the port echoed back."""
+    import sys as _sys
+
+    argv = _sys.argv
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                return argv[i + 1]
+        if arg.startswith("--port="):
+            val = arg.split("=", 1)[1]
+            try:
+                return int(val)
+            except ValueError:
+                return val
+    return "?"
+
+
 def _warn_empty_api_token_env() -> None:
     if config._cfg.api_token_set_but_empty:
         log.warning(
             "security.empty_api_token_env",
             msg="API_TOKEN env var is set but empty — setup endpoint is OPEN. "
-                "Set a non-empty token or unset the variable.",
+            "Set a non-empty token or unset the variable.",
         )
 
 
@@ -86,7 +146,12 @@ def _warn_no_registry_allowlist() -> None:
     if not config._cfg.allowed_registries:
         log.warning(
             "security.no_registry_allowlist",
-            msg="ALLOWED_REGISTRIES is empty — all registries permitted. Set for production.",
+            msg=(
+                "ALLOWED_REGISTRIES is empty — all image pulls will be "
+                "REJECTED with image.registry_blocked. Set the env var "
+                "to one or more registry hostnames (e.g. "
+                "'docker.io,ghcr.io') to permit pulls from those origins."
+            ),
         )
 
 
@@ -98,13 +163,14 @@ def _warn_unencrypted_docker_host() -> None:
     if not dh.startswith(("http://", "tcp://")):
         return
     from urllib.parse import urlparse
-    host = (urlparse(dh).hostname or "")
+
+    host = urlparse(dh).hostname or ""
     if host in _LOCAL_DOCKER_HOSTS:
         return
     log.warning(
         "security.docker_host_unencrypted",
         msg="DOCKER_HOST uses an unencrypted transport to a non-localhost address. "
-            "Use a TLS-secured (https://) or SSH-tunnelled (unix://) connection instead.",
+        "Use a TLS-secured (https://) or SSH-tunnelled (unix://) connection instead.",
         docker_host=dh,
     )
 
@@ -149,6 +215,7 @@ def _warn_proxy_headers_untrusted() -> None:
     miss it in the startup log.
     """
     import sys as _sys
+
     if config.TRUST_FORWARDED_HEADERS:
         return  # operator has opted in; proxy_headers on is expected
     argv = " ".join(_sys.argv)
@@ -163,9 +230,62 @@ def _warn_proxy_headers_untrusted() -> None:
             "uvicorn may be running with --proxy-headers enabled (its CLI "
             "default) while TRUST_FORWARDED_HEADERS is off. If so, "
             "X-Forwarded-For can forge audit `remote` and rate-limit keys. "
-            "Relaunch with `--no-proxy-headers --forwarded-allow-ips \"\"` "
+            'Relaunch with `--no-proxy-headers --forwarded-allow-ips ""` '
             "or via the `skiff` console script, or set "
             "TRUST_FORWARDED_HEADERS=true when a trusted proxy fronts SKIFF."
+        ),
+    )
+
+
+def _warn_non_loopback_bind() -> None:
+    """Emit a startup warning when BIND_HOST is not a loopback address.
+
+    Backs the SECURITY.md V13 ASVS claim that a non-loopback bind
+    produces a startup warning. The UI already paints a banner via
+    the `insecure_mode` flag in `/api/config`, but operators who
+    only tail stderr won't see that — so mirror the signal here.
+    The warning fires whether or not an API_TOKEN is set: a
+    non-loopback bind is an operator choice that deserves an audible
+    ping in the boot log every time.
+    """
+    bind = (config.BIND_HOST or "127.0.0.1").strip()
+    # Literal loopback aliases — a bind to any of these is NOT a
+    # network-exposed listener. 0.0.0.0 deliberately is NOT on this
+    # list: binding to all interfaces includes non-loopback ones and
+    # is exactly the case the warning exists for.
+    if bind in {"127.0.0.1", "localhost", "::1"}:
+        return
+    log.warning(
+        "security.bind_non_loopback",
+        bind_host=bind,
+        msg=(
+            "SKIFF is bound to a non-loopback interface. Ensure a "
+            "TLS-terminating reverse proxy fronts it (see "
+            "docs/hardening/production.md §TLS termination), a tight "
+            "firewall rule limits source IPs, and API_TOKEN is set "
+            "(setting TRUST_FORWARDED_HEADERS=true is required so "
+            "audit/ratelimit keys follow the real client)."
+        ),
+    )
+
+
+def _warn_ci_profile_needs_token() -> None:
+    """PROFILE=ci is the automation persona; it must boot with an
+    API_TOKEN set. Without one, the setup wizard path would fire
+    and no CI runner has a UI. Warn loudly so the operator fixes
+    the env, and refuse to proceed silently into an unusable state.
+    """
+    if config.PROFILE != "ci":
+        return
+    if config._cfg.api_token.strip():
+        return
+    log.warning(
+        "security.ci_profile_needs_token",
+        msg=(
+            "PROFILE=ci requires API_TOKEN to be set at boot. The "
+            "automation persona does not fit a wizard-driven first run. "
+            "Export API_TOKEN (>=16 chars, `openssl rand -hex 32`) or "
+            "change PROFILE before deploying."
         ),
     )
 
@@ -182,7 +302,8 @@ def _shape_docker_host(raw: str) -> str:
     """
     if raw.startswith("unix://"):
         from pathlib import PurePosixPath
-        path = raw[len("unix://"):]
+
+        path = raw[len("unix://") :]
         basename = PurePosixPath(path).name or "(unnamed)"
         return f"unix://.../{basename}"
     return raw
@@ -209,6 +330,7 @@ def _log_dependency_versions() -> None:
     the dict-comp already silently drops anything with no version.
     """
     import importlib.metadata as imeta
+
     try:
         versions = {pkg: imeta.version(pkg) for pkg in _DEPENDENCY_PACKAGES if imeta.version(pkg)}
     except (imeta.PackageNotFoundError, OSError):
@@ -218,11 +340,14 @@ def _log_dependency_versions() -> None:
 
 _STARTUP_WARNINGS = (
     _warn_missing_api_token,
+    _warn_setup_window_open,
     _warn_empty_api_token_env,
     _warn_no_registry_allowlist,
     _warn_unencrypted_docker_host,
     _warn_short_env_token,
     _warn_proxy_headers_untrusted,
+    _warn_non_loopback_bind,
+    _warn_ci_profile_needs_token,
 )
 
 
@@ -238,8 +363,24 @@ async def lifespan(app: FastAPI):
     monitor.cancel()
     # Fire any queued undo operations synchronously before shutdown so a
     # clean SIGTERM doesn't silently drop pending destructive rollbacks.
+    # Cap total flush time so a slow Docker daemon cannot hold the process
+    # past systemd/k8s's SIGKILL grace window (~30 s default). On timeout,
+    # surviving ops stay in the in-memory queue and are lost — but that is
+    # strictly better than the whole process getting SIGKILL'd mid-flush.
     from skiff.undo import get_queue
-    get_queue().fire_all_now()
+
+    queue = get_queue()
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, queue.fire_all_now),
+            timeout=config.SHUTDOWN_FLUSH_TIMEOUT,
+        )
+    except TimeoutError:
+        log.error(
+            "undo.shutdown_flush_timeout",
+            remaining=queue.depth(),
+            timeout=config.SHUTDOWN_FLUSH_TIMEOUT,
+        )
     log.info("app.shutdown")
     stop_tunnel()
     invalidate_client()
@@ -251,9 +392,9 @@ app = FastAPI(
     title=config.APP_TITLE,
     version=config._APP_VERSION,
     # Default /docs (Swagger UI) and /redoc (ReDoc) pull their assets from a CDN,
-    # which our strict CSP (`script-src 'self'`) blocks. Disable the built-in
-    # routes and serve a CSP-safe landing page at /api/docs instead — it
-    # offers the raw schema + an external-editor deep link.
+    # which our strict CSP (`script-src 'self'`) blocks. We serve a CSP-safe,
+    # self-hosted Swagger UI at /api/docs instead (see routers/system.py) with
+    # assets vendored under skiff/static/swagger-ui/.
     docs_url=None,
     redoc_url=None,
     openapi_url=config.OPENAPI_URL,
@@ -261,6 +402,68 @@ app = FastAPI(
     openapi_tags=[dict(t) for t in config.OPENAPI_TAGS],
     lifespan=lifespan,
 )
+
+
+def _custom_openapi():
+    """Inject the `bearerAuth` security scheme into the generated spec.
+
+    FastAPI only auto-declares security schemes for routes that wire an
+    explicit `Security(HTTPBearer())` dep; SKIFF uses a plain `AUTH`
+    dependency so the schema ends up without `components.securitySchemes`.
+    Without this, Swagger UI's "Authorize" button never appears and
+    `Try it out` requests ship no auth header.
+
+    Caches the generated schema — FastAPI expects `openapi()` to be
+    idempotent and memoised, matching its default behaviour.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=[dict(t) for t in config.OPENAPI_TAGS],
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})["bearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "API token issued via the setup wizard or the `API_TOKEN` env var. "
+            "Click Authorize, paste the token, and every `Try it out` request "
+            "will carry `Authorization: Bearer <token>`. Mutating requests "
+            "additionally need the `X-Requested-With: ContainerManager` CSRF "
+            "header, which Swagger UI sends when the spec declares it."
+        ),
+    }
+    # Apply bearerAuth to every path that isn't explicitly public-catalogued.
+    # The explicit list here matches SECURITY.md's unauthenticated-endpoints
+    # section; anything else gets the security requirement so the UI shows
+    # the auth-required padlock and issues the header.
+    public_paths = {
+        "/health",
+        "/ready",
+        "/api/auth-required",
+        "/api/setup-state",
+        "/api/setup",
+        "/api/setup/probe-docker",
+        "/api/setup/tunnel",
+        "/api/docs",
+        "/api/openapi.json",
+    }
+    for path, ops in schema.get("paths", {}).items():
+        if path in public_paths:
+            continue
+        for op in ops.values():
+            if isinstance(op, dict):
+                op.setdefault("security", [{"bearerAuth": []}])
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _custom_openapi
 
 # ── Rate limiting + validation error envelope ──────────────
 app.state.limiter = config.limiter
@@ -339,12 +542,16 @@ async def _not_found_envelope(request: Request, exc):
     if not isinstance(exc, _StarletteHTTPException) or not isinstance(exc.detail, str):
         return JSONResponse(status_code=status, content={"detail": exc.detail})
     bare_map = {
-        404: ("system.route_not_found",
-              "no route matches this path + method",
-              "Verify the URL against `docs/api-reference.md` or `GET /api/openapi.json`."),
-        405: ("system.method_not_allowed",
-              "this route does not accept that HTTP method",
-              "Check the `Allow` header on the response for the methods this path accepts."),
+        404: (
+            "system.route_not_found",
+            "no route matches this path + method",
+            "Verify the URL against `docs/api-reference.md` or `GET /api/openapi.json`.",
+        ),
+        405: (
+            "system.method_not_allowed",
+            "this route does not accept that HTTP method",
+            "Check the `Allow` header on the response for the methods this path accepts.",
+        ),
     }
     if status in bare_map:
         code, msg, help_ = bare_map[status]
@@ -436,6 +643,7 @@ def _main():
     X-Forwarded-User in the audit log).
     """
     import uvicorn
+
     uvicorn.run(
         "skiff.app:app",
         host=config.BIND_HOST,

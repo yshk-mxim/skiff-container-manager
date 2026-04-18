@@ -48,12 +48,15 @@ def test_delete_image(client, mock_docker):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("bad_id", [
-    "UPPERCASE",    # uppercase not valid hex
-    "xyz",          # too short
-    "image name",   # spaces not allowed (URL-encoded as separate path segment)
-    "a" * 65,       # too long
-])
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "UPPERCASE",  # uppercase not valid hex
+        "xyz",  # too short
+        "image name",  # spaces not allowed (URL-encoded as separate path segment)
+        "a" * 65,  # too long
+    ],
+)
 def test_delete_image_invalid_id_returns_400(client, bad_id):
     resp = client.delete(f"/api/images/{bad_id}", headers=AUTH_CSRF)
     assert resp.status_code == 400

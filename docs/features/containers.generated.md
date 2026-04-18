@@ -9,7 +9,7 @@ carries the narrative and threat-model context.
 |---|---|---|---|---|---|---|
 | GET | `/api/containers` | — | 60/minute | — | `list_containers` | Return all containers (running and stopped). |
 | POST | `/api/containers/run` | `container.run` | 30/minute | ✓ | `run_container` | Create and start a new container. |
-| DELETE | `/api/containers/{container_id}` | `container.removed` | 30/minute | ✓ | `delete_container` | Remove a container. If `undo=true`, the removal is delayed by 5 seconds |
+| DELETE | `/api/containers/{container_id}` | `container.removed` | 30/minute | ✓ | `delete_container` | Remove a container. Defaults to `undo=true` so a misclick (UI) or a |
 | GET | `/api/containers/{container_id}/diff` | — | 60/minute | — | `container_diff` | Show filesystem changes in a container's writable layer since it was created. |
 | GET | `/api/containers/{container_id}/inspect` | — | 60/minute | — | `inspect_container` | Return detailed container metadata (config, state, mounts, network, health). |
 | POST | `/api/containers/{container_id}/kill` | `container.killed` | 30/minute | ✓ | `kill_container` | Send a signal to a container (default SIGKILL). |

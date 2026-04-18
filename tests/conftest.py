@@ -31,9 +31,20 @@ TOKEN = "test-secret-token"
 # strict-marker mode doesn't reject them. The markers table is exposed to
 # tooling (CI `pytest --markers`, docs generators).
 _MODULE_MARKERS = (
-    "containers", "compose", "images", "volumes", "networks",
-    "system", "docker_client", "websocket", "ws",
-    "registry", "setup", "audit", "middleware", "undo",
+    "containers",
+    "compose",
+    "images",
+    "volumes",
+    "networks",
+    "system",
+    "docker_client",
+    "websocket",
+    "ws",
+    "registry",
+    "setup",
+    "audit",
+    "middleware",
+    "undo",
 )
 
 
@@ -77,6 +88,7 @@ def reset_rate_limiter():
     """
     import skiff.auth as _auth
     import skiff.routers.setup as _setup
+
     for limiter in {config_module.limiter, app.state.limiter}:
         limiter.reset()
     _setup._setup_failures.clear()
@@ -86,9 +98,67 @@ def reset_rate_limiter():
         limiter.reset()
     _setup._setup_failures.clear()
     _auth._ws_auth_failures.clear()
+
+
 AUTH_HEADER = {"Authorization": f"Bearer {TOKEN}"}
 CSRF_HEADER = {"X-Requested-With": "ContainerManager"}
 AUTH_CSRF = {**AUTH_HEADER, **CSRF_HEADER}
+
+# ── Target-aware helpers ────────────────────────────────────────────────────
+# Let the test suite run against mock (default), a live local Docker
+# daemon, or an SSH-tunnelled remote daemon by reading
+# SKIFF_TEST_TARGET. Each target has its own Docker host + whether the
+# mock fixture should short-circuit.
+#
+# Values:
+#   "mock"   — default; tests use the MagicMock Docker client.
+#   "local"  — tests requiring a real daemon use the host's Docker
+#              (Colima / Docker Desktop / Linux socket).
+#   "remote" — tests requiring a real daemon use an SSH-tunnelled
+#              socket the caller has brought up externally.
+#   "gcp"    — reserved for future GCE-backed daemon.
+#
+# Tests that need live Docker MUST request the `live_docker_host`
+# fixture; the fixture skips when SKIFF_TEST_TARGET=mock.
+import os as _os
+
+
+def test_target() -> str:
+    """Return the active test target, defaulting to mock."""
+    return _os.environ.get("SKIFF_TEST_TARGET", "mock").strip().lower()
+
+
+_VALID_LIVE_TARGETS = frozenset({"local", "remote", "gcp"})
+
+
+@pytest.fixture()
+def live_docker_host() -> str:
+    """Skip unless a live-docker target is configured, then return its URL.
+
+    Mock tests never reach this fixture; it's only requested by the
+    opt-in integration tests that want a real daemon. Target + host
+    are env-driven so the same test matrix works across workstations
+    and CI without any hostname embedded in the repo:
+
+      SKIFF_TEST_TARGET      — `mock` (default) | `local` | `remote` | `gcp`
+      SKIFF_TEST_DOCKER_HOST — Docker host URL when target ≠ mock;
+                               `local` falls back to `DOCKER_HOST` env
+                               var then `unix:///var/run/docker.sock`.
+    """
+    target = test_target()
+    if target == "mock":
+        pytest.skip("live-docker test; set SKIFF_TEST_TARGET=local|remote|gcp to run")
+    if target not in _VALID_LIVE_TARGETS:
+        pytest.skip(f"unknown SKIFF_TEST_TARGET={target!r}; expected one of {sorted(_VALID_LIVE_TARGETS)}")
+    host = _os.environ.get("SKIFF_TEST_DOCKER_HOST", "").strip()
+    if host:
+        return host
+    # `local` has a sensible fallback — DOCKER_HOST or the kernel
+    # socket. Remote / GCP require explicit configuration so the
+    # caller doesn't silently hit the wrong daemon.
+    if target == "local":
+        return _os.environ.get("DOCKER_HOST", "").strip() or "unix:///var/run/docker.sock"
+    pytest.skip(f"target {target!r} needs SKIFF_TEST_DOCKER_HOST set")
 
 
 @pytest.fixture()

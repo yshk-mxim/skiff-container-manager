@@ -28,7 +28,7 @@ SKIFF sidesteps all three: it runs as a plain Python process, the socket is forw
 |---|---|---|---|
 | Cost | Free (personal) or per-seat commercial | Dedicated management VM / container | Free, MIT |
 | API access | GUI only | Yes | Yes — full REST API + audit log |
-| `docker.sock` exposure | Mounted locally | Mounted into a privileged container | Forwarded over SSH — never mounted |
+| `docker.sock` exposure | Mounted locally | Mounted into a privileged container | Same socket SKIFF's operator can reach — local OR SSH-forwarded — never privileged, never bind-mounted into another container |
 | Always-on cost | Must be open | Dedicated management VM required | Start when needed; stop when done |
 | Registry controls | None built-in | Varies | Allowlist enforced server-side |
 | Agent on container host | Not applicable | Required for remote hosts | None — SSH tunnel is the transport (ControlMaster when SKIFF's wizard opens it; any `ssh -fNL` works otherwise) |
@@ -71,6 +71,8 @@ Known gaps (see [`SECURITY.md`](SECURITY.md) for the full list) include a shared
 
 ## Quick start
 
+> **First-run setup window — know before you boot.** If `API_TOKEN` is unset at startup, SKIFF opens a **5-minute first-run wizard** reachable on `BIND_HOST:PORT` (default `127.0.0.1:8080`). Anyone who can reach that socket during the window can claim the instance with their own token. Fine on a single-user workstation (only you can reach localhost). On a shared / remote host, **pre-set `API_TOKEN` in the environment before starting** — the wizard stays closed and the server logs `from_env=true`. See [SECURITY.md § First-run setup window](SECURITY.md#first-run-setup-window-wizard-race) and [`docs/hardening/production.md § setup-window`](docs/hardening/production.md#setup-window) for the full model and mitigations.
+
 ### Local use (Colima / OrbStack / Rancher Desktop / Docker Engine)
 
 ```bash
@@ -81,7 +83,7 @@ cp .env.example .env   # DOCKER_HOST is pre-filled; leave API_TOKEN empty only w
 # Opens http://127.0.0.1:8080
 ```
 
-`run.sh` creates a `.venv/` virtual environment and installs runtime dependencies automatically. This is the one-command path for **running** SKIFF. If you intend to **develop** SKIFF (run tests, contribute), follow [`CONTRIBUTING.md`](CONTRIBUTING.md) instead — it uses `pip install -e .[dev]` so test deps are included.
+`run.sh` creates a `.venv/` virtual environment and installs runtime dependencies automatically. This is the one-command path for **running** SKIFF. If you intend to **develop** SKIFF (run tests, contribute), follow [`CONTRIBUTING.md`](CONTRIBUTING.md) instead — it uses `pip install -e ".[dev]"` so test deps are included.
 
 ### Platform socket paths
 
@@ -176,7 +178,7 @@ See [docs/api-reference.md](docs/api-reference.md) for the full endpoint referen
 | `WS /ws/logs/{id}` | Stream container logs |
 | `WS /ws/exec/{id}` | Interactive shell |
 
-All `/api/` endpoints require `Authorization: Bearer <token>`.  
+All `/api/` endpoints require `Authorization: Bearer <token>`.
 Mutating endpoints (`POST`, `DELETE`) also require `X-Requested-With: ContainerManager`.
 
 ---
@@ -208,7 +210,7 @@ cd skiff
 python3 -m venv .venv && source .venv/bin/activate
 
 # Unit tests — no container daemon required
-pip install -e .[dev]
+pip install -e ".[dev]"
 make test-unit
 
 # Run with hot-reload

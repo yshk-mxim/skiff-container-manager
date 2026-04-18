@@ -48,14 +48,35 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Unit tests only (CI, most contributors)
-pip install -e .[dev]
+pip install -e ".[dev]"
+pre-commit install   # gitleaks / ruff / AP-lint / check-yaml hooks
 make test-unit
 
 # E2e tests (needs Docker daemon accessible + browser)
-pip install -e .[dev,e2e]
+pip install -e ".[dev,e2e]"
 playwright install chromium
 make test-e2e
 ```
+
+The `[dev]` and `[dev,e2e]` extras are quoted because zsh (macOS default)
+treats `[...]` as a glob pattern; the quotes make the literal extras
+syntax survive to pip. On bash-only hosts the quotes are harmless.
+
+### Optional: run the full suite against a live Docker host
+
+Unit and integration tests default to a MagicMock Docker client so the
+suite runs without a daemon. Two env vars opt a contributor's live
+daemon into the same tests:
+
+| env var                  | required when                   | example                                   |
+|--------------------------|---------------------------------|-------------------------------------------|
+| `SKIFF_TEST_TARGET`      | you want live Docker at all     | `mock` (default) / `local` / `remote` / `gcp` |
+| `SKIFF_TEST_DOCKER_HOST` | `SKIFF_TEST_TARGET` ≠ `mock`    | `unix:///var/run/docker.sock`, `unix:///tmp/my-tunnel.sock`, `tcp://host:2375` |
+
+`local` expects a workstation daemon. `remote` expects a daemon reached
+via an SSH ControlMaster tunnel the caller brought. `gcp` is reserved.
+
+Example: `SKIFF_TEST_TARGET=local SKIFF_TEST_DOCKER_HOST=unix:///var/run/docker.sock make test`.
 
 ### Run the server locally
 
@@ -108,7 +129,8 @@ Before opening a PR:
    internal links), `lint-asvs` (SECURITY.md V1–V18 coverage),
    `lint-notice` (NOTICE vs `requirements.txt`), `security` (ruff S
    + pip-audit --strict), `docs-check` (auto-generated docs drift)
-   and `coverage` (unit + property tests against the 90% gate).
+   and `coverage` (unit + property tests against the 94% hard floor;
+   project target is ≥95 per `docs/dev/feature-development.md §7d`).
 2. Test the golden path manually if changing behaviour.
 3. Update `CHANGELOG.md` under `[Unreleased]`.
 4. Update docs if adding or changing endpoints or config.

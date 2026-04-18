@@ -1,7 +1,11 @@
 repos:
-  # Ruff — lint + security ruleset + auto-fix on commit
+  # Ruff — lint + security ruleset + auto-fix on commit.
+  # Version MUST match the ruff `make ci` runs so a contributor's first
+  # `pre-commit install` + `pre-commit run --all-files` doesn't surface
+  # 80+ stale-style errors that CI doesn't flag. Bump in lockstep with
+  # the ruff pin in pyproject.toml (once the dev extras tighten it).
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.2
+    rev: v0.15.1
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]

@@ -4,6 +4,7 @@
 
 Imports only from skiff.config — no other skiff modules — to avoid circular imports.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +14,17 @@ import threading
 import time
 from urllib.parse import urlparse
 
+import structlog
 from fastapi import Depends, HTTPException, Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from skiff import config
 from skiff.contract.errors import http_error
 
+log = structlog.get_logger(__name__)
+
 # ── Constant-time comparison ───────────────────────────────
+
 
 def constant_time_compare(a: str, b: str) -> bool:
     """Compare two strings in constant time to prevent timing attacks."""
@@ -35,6 +40,12 @@ def constant_time_compare(a: str, b: str) -> bool:
 # typically only one entry in this dict. The dict is capped to prevent unbounded growth
 # in any future multi-token scenario. Server restart resets the clock.
 _session_first_seen: dict[str, float] = {}
+# Tracks the last-seen time per session cache key so the server can
+# enforce SESSION_IDLE_SECS. Prior to this, the idle window was
+# advertised as a knob but only applied client-side — a bearer token
+# leaked to a log file stayed valid for the full absolute timeout
+# (default 8 h) regardless of activity.
+_session_last_seen: dict[str, float] = {}
 _session_lock = threading.Lock()
 # Process-local salt — rebound on every process start so the cache key is
 # non-stable across restarts; an attacker cannot precompute the key space.
@@ -42,10 +53,19 @@ _SESSION_CACHE_SALT = secrets.token_bytes(32)
 
 
 def _check_session_age(token: str) -> None:
-    """Reject tokens that have been active longer than config.SESSION_ABS_TIMEOUT.
+    """Enforce both absolute + idle session lifetimes.
 
-    The cache key is an HMAC-SHA256 of the token under a process-local salt —
-    non-reversible, collision-resistant, and does not store the token itself.
+    Absolute: reject tokens first seen more than `SESSION_ABS_TIMEOUT`
+    seconds ago.
+
+    Idle: reject tokens whose most recent verified use was more than
+    `SESSION_IDLE_SECS` seconds ago. Updates `_session_last_seen` on
+    every successful verification so legitimate activity keeps the
+    window alive.
+
+    The cache key is an HMAC-SHA256 of the token under a process-local
+    salt — non-reversible, collision-resistant, and does not store the
+    token itself.
     """
     # Salted HMAC over the raw token — never log or persist.
     cache_key = hmac.new(_SESSION_CACHE_SALT, token.encode(), "sha256").hexdigest()
@@ -56,18 +76,27 @@ def _check_session_age(token: str) -> None:
             if len(_session_first_seen) >= config._SESSION_CACHE_MAX:
                 oldest = min(_session_first_seen, key=_session_first_seen.__getitem__)
                 del _session_first_seen[oldest]
+                _session_last_seen.pop(oldest, None)
             _session_first_seen[cache_key] = now
-        elif (now - first) > config.SESSION_ABS_TIMEOUT:
+            _session_last_seen[cache_key] = now
+            return
+        if (now - first) > config.SESSION_ABS_TIMEOUT:
             raise http_error("auth.session_expired")
+        last = _session_last_seen.get(cache_key, first)
+        if (now - last) > config.SESSION_IDLE_SECS:
+            raise http_error("auth.session_expired")
+        _session_last_seen[cache_key] = now
 
 
 def _invalidate_session_cache() -> None:
     """Clear session age tracking (call when token is rotated)."""
     with _session_lock:
         _session_first_seen.clear()
+        _session_last_seen.clear()
 
 
 # ── HTTP auth dependencies ─────────────────────────────────
+
 
 def verify_auth(request: Request) -> None:
     """Dependency: verifies bearer token and enforces server-side session lifetime.
@@ -127,12 +156,10 @@ AUTH = [Depends(verify_auth)]
 
 # ── WebSocket origin validation ────────────────────────────
 
+
 def _origin_in_allowlist(origin: str) -> bool:
     """True if `origin` matches the configured allowlist (exact or prefix)."""
-    return any(
-        origin == o or origin.startswith(o.rstrip("/") + "/")
-        for o in config._cfg.allowed_origins
-    )
+    return any(origin == o or origin.startswith(o.rstrip("/") + "/") for o in config._cfg.allowed_origins)
 
 
 def _origin_matches_host(origin: str, host_header: str) -> bool:
@@ -182,12 +209,51 @@ def _ws_is_locked_out(client_ip: str, now: float) -> bool:
     return False
 
 
+def ws_lockout_remaining(client_ip: str) -> int:
+    """Return seconds remaining on this IP's WS-auth lockout, 0 if not locked.
+
+    Used by /api/config (so the UI can paint a banner on page load when a
+    prior tab tripped the lockout) and by the WS handshake close-reason
+    builder (so `evt.reason = 'ws_auth_lockout:<N>'` carries the countdown
+    to the client without a second round-trip). Reveals only the caller's
+    own remaining window — an attacker would already know they're locked.
+
+    Does not evict stale entries; read-only vs. `_ws_is_locked_out` which
+    also cleans up. Callers that want the enforcement side-effect should
+    keep using `_ws_is_locked_out`.
+    """
+    now = time.monotonic()
+    with _ws_auth_lock:
+        entry = _ws_auth_failures.get(client_ip)
+        if entry is None:
+            return 0
+        count, last_t = entry
+        if count < config.WS_AUTH_MAX_ATTEMPTS:
+            return 0
+        remaining = config.WS_AUTH_LOCKOUT_SECS - (now - last_t)
+        if remaining <= 0:
+            return 0
+        return int(remaining)
+
+
 def _ws_record_failure(client_ip: str) -> None:
-    """Increment per-IP failure counter for a bad-token attempt."""
+    """Increment per-IP failure counter. Emits `audit.ws_auth_lockout` on
+    the exact attempt that crosses the threshold so SIEM rules can
+    alert on lockout activation without tailing every failed attempt.
+    """
     now = time.monotonic()
     with _ws_auth_lock:
         count, _ = _ws_auth_failures.get(client_ip, (0, now))
-        _ws_auth_failures[client_ip] = (count + 1, now)
+        new_count = count + 1
+        _ws_auth_failures[client_ip] = (new_count, now)
+        just_tripped = count < config.WS_AUTH_MAX_ATTEMPTS and new_count >= config.WS_AUTH_MAX_ATTEMPTS
+    if just_tripped:
+        log.warning(
+            "audit.ws_auth_lockout",
+            remote=client_ip,
+            attempts=new_count,
+            lockout_secs=config.WS_AUTH_LOCKOUT_SECS,
+        )
 
 
 def _ws_clear_failures(client_ip: str) -> None:
@@ -204,7 +270,8 @@ async def _ws_receive_token(websocket: WebSocket) -> str | None:
     """
     try:
         first_msg = await asyncio.wait_for(
-            websocket.receive_text(), timeout=config.WS_TOKEN_TIMEOUT,
+            websocket.receive_text(),
+            timeout=config.WS_TOKEN_TIMEOUT,
         )
     except (TimeoutError, WebSocketDisconnect, RuntimeError):
         # TimeoutError: client never sent AUTH within the window.
@@ -230,6 +297,14 @@ async def _validate_ws_token_from_message(websocket: WebSocket) -> bool:
         return False
     token = await _ws_receive_token(websocket)
     if not token:
+        # Malformed first message (missing `AUTH ` prefix, empty body,
+        # non-text frame, timeout) is ALSO a brute-force signal —
+        # flooding the handshake path with non-AUTH frames would
+        # otherwise bypass `_ws_record_failure` and never trip
+        # `audit.ws_auth_lockout`. Record as a failure so the lockout
+        # threshold catches persistent noise, malformed clients, and
+        # fuzzers alike.
+        _ws_record_failure(client_ip)
         return False
     if not constant_time_compare(token, config._cfg.api_token):
         _ws_record_failure(client_ip)

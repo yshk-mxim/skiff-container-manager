@@ -120,11 +120,26 @@ async function showImageInspect(id, tag) {
     });
     var tagBtn = makeActionBtn('Tag', function() {
       var repo = tagInp.value; var tagVal = tagTagInp.value || 'latest';
-      return apiFetch(API + '/images/' + encodeURIComponent(id) +
-        '/tag?repository=' + encodeURIComponent(repo) + '&tag=' + encodeURIComponent(tagVal),
-        { method: 'POST' }).then(function() {
-          toast('Image tagged', 'success'); m.close(); loadImages();
+      var newRef = repo + ':' + tagVal;
+      // Docker silently repoints a repo:tag pair to the new image id if
+      // the target already exists — the old image becomes dangling. Warn
+      // so the operator opts in explicitly.
+      return apiFetch(API + '/images').then(function(imgs) {
+        var existing = (imgs || []).find(function(img) {
+          return (img.tags || []).indexOf(newRef) !== -1 && img.id !== id;
         });
+        if (existing && !confirm(
+          'Tag "' + newRef + '" already points to a different image.\n\n' +
+          'Tagging will move the pointer; the previous image becomes dangling ' +
+          'and will be pruned by `docker image prune`. Proceed?')) {
+          throw new Error('Cancelled');
+        }
+        return apiFetch(API + '/images/' + encodeURIComponent(id) +
+          '/tag?repository=' + encodeURIComponent(repo) + '&tag=' + encodeURIComponent(tagVal),
+          { method: 'POST' });
+      }).then(function() {
+        toast('Image tagged', 'success'); m.close(); loadImages();
+      });
     }, 'btn small primary');
     var pushBtns = (d.tags || []).map(function(t) {
       return makeActionBtn('Push ' + t.split('/').pop(), function() {

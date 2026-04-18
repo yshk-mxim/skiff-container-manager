@@ -11,6 +11,7 @@ surface just to resolve a route.
   GET /ready            readiness — returns 503 if Docker engine unreachable
   GET /api/auth-required bool flag used by the pre-login UI
 """
+
 from __future__ import annotations
 
 import time

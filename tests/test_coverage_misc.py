@@ -12,6 +12,7 @@ from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
 # ── list_containers: image exception branch ───────────────────────────────────
 
+
 def test_list_containers_image_exception_fallback(client, mock_docker):
     """When image.tags raises, falls back to 'unknown'."""
     c = MagicMock()
@@ -20,9 +21,11 @@ def test_list_containers_image_exception_fallback(client, mock_docker):
     c.status = "running"
     c.ports = {}
     c.attrs = {"State": {"Status": "running", "Health": None}, "Created": ""}
+
     # Make image.tags raise — docker.errors.DockerException is the narrowed catch.
     def _raise(_):
         raise docker.errors.DockerException("no image")
+
     type(c.image).tags = property(_raise)
     mock_docker.containers.list.return_value = [c]
     resp = client.get("/api/containers", headers=AUTH_HEADER)
@@ -31,6 +34,7 @@ def test_list_containers_image_exception_fallback(client, mock_docker):
 
 
 # ── run_container: command and labels branches ────────────────────────────────
+
 
 def test_run_container_with_command(client, mock_docker):
     new_c = MagicMock()
@@ -77,6 +81,7 @@ def test_run_container_label_value_too_long(client, mock_docker):
 
 # ── container_stats: TimeoutError ────────────────────────────────────────────
 
+
 def test_container_stats_timeout(client, mock_docker):
     c = MagicMock()
     c.stats.side_effect = TimeoutError("timed out")
@@ -88,6 +93,7 @@ def test_container_stats_timeout(client, mock_docker):
 
 
 # ── list_volumes: containers.list exception ───────────────────────────────────
+
 
 def test_list_volumes_containers_exception(client, mock_docker):
     """When containers.list raises during volume lookup, gracefully continues."""
@@ -108,6 +114,7 @@ def test_list_volumes_containers_exception(client, mock_docker):
 
 
 # ── compose stacks: container without project label ───────────────────────────
+
 
 def test_compose_stacks_container_no_project_label(client, mock_docker):
     """Container without compose project label is skipped."""
@@ -141,6 +148,7 @@ def test_compose_stacks_stopped_status(client, mock_docker):
 
 # ── pull image: TimeoutError ──────────────────────────────────────────────────
 
+
 def test_pull_image_timeout(client, mock_docker):
     with patch("asyncio.wait_for", side_effect=TimeoutError("timeout")):
         resp = client.post(
@@ -151,6 +159,7 @@ def test_pull_image_timeout(client, mock_docker):
 
 
 # ── push image: TimeoutError and APIError ─────────────────────────────────────
+
 
 def test_push_image_timeout(client, mock_docker):
     with patch("asyncio.wait_for", side_effect=TimeoutError("timeout")):
@@ -163,6 +172,7 @@ def test_push_image_timeout(client, mock_docker):
 
 def test_push_image_api_error(client, mock_docker):
     import docker.errors
+
     mock_docker.images.push.side_effect = docker.errors.APIError("push failed")
     resp = client.post(
         "/api/images/push?image=docker.io/library/nginx:latest",
@@ -173,8 +183,10 @@ def test_push_image_api_error(client, mock_docker):
 
 # ── _validate_ws_origin: exception in urlparse ───────────────────────────────
 
+
 def test_validate_ws_origin_urlparse_exception():
     from skiff.auth import _validate_ws_origin
+
     ws = MagicMock()
     ws.headers = {"origin": "not-a-url", "host": "localhost"}
     # urlparse won't raise but netloc will be empty, causing return False
@@ -184,6 +196,7 @@ def test_validate_ws_origin_urlparse_exception():
 
 # ── get_client: close fails during stale ping ─────────────────────────────────
 
+
 def test_get_client_stale_close_exception():
     """When ping fails and close() also raises, still invalidates client.
 
@@ -192,6 +205,7 @@ def test_get_client_stale_close_exception():
     That's the desired new behaviour — unexpected error types surface
     rather than being silently swallowed."""
     import docker.errors
+
     mock_client = MagicMock()
     mock_client.ping.side_effect = docker.errors.DockerException("ping failed")
     mock_client.close.side_effect = docker.errors.DockerException("close also failed")
@@ -209,6 +223,7 @@ def test_get_client_stale_close_exception():
 
 
 # ── WebSocket: valid origin but bad auth ──────────────────────────────────────
+
 
 def test_ws_logs_valid_origin_bad_auth(client):
     """WebSocket accepts origin but closes on bad auth token."""
@@ -251,8 +266,10 @@ def test_ws_logs_valid_auth_docker_error(client, mock_docker):
 def test_ws_logs_valid_auth_and_logs(client, mock_docker):
     """WebSocket logs: valid auth, logs yielded then done."""
     c = MagicMock()
+
     def _gen():
         yield b"2026-01-01T00:00:00Z log line\n"
+
     c.logs.return_value = _gen()
     mock_docker.containers.get.return_value = c
     try:
@@ -329,6 +346,7 @@ def test_ws_exec_valid_auth_exec_success(client, mock_docker):
 
 # ── LICENSE file ──────────────────────────────────────────────────────────────
 
+
 def test_license_file_exists(client):
     """/LICENSE endpoint serves the project's license file unconditionally.
 
@@ -353,9 +371,11 @@ def test_index_page(client):
 
 # ── container_top non-409 re-raise ────────────────────────────────────────────
 
+
 def test_container_top_non_409_error(client, mock_docker):
     """container_top re-raises non-409 HTTPExceptions."""
     import docker.errors
+
     c = MagicMock()
     resp_mock = MagicMock()
     resp_mock.status_code = 404
@@ -368,6 +388,7 @@ def test_container_top_non_409_error(client, mock_docker):
 
 
 # ── push_image: non-json line in output ───────────────────────────────────────
+
 
 def test_push_image_non_json_output(client, mock_docker):
     """Push output with non-JSON lines should be silently ignored."""
@@ -382,6 +403,7 @@ def test_push_image_non_json_output(client, mock_docker):
 
 # ── compose up symlink traversal ──────────────────────────────────────────────
 
+
 def test_compose_up_symlink_traversal(client, tmp_path):
     """Symlink-based path traversal should be rejected."""
     # Create a symlink that points outside COMPOSE_DIR
@@ -394,6 +416,7 @@ def test_compose_up_symlink_traversal(client, tmp_path):
     with patch("skiff.config.COMPOSE_DIR", tmp_path / "compose"):
         # The symlink "evil" resolves to outside compose dir
         import io
+
         valid_content = b"services:\n  web:\n    image: docker.io/library/nginx:latest\n"
         resp = client.post(
             "/api/compose/up?project_name=evil",
@@ -406,9 +429,11 @@ def test_compose_up_symlink_traversal(client, tmp_path):
 
 # ── _validate_ws_origin exception path ───────────────────────────────────────
 
+
 def test_validate_ws_origin_exception_in_urlparse():
     """If urlparse raises, return False."""
     from skiff.auth import _validate_ws_origin
+
     ws = MagicMock()
     # A valid non-empty origin not in allowlist, but urlparse will work
     # Test the path where origin_host is empty (no netloc)

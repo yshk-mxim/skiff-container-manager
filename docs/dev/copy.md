@@ -109,6 +109,12 @@ Conventions:
 ---
 
 **How to extend:** when you add a string to the UI, append a row here
-under the appropriate section (or add a new section). Drift is checked
-by eye today; a future CI task can diff strings in `skiff/static/**.js`
-against this file.
+under the appropriate section (or add a new section).
+
+**Advisory drift check:** `make lint-i18n` reports JS literals in
+`skiff/static/**.js` that bypass `t()` — useful before a release when
+migrating a module to the i18n helper. Heuristic, not AST-based; false
+positives (technical strings, element tags) are filtered out by an
+allow-list in `scripts/lint-untranslated-strings.py`. Not a CI gate
+because the bulk of `skiff/static/` is still pre-migration literals;
+treat the output as a punch list for incremental conversion.

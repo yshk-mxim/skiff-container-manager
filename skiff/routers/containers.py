@@ -7,11 +7,13 @@ live in `skiff.routers.containers_ws`. The two halves share only the
 validators + auth modules; keeping them separate makes each file fit
 in one read.
 """
+
 from __future__ import annotations
 
 import asyncio
 import copy
 import re
+import time
 from typing import Any
 
 import docker.errors
@@ -43,6 +45,7 @@ router = APIRouter()
 
 
 # ── Container routes ───────────────────────────────────────
+
 
 @router.get("/api/containers", dependencies=AUTH, tags=["containers"])
 @secure_route.read(RATE.READ)
@@ -119,7 +122,8 @@ def _reject_privileged_host_port(hport: Any) -> None:
     if hp is not None and hp < config.PRIVILEGED_PORT_THRESHOLD:
         raise http_error(
             "container.port_host_privileged",
-            port=hp, threshold=config.PRIVILEGED_PORT_THRESHOLD,
+            port=hp,
+            threshold=config.PRIVILEGED_PORT_THRESHOLD,
         )
 
 
@@ -145,7 +149,9 @@ def _validate_env_entries(environment: list[str] | None) -> None:
 
 
 def _inherit_env(
-    client, inherit_from: str | None, overrides: list[str] | None,
+    client,
+    inherit_from: str | None,
+    overrides: list[str] | None,
 ) -> list[str] | None:
     """Merge env from a source container with caller overrides (override wins).
 
@@ -230,10 +236,10 @@ def _validate_labels(labels: dict[str, str] | None) -> None:
 def _resolve_tmpfs(tmpfs: dict[str, str] | None, read_only: bool) -> dict[str, str]:
     """Pick the effective tmpfs map.
 
-      - `tmpfs=None` + `read_only=True`  → default runtime dirs from TOML
-        (so stock nginx / redis / haproxy / postgres initdb images boot).
-      - `tmpfs=None` + `read_only=False` → no tmpfs mounts.
-      - Explicit dict (even `{}`)        → caller knows best; validate shape.
+    - `tmpfs=None` + `read_only=True`  → default runtime dirs from TOML
+      (so stock nginx / redis / haproxy / postgres initdb images boot).
+    - `tmpfs=None` + `read_only=False` → no tmpfs mounts.
+    - Explicit dict (even `{}`)        → caller knows best; validate shape.
     """
     if tmpfs is None:
         return dict(config.DEFAULT_TMPFS) if read_only else {}
@@ -328,12 +334,15 @@ def _maybe_replace(client, replace_id: str | None, new_container) -> bool:
     except (HTTPException, docker.errors.DockerException) as exc:
         log.warning(
             "container.replace_cleanup_failed",
-            new_id=new_container.short_id, old_id=replace_id, error=str(exc),
+            new_id=new_container.short_id,
+            old_id=replace_id,
+            error=str(exc),
         )
         return False
     if old.id == new_container.id:
         log.warning(
-            "container.replace_noop", id=new_container.short_id,
+            "container.replace_noop",
+            id=new_container.short_id,
             reason="replace_id matches new container",
         )
         return False
@@ -342,7 +351,9 @@ def _maybe_replace(client, replace_id: str | None, new_container) -> bool:
     except (HTTPException, docker.errors.DockerException) as exc:
         log.warning(
             "container.replace_cleanup_failed",
-            new_id=new_container.short_id, old_id=replace_id, error=str(exc),
+            new_id=new_container.short_id,
+            old_id=replace_id,
+            error=str(exc),
         )
         return False
     log.info("container.replaced", new_id=new_container.short_id, old_id=replace_id)
@@ -351,7 +362,8 @@ def _maybe_replace(client, replace_id: str | None, new_container) -> bool:
 
 @router.post("/api/containers/run", dependencies=AUTH, tags=["containers"])
 @secure_route.mutate(
-    RATE.WRITE, audit="container.run",
+    RATE.WRITE,
+    audit="container.run",
     audit_fields=lambda request, image, name=None, **kw: {"image": image, "name": name or ""},  # noqa: ARG005
 )
 def run_container(
@@ -403,7 +415,9 @@ def run_container(
     container = validators.safe_docker_call(client.containers.run, image, **run_kwargs)
     log.info(
         "container.created",
-        id=container.short_id, name=container.name, image=image,
+        id=container.short_id,
+        name=container.name,
+        image=image,
         inherit_from=body.inherit_from or None,
     )
 
@@ -411,66 +425,118 @@ def run_container(
     # preserves the old; cleanup failure logs a warning but doesn't 5xx.
     replaced = _maybe_replace(client, body.replace_id, container)
 
-    return {
+    # Surface early-exit failures to the caller. The default secure
+    # profile (read_only=true + auto-tmpfs) can shadow image-baked
+    # subdirs (nginx's /var/cache/nginx tree is a known case), and the
+    # container exits with code 1 seconds after `run` returns. Without
+    # this check the UI reported a green "created" and the operator
+    # only found the failure by manually opening logs.
+    # Poll for ~800 ms on a very short interval to catch quick exits
+    # without adding latency for healthy runs.
+    exit_tail: str | None = None
+    exit_code: int | None = None
+    for _ in range(8):
+        time.sleep(0.1)
+        try:
+            container.reload()
+        except docker.errors.DockerException:
+            break
+        if container.status == "exited":
+            exit_code = container.attrs.get("State", {}).get("ExitCode")
+            try:
+                tail_bytes = container.logs(tail=20, timestamps=False)
+                exit_tail = (
+                    tail_bytes.decode("utf-8", errors="replace")
+                    if isinstance(tail_bytes, (bytes, bytearray))
+                    else str(tail_bytes)
+                )[-1024:]
+            except docker.errors.DockerException:
+                exit_tail = None
+            log.warning(
+                "container.exited_early",
+                id=container.short_id,
+                name=container.name,
+                image=image,
+                exit_code=exit_code,
+            )
+            break
+
+    response: dict[str, Any] = {
         "id": container.short_id,
         "name": container.name,
         "status": container.status,
         "replaced_old": replaced,
     }
+    if exit_code is not None:
+        response["exit_code"] = exit_code
+    if exit_tail:
+        response["logs_tail"] = exit_tail
+    return response
+
+
+# Single audit line per lifecycle action. `audit_fields` routes the id
+# onto the `audit.api_access` envelope instead of emitting a redundant
+# `log.info("container.*", id=...)` inside the handler. Without this,
+# a single action produces two SIEM-indexed records with the same
+# event name — double-count every lifecycle event.
+def _id_audit_fields(request, container_id, **_kw):
+    return {"id": container_id}
 
 
 @router.post("/api/containers/{container_id}/start", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.started")
+@secure_route.mutate(RATE.WRITE, audit="container.started", audit_fields=_id_audit_fields)
 def start_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Start a stopped container."""
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.start)
-    log.info("container.started", id=container_id)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/stop", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.stopped")
+@secure_route.mutate(RATE.WRITE, audit="container.stopped", audit_fields=_id_audit_fields)
 def stop_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Stop a running container gracefully (SIGTERM, then SIGKILL after timeout)."""
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.stop, timeout=config.CONTAINER_STOP_TIMEOUT)
-    log.info("container.stopped", id=container_id)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/restart", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.restarted")
+@secure_route.mutate(RATE.WRITE, audit="container.restarted", audit_fields=_id_audit_fields)
 def restart_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Restart a container."""
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.restart, timeout=config.CONTAINER_RESTART_TIMEOUT)
-    log.info("container.restarted", id=container_id)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/pause", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.paused")
+@secure_route.mutate(RATE.WRITE, audit="container.paused", audit_fields=_id_audit_fields)
 def pause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Pause (freeze) all processes in a running container."""
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.pause)
-    log.info("container.paused", id=container_id)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/unpause", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.unpaused")
+@secure_route.mutate(RATE.WRITE, audit="container.unpaused", audit_fields=_id_audit_fields)
 def unpause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Resume a paused container."""
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.unpause)
-    log.info("container.unpaused", id=container_id)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/kill", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.killed")
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.killed",
+    audit_fields=lambda request, container_id, signal="SIGKILL", **_kw: {  # noqa: ARG005
+        "id": container_id,
+        "signal": signal,
+    },
+)
 def kill_container(
     request: Request, container_id: str, signal: str = "SIGKILL", client=Depends(docker_client_dep)
 ) -> OkResponse:
@@ -479,43 +545,60 @@ def kill_container(
         raise http_error("container.signal_bad")
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.kill, signal=signal)
-    log.info("container.killed", id=container_id, signal=signal)
     return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/rename", dependencies=AUTH, tags=["containers"])
-@secure_route.mutate(RATE.WRITE, audit="container.renamed")
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.renamed",
+    audit_fields=lambda request, container_id, name, **_kw: {  # noqa: ARG005
+        "id": container_id,
+        "new_name": name,
+    },
+)
 def rename_container(request: Request, container_id: str, name: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Rename a container."""
     validators.validate_container_name(name)
     container = validators._get_container(client, container_id)
     validators.safe_docker_call(container.rename, name)
-    log.info("container.renamed", id=container_id, new_name=name)
     return OkResponse()
 
 
 @router.delete("/api/containers/{container_id}", dependencies=AUTH, tags=["containers"])
 @secure_route.mutate(RATE.WRITE, audit="container.removed")
 def delete_container(
-    request: Request, container_id: str, force: bool = False,
-    undo: bool = False, client=Depends(docker_client_dep),
+    request: Request,
+    container_id: str,
+    force: bool = False,
+    undo: bool = True,
+    client=Depends(docker_client_dep),
 ) -> Any:
-    """Remove a container. If `undo=true`, the removal is delayed by 5 seconds
-    and the response includes an `undo_token` that can be POSTed to
-    /api/undo/{token} to cancel. After the window elapses the removal runs
-    unconditionally. If the undo queue is full, we fall back to synchronous
-    removal so the caller never gets a silent no-op.
+    """Remove a container. Defaults to `undo=true` so a misclick (UI) or a
+    typo (curl) can be recovered via `/api/undo/{token}` within the
+    documented window. Pass `?undo=false` for an immediate hard delete
+    that bypasses the queue.
+
+    `force=true` is SEMANTICALLY an "I know what I'm doing, kill it
+    now" signal. Layering it on top of the undo-queue would be
+    contradictory: the caller asked for immediacy. When `force=true`
+    we short-circuit the queue and delete synchronously even if
+    `undo=true` is also set. The client-side UI never pairs these two
+    flags; this only matters for scripted DELETE callers.
     """
     container = validators._get_container(client, container_id)
-    if undo:
+    if undo and not force:
         from skiff.undo import get_queue
+
         token = get_queue().enqueue(
-            "container", container.short_id,
-            validators.safe_docker_call, container.remove, force=force,
+            "container",
+            container.short_id,
+            validators.safe_docker_call,
+            container.remove,
+            force=force,
         )
         if token is not None:
-            log.info("container.delete_queued", id=container_id, force=force,
-                     token_suffix=token[-6:])
+            log.info("container.delete_queued", id=container_id, force=force, token_suffix=token[-6:])
             return UndoableResponse(undo_token=token, expires_in=config.UNDO_DELAY_SECS)
         # Queue full → fall through to synchronous removal
     validators.safe_docker_call(container.remove, force=force)
@@ -568,7 +651,7 @@ def download_container_logs(
     """Download container logs as plain text. Auth via Authorization header."""
     container = validators._get_container(client, container_id)
     logs = validators.safe_docker_call(container.logs, **_log_window_kwargs(tail, since, until))
-    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', container.name)
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", container.name)
     return PlainTextResponse(
         content=logs.decode(errors="replace"),
         headers={"Content-Disposition": f'attachment; filename="{safe_name}-logs.txt"'},
@@ -587,9 +670,10 @@ def download_container_logs_jsonl(
 ):
     """Download container logs as JSONL (one JSON object per line with timestamp + message)."""
     import json
+
     container = validators._get_container(client, container_id)
     logs = validators.safe_docker_call(container.logs, **_log_window_kwargs(tail, since, until))
-    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', container.name)
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", container.name)
     lines = []
     for line in logs.decode(errors="replace").splitlines():
         if " " in line:
@@ -627,18 +711,18 @@ def _build_config_section(cfg: dict) -> _ContainerConfigSection:
 # HostConfig flattening map: model-field → (Docker attr key, default).
 # Declaring the map once makes `_build_host_config_section` a dict comp.
 _HOST_CONFIG_FIELDS: tuple[tuple[str, str, Any], ...] = (
-    ("port_bindings",             "PortBindings",        {}),
-    ("restart_policy",             "RestartPolicy",       {}),
-    ("binds",                      "Binds",               []),
-    ("memory_bytes",               "Memory",              0),
-    ("memory_reservation_bytes",   "MemoryReservation",   0),
-    ("cpu_shares",                 "CpuShares",           0),
-    ("cpu_quota",                  "CpuQuota",            0),
-    ("cpu_period",                 "CpuPeriod",           0),
-    ("nano_cpus",                  "NanoCpus",            0),
-    ("pids_limit",                 "PidsLimit",           0),
-    ("security_opt",               "SecurityOpt",         []),
-    ("tmpfs",                      "Tmpfs",               {}),
+    ("port_bindings", "PortBindings", {}),
+    ("restart_policy", "RestartPolicy", {}),
+    ("binds", "Binds", []),
+    ("memory_bytes", "Memory", 0),
+    ("memory_reservation_bytes", "MemoryReservation", 0),
+    ("cpu_shares", "CpuShares", 0),
+    ("cpu_quota", "CpuQuota", 0),
+    ("cpu_period", "CpuPeriod", 0),
+    ("nano_cpus", "NanoCpus", 0),
+    ("pids_limit", "PidsLimit", 0),
+    ("security_opt", "SecurityOpt", []),
+    ("tmpfs", "Tmpfs", {}),
 )
 
 
@@ -688,7 +772,9 @@ def _build_mounts_section(attrs: dict) -> list[_ContainerMountEntry]:
 @router.get("/api/containers/{container_id}/inspect", dependencies=AUTH, tags=["containers"])
 @secure_route.read(RATE.READ)
 def inspect_container(
-    request: Request, container_id: str, client=Depends(docker_client_dep),
+    request: Request,
+    container_id: str,
+    client=Depends(docker_client_dep),
 ) -> ContainerInspectResponse:
     """Return detailed container metadata (config, state, mounts, network, health)."""
     container = validators._get_container(client, container_id)
@@ -770,7 +856,15 @@ class _UpdateFieldValidator:
 
     def _apply_memory(self, memory: str | int) -> None:
         mem = validators.parse_memory_quantity(memory)
-        if mem and mem < config.DOCKER_MIN_MEM_BYTES:
+        # Docker Engine silently ignores `memory=0` on a RUNNING container —
+        # `/update` returns 200 but the cap stays whatever it was. Returning
+        # success here would be a false positive; the operator's intent
+        # ("remove the cap") requires a stop-and-recreate. Reject at the
+        # API boundary with an actionable code so scripted callers see the
+        # reality instead of silently succeeding.
+        if mem == 0:
+            raise http_error("container.memory_uncap_unsupported")
+        if mem < config.DOCKER_MIN_MEM_BYTES:
             raise http_error("container.memory_below_minimum", minimum=config.DOCKER_MIN_MEM_BYTES)
         if mem > _MAX_MEM_BYTES:
             raise http_error(
@@ -829,7 +923,9 @@ class _UpdateFieldValidator:
 
 
 def _diff_update_fields(
-    update_kwargs: dict, before_hc: dict, after_hc: dict,
+    update_kwargs: dict,
+    before_hc: dict,
+    after_hc: dict,
 ) -> dict[str, dict[str, Any]]:
     """Return `{HostConfigKey: {before, after}}` for every kwarg the caller set."""
     changes: dict[str, dict[str, Any]] = {
@@ -848,11 +944,17 @@ def _diff_update_fields(
 # Fields returned in the /update response's host_config block. Subset of
 # `_ContainerHostConfigSection` — only the live-updatable surface, because
 # the caller just mutated those specific fields.
-_UPDATE_RESPONSE_HOST_CONFIG_FIELDS: frozenset[str] = frozenset({
-    "memory_bytes", "memory_reservation_bytes",
-    "cpu_shares", "cpu_quota", "cpu_period",
-    "pids_limit", "restart_policy",
-})
+_UPDATE_RESPONSE_HOST_CONFIG_FIELDS: frozenset[str] = frozenset(
+    {
+        "memory_bytes",
+        "memory_reservation_bytes",
+        "cpu_shares",
+        "cpu_quota",
+        "cpu_period",
+        "pids_limit",
+        "restart_policy",
+    }
+)
 
 
 def _flatten_host_config(host_config: dict) -> dict[str, Any]:
@@ -949,17 +1051,27 @@ async def container_stats(request: Request, container_id: str, client=Depends(do
     cpu_pct = (cpu_delta / sys_delta * num_cpus * 100.0) if sys_delta > 0 else 0.0
 
     mem = raw.get("memory_stats", {})
-    mem_usage = mem.get("usage", 0) - mem.get("stats", {}).get("cache", 0)
-    mem_limit = mem.get("limit", 0)
+    # Docker stats shape differs between cgroup v1 and v2. On v1 the
+    # "working set" convention is `usage - cache` because the page cache
+    # count is included in usage. On v2 there's no `cache` key — the
+    # equivalent is `inactive_file` (reclaimable page cache). Subtracting
+    # the available one gives a meaningful working-set number in both
+    # kernels; the `or 0` also protects against null values.
+    _mstats = mem.get("stats") or {}
+    _cache_like = _mstats.get("cache")  # cgroup v1
+    if _cache_like is None:
+        _cache_like = _mstats.get("inactive_file")  # cgroup v2
+    mem_usage = (mem.get("usage") or 0) - (_cache_like or 0)
+    mem_limit = mem.get("limit") or 0
     mem_pct = (mem_usage / mem_limit * 100.0) if mem_limit > 0 else 0.0
 
-    nets = raw.get("networks", {})
-    net_rx = sum(v.get("rx_bytes", 0) for v in nets.values())
-    net_tx = sum(v.get("tx_bytes", 0) for v in nets.values())
+    nets = raw.get("networks") or {}
+    net_rx = sum((v.get("rx_bytes") or 0) for v in nets.values())
+    net_tx = sum((v.get("tx_bytes") or 0) for v in nets.values())
 
-    bio = raw.get("blkio_stats", {}).get("io_service_bytes_recursive") or []
-    blk_r = sum(b.get("value", 0) for b in bio if b.get("op") == "read")
-    blk_w = sum(b.get("value", 0) for b in bio if b.get("op") == "write")
+    bio = (raw.get("blkio_stats") or {}).get("io_service_bytes_recursive") or []
+    blk_r = sum((b.get("value") or 0) for b in bio if b.get("op") == "read")
+    blk_w = sum((b.get("value") or 0) for b in bio if b.get("op") == "write")
 
     return {
         "cpu_percent": round(cpu_pct, 2),
@@ -990,4 +1102,3 @@ def container_diff(request: Request, container_id: str, client=Depends(docker_cl
     changes = validators.safe_docker_call(container.diff) or []
     kind_map = {0: "Modified", 1: "Added", 2: "Deleted"}
     return [{"path": c.get("Path", ""), "kind": kind_map.get(c.get("Kind", 0), "unknown")} for c in changes]
-

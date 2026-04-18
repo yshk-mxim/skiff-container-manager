@@ -12,6 +12,7 @@ from tests.conftest import AUTH_CSRF
 
 # ── UndoQueue unit tests ──────────────────────────────────────────────────────
 
+
 def test_undo_queue_fires_after_delay():
     q = UndoQueue(delay_secs=0.05)
     marker = []
@@ -63,8 +64,10 @@ def test_undo_queue_fire_exception_doesnt_propagate():
     """If the enqueued callable raises when fired, the error is logged but
     doesn't crash the process — the client already got 200."""
     q = UndoQueue(delay_secs=0.05)
+
     def boom():
         raise RuntimeError("simulated Docker SDK failure")
+
     q.enqueue("container", "c1", boom)
     time.sleep(0.15)
     # No crash; queue is empty
@@ -80,6 +83,7 @@ def test_undo_token_is_opaque_and_nonenumerable():
         assert len(tokens) == 10
         # All correct shape
         import re
+
         for t in tokens:
             assert re.fullmatch(r"[A-Za-z0-9_\-]{22}", t), f"bad token shape: {t!r}"
     finally:
@@ -87,6 +91,7 @@ def test_undo_token_is_opaque_and_nonenumerable():
 
 
 # ── /api/undo/{token} endpoint tests ──────────────────────────────────────────
+
 
 def test_undo_endpoint_cancels(client, mock_docker, monkeypatch):
     """DELETE ?undo=1 returns undo_token; POSTing it cancels the fire."""
@@ -124,8 +129,7 @@ def test_undo_endpoint_requires_auth(client):
 
 def test_undo_endpoint_requires_csrf(client, mock_docker):
     """POST /api/undo/{token} with Bearer but no X-Requested-With → 403."""
-    resp = client.post("/api/undo/some-token",
-                       headers={"Authorization": AUTH_CSRF["Authorization"]})
+    resp = client.post("/api/undo/some-token", headers={"Authorization": AUTH_CSRF["Authorization"]})
     assert resp.status_code == 403
 
 
@@ -143,13 +147,18 @@ def test_undo_endpoint_unknown_token_returns_cancelled_false(client):
 
 
 def test_delete_without_undo_is_synchronous(client, mock_docker):
-    """Plain DELETE (no ?undo=1) removes immediately, no undo_token returned."""
+    """DELETE with explicit `undo=false` removes immediately, no undo_token.
+
+    The default changed to `undo=true` so a misclick is recoverable; a
+    script that wants the old hard-delete semantics opts in with
+    `?undo=false`.
+    """
     c = MagicMock()
     c.short_id = "abc123def456"
     c.remove = MagicMock()
     mock_docker.containers.get.return_value = c
 
-    resp = client.delete("/api/containers/abc123def456", headers=AUTH_CSRF)
+    resp = client.delete("/api/containers/abc123def456?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     assert "undo_token" not in resp.json()
     c.remove.assert_called_once()

@@ -138,6 +138,7 @@ async function showCompose() {
 
   var controls = document.createElement('div'); controls.className = 'mt-16';
   var lbl = document.createElement('label');
+  lbl.htmlFor = 'compose-project';
   lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted)';
   lbl.textContent = 'Project Name';
   var inp = document.createElement('input'); inp.id = 'compose-project'; inp.value = 'dev';

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
 """Docker network management routes."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -41,13 +42,33 @@ def list_networks(request: Request, client=Depends(docker_client_dep)) -> list[N
     return [NetworkSummary.from_docker(n) for n in networks]
 
 
+@router.get("/api/networks/{network_id}/inspect", dependencies=AUTH, tags=["networks"])
+@secure_route.read(RATE.READ)
+def inspect_network(request: Request, network_id: str, client=Depends(docker_client_dep)) -> dict:
+    """Return the full Docker inspect payload for a network.
+
+    Parity with `/api/volumes/{name}/inspect`. The list endpoint already
+    carries IPAM + attached containers, but `inspect` exposes the raw
+    `Options`, `Labels`, and driver-specific metadata that a scripted
+    caller sometimes needs.
+    """
+    if not _NETWORK_ID_RE.fullmatch(network_id):
+        raise http_error("validation.bad_input")
+    net = safe_docker_call(client.networks.get, network_id, kind="network")
+    return net.attrs
+
+
 @router.post("/api/networks/create", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
-    RATE.WRITE, audit="network.created",
+    RATE.WRITE,
+    audit="network.created",
     audit_fields=lambda request, name, driver="bridge", **kw: {"name": name, "driver": driver},  # noqa: ARG005
 )
 def create_network(
-    request: Request, name: str, driver: str = "bridge", client=Depends(docker_client_dep),
+    request: Request,
+    name: str,
+    driver: str = "bridge",
+    client=Depends(docker_client_dep),
 ) -> OkResponse:
     """Create a new Docker network with the specified driver."""
     if not NETWORK_NAME_RE.fullmatch(name):
@@ -60,7 +81,8 @@ def create_network(
 
 @router.delete("/api/networks/{network_id}", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
-    RATE.WRITE, audit="network.deleted",
+    RATE.WRITE,
+    audit="network.deleted",
     audit_fields=lambda request, network_id, **kw: {"id": network_id},  # noqa: ARG005
 )
 def delete_network(request: Request, network_id: str, client=Depends(docker_client_dep)) -> OkResponse:
@@ -76,12 +98,17 @@ def delete_network(request: Request, network_id: str, client=Depends(docker_clie
 
 @router.post("/api/networks/{network_id}/connect", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
-    RATE.WRITE, audit="network.connect",
-    audit_fields=lambda request, network_id, container_id, **kw:  # noqa: ARG005
-        {"network": network_id, "container": container_id},
+    RATE.WRITE,
+    audit="network.connect",
+    audit_fields=lambda request, network_id, container_id, **kw: (  # noqa: ARG005
+        {"network": network_id, "container": container_id}
+    ),
 )
 def connect_container_to_network(
-    request: Request, network_id: str, container_id: str, client=Depends(docker_client_dep),
+    request: Request,
+    network_id: str,
+    container_id: str,
+    client=Depends(docker_client_dep),
 ) -> OkResponse:
     """Attach a container to a network."""
     if not _NETWORK_ID_RE.fullmatch(network_id):
@@ -95,12 +122,17 @@ def connect_container_to_network(
 
 @router.post("/api/networks/{network_id}/disconnect", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
-    RATE.WRITE, audit="network.disconnect",
-    audit_fields=lambda request, network_id, container_id, **kw:  # noqa: ARG005
-        {"network": network_id, "container": container_id},
+    RATE.WRITE,
+    audit="network.disconnect",
+    audit_fields=lambda request, network_id, container_id, **kw: (  # noqa: ARG005
+        {"network": network_id, "container": container_id}
+    ),
 )
 def disconnect_container_from_network(
-    request: Request, network_id: str, container_id: str, client=Depends(docker_client_dep),
+    request: Request,
+    network_id: str,
+    container_id: str,
+    client=Depends(docker_client_dep),
 ) -> OkResponse:
     """Detach a container from a network."""
     if not _NETWORK_ID_RE.fullmatch(network_id):
@@ -114,7 +146,8 @@ def disconnect_container_from_network(
 
 @router.post("/api/networks/prune", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
-    RATE.BURST, audit="networks.pruned",
+    RATE.BURST,
+    audit="networks.pruned",
     audit_fields=lambda request, **kw: {"count": 0},  # noqa: ARG005 — count rewritten post-call is future work
 )
 def prune_networks(request: Request, client=Depends(docker_client_dep)) -> dict[str, Any]:

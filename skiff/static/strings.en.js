@@ -77,10 +77,18 @@ window.SKIFF_STRINGS = {
   ws: {
     disconnected: "Disconnected",
     reconnecting: "Reconnecting…",
-    idle_timeout: "Session idle — no new output for 5 minutes.",
-    exec_idle_timeout: "Exec session closed after 10 minutes idle.",
+    idle_timeout: "Session idle — no new log output; server closed the stream.",
+    exec_idle_timeout: "Exec session closed — idle past the configured timeout.",
   },
 
+  // NOTE: the Containers page is NOT yet migrated to `t(...)` — the
+  // canonical exemplar today is `pages/volumes.js` (see docs/dev/i18n.md).
+  // The `containers.title` key is used by the sidebar; the rest below
+  // are RESERVED for the future `pages/containers.js` migration so a
+  // PR converting the page can land without touching the strings
+  // bundle. Adding a key here is cheap; referencing an un-migrated key
+  // from app.js would only show up in CI if that page's strings were
+  // on the required-keys list in tests/test_strings_bundle.py.
   containers: {
     title: "Containers",
     empty: "No containers yet. Click Run to create one.",
@@ -187,6 +195,10 @@ window.SKIFF_STRINGS = {
       prune: "Prune",
       inspect: "Inspect",
     },
+    modal: {
+      create_title: "Create volume",
+      inspect_title: "Volume: {name}",
+    },
     create_placeholder: "volume-name",
     confirm: {
       remove: "Remove volume {name}? Data on this volume will be permanently lost.",
@@ -275,6 +287,15 @@ window.SKIFF_STRINGS = {
     },
   },
 
+  reviewer: {
+    banner:
+      "Reviewer profile — mutations are disabled server-side. " +
+      "Destructive buttons are hidden; read-only actions still work.",
+    confirm_enter:
+      "Enter reviewer mode? All mutations will be rejected until the " +
+      "server is restarted. This cannot be undone from the UI.",
+  },
+
   undo: {
     toast: "Operation undone.",
     confirm_toast: "Click to undo.",
@@ -283,5 +304,28 @@ window.SKIFF_STRINGS = {
     window_passed: "Undo window has passed",
     deleted_suffix: " deleted",
     action_in_progress: "Action already in progress",
+    // {kind} is the operand label (e.g. "Container", "Image", volume name);
+    // {seconds} is the remaining countdown. Present-tense "will be" so the
+    // user sees it as a pending action, not a completed one.
+    pending_label: "{kind} will be deleted in {seconds}s",
+    pending_finalizing: "{kind}: finalizing delete…",
+  },
+
+  // Shared status-banner copy. Each key corresponds to a state routed
+  // through statusBanner.set(...) in app.js / wizard.js. `{seconds}` is
+  // substituted from expiresInMs at render time by statusBanner itself.
+  banner: {
+    setup_window_expired: "Setup window expired — restart the server to try again.",
+    setup_lockout: "Too many failed setup attempts — try again in {seconds}s.",
+    session_near_expiry: "Signing you out in {seconds}s for inactivity.",
+    session_absolute_near_expiry: "Session ends in {seconds}s. Save your work.",
+    stay_signed_in: "Stay signed in",
+    ws_auth_lockout: "WebSocket locked out — try again in {seconds}s.",
+    rate_limited: "Rate limited — retry in {seconds}s.",
+  },
+
+  wizard: {
+    // {remaining} is pre-formatted by wizard.js as "Nm Ss" (>=60s) or "Ns".
+    countdown: "{remaining} left",
   },
 };
