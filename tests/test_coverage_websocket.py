@@ -1,12 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for WebSocket helper functions and direct unit coverage."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import docker.errors
 import pytest
 
-import app as app_module
+import skiff.config as config_module
 import skiff.docker_client as docker_client_module
-from app import _invalidate_client, _validate_ws_origin, _validate_ws_token_from_message
+from skiff.auth import _validate_ws_origin, _validate_ws_token_from_message
+from skiff.docker_client import invalidate_client
 from tests.conftest import AUTH_HEADER, TOKEN
 
 # ── _validate_ws_origin ───────────────────────────────────────────────────────
@@ -21,10 +25,13 @@ def _make_ws(origin="", host="localhost:8080"):
     return ws
 
 
-def test_validate_ws_origin_wildcard():
-    with patch.object(app_module._cfg, "allowed_origins", ["*"]):
+def test_validate_ws_origin_wildcard_is_rejected_even_if_smuggled_in():
+    # Wildcards are rejected at config load (see _csv_list_no_wildcard).
+    # If one is somehow present in allowed_origins, the WS origin check must
+    # still refuse an unrelated caller — it is NOT a permissive escape hatch.
+    with patch.object(config_module._cfg, "allowed_origins", ["*"]):
         ws = _make_ws(origin="https://anything.com")
-        assert _validate_ws_origin(ws) is True
+        assert _validate_ws_origin(ws) is False
 
 
 def test_validate_ws_origin_no_origin_rejects():
@@ -54,7 +61,7 @@ def test_validate_ws_origin_different_host():
 
 @pytest.mark.asyncio
 async def test_validate_ws_token_no_api_token():
-    with patch.object(app_module._cfg, "api_token", ""):
+    with patch.object(config_module._cfg, "api_token", ""):
         ws = MagicMock()
         result = await _validate_ws_token_from_message(ws)
         assert result is True
@@ -64,7 +71,7 @@ async def test_validate_ws_token_no_api_token():
 async def test_validate_ws_token_valid():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value=f"AUTH {TOKEN}")
-    with patch.object(app_module._cfg, "api_token", TOKEN):
+    with patch.object(config_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is True
 
@@ -73,7 +80,7 @@ async def test_validate_ws_token_valid():
 async def test_validate_ws_token_invalid():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value="AUTH wrongtoken")
-    with patch.object(app_module._cfg, "api_token", TOKEN):
+    with patch.object(config_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
@@ -82,7 +89,7 @@ async def test_validate_ws_token_invalid():
 async def test_validate_ws_token_not_auth_prefix():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value="HELLO world")
-    with patch.object(app_module._cfg, "api_token", TOKEN):
+    with patch.object(config_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
@@ -90,39 +97,40 @@ async def test_validate_ws_token_not_auth_prefix():
 @pytest.mark.asyncio
 async def test_validate_ws_token_exception_returns_false():
     ws = MagicMock()
-    ws.receive_text = AsyncMock(side_effect=Exception("closed"))
-    with patch.object(app_module._cfg, "api_token", TOKEN):
+    # RuntimeError is the starlette-on-send-after-close signal we narrowed to.
+    ws.receive_text = AsyncMock(side_effect=RuntimeError("closed"))
+    with patch.object(config_module._cfg, "api_token", TOKEN):
         result = await _validate_ws_token_from_message(ws)
         assert result is False
 
 
-# ── _invalidate_client ────────────────────────────────────────────────────────
+# ── invalidate_client ────────────────────────────────────────────────────────
 
-def test_invalidate_client_closes_and_nones():
+def testinvalidate_client_closes_and_nones():
     mock_client = MagicMock()
     with (
         patch.object(docker_client_module, "_client", mock_client),
         patch.object(docker_client_module, "_client_last_ping", 999.0),
     ):
-        _invalidate_client()
+        invalidate_client()
         mock_client.close.assert_called_once()
         assert docker_client_module._client is None
         assert docker_client_module._client_last_ping == 0.0
 
 
-def test_invalidate_client_close_exception_swallowed():
+def testinvalidate_client_close_exception_swallowed():
     mock_client = MagicMock()
-    mock_client.close.side_effect = Exception("close failed")
+    mock_client.close.side_effect = docker.errors.DockerException("close failed")
     with patch.object(docker_client_module, "_client", mock_client):
         # Should not raise
-        _invalidate_client()
+        invalidate_client()
         assert docker_client_module._client is None
 
 
-def test_invalidate_client_none_client():
+def testinvalidate_client_none_client():
     with patch.object(docker_client_module, "_client", None):
         # Should not raise
-        _invalidate_client()
+        invalidate_client()
 
 
 # ── WebSocket endpoint tests ──────────────────────────────────────────────────
@@ -138,7 +146,7 @@ def test_ws_logs_invalid_origin(client):
 
 def test_ws_logs_invalid_container_id(client):
     """WebSocket logs endpoint rejects invalid container ID."""
-    with patch.object(app_module._cfg, "allowed_origins", ["*"]):
+    with patch.object(config_module._cfg, "allowed_origins", ["*"]):
         try:
             with client.websocket_connect(
                 "/ws/logs/INVALID-ID",
@@ -161,8 +169,13 @@ def test_ws_exec_invalid_origin(client):
 # ── _get_container transient error ────────────────────────────────────────────
 
 def test_get_container_transient_error(client, mock_docker):
-    """_get_container raises 503 on transient docker error."""
-    mock_docker.containers.get.side_effect = OSError("connection reset")
+    """_get_container raises 503 on transient docker error.
+
+    Use ConnectionError (the narrow transient class in docker_client
+    .DOCKER_TRANSIENT) — bare OSError is intentionally no longer
+    classified as transient so disk-full / EMFILE surface as 500, not 503.
+    """
+    mock_docker.containers.get.side_effect = ConnectionError("connection reset")
     resp = client.get("/api/containers/abc1234567890123/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 503
 
@@ -171,7 +184,7 @@ def test_get_container_transient_error(client, mock_docker):
 
 def test_build_client_calls_ping():
     """_build_client creates a DockerClient and pings it."""
-    from app import _build_client
+    from skiff.docker_client import _build_client
     mock_client = MagicMock()
     with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
         result = _build_client()
@@ -189,6 +202,6 @@ def test_get_client_existing_ping_success():
         patch.object(docker_client_module, "_client", mock_client),
         patch.object(docker_client_module, "_client_last_ping", 0.0),  # very stale
     ):
-        result = app_module.get_client()
+        result = docker_client_module.get_client()
         mock_client.ping.assert_called_once()
         assert result is mock_client

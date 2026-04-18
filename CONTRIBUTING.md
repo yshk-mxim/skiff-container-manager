@@ -4,19 +4,46 @@ Thank you for your interest in contributing! This document covers how to get sta
 
 ---
 
+## Your first PR
+
+SKIFF uses the standard GitHub fork-and-PR flow. Contributors don't push
+branches to this repo directly — you push to your own fork and open a
+pull request against `yshk-mxim/skiff-container-manager:main`.
+
+1. Click the **Fork** button on the top right of the repo page.
+2. Clone *your fork* locally (not the upstream):
+   ```bash
+   git clone https://github.com/<your-user>/skiff-container-manager.git skiff
+   cd skiff
+   git remote add upstream https://github.com/yshk-mxim/skiff-container-manager.git
+   ```
+3. Create a branch on your fork, make changes, run `make ci` locally, commit.
+4. Push to your fork, then open a PR from the GitHub UI.
+
+One required-status check (`security / Security Review`) is skipped on
+forks because it depends on a repo secret forks cannot read. This is
+intentional — every other gate runs unchanged.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
 
 - Python 3.12+
 - Docker CLI (for `docker compose` support)
-- SSH key configured for a Docker Engine VM
+- Any Docker-API-compatible runtime reachable locally (Docker Desktop,
+  Colima, OrbStack, Rancher Desktop, Linux Docker Engine, Podman
+  rootless) OR an SSH tunnel to a remote Docker host. Unit tests need
+  neither — only the e2e suite does.
 
 ### Setup
 
 ```bash
-git clone https://github.com/yshk-mxim/skiff-container-manager.git
+# Fork first, then clone your fork (see "Your first PR" below).
+git clone https://github.com/<your-user>/skiff-container-manager.git skiff
 cd skiff
+git remote add upstream https://github.com/yshk-mxim/skiff-container-manager.git
 python -m venv .venv
 source .venv/bin/activate
 
@@ -33,8 +60,13 @@ make test-e2e
 ### Run the server locally
 
 ```bash
-# No auth, local Docker socket or SSH:
-API_TOKEN="" DOCKER_HOST="ssh://dev@docker-vm" uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080
+# Local socket (no auth, localhost only — dev mode)
+API_TOKEN="" uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080 --no-proxy-headers
+
+# Or against a remote Docker host via an SSH tunnel
+ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host
+API_TOKEN="$(openssl rand -hex 32)" DOCKER_HOST=unix:///tmp/docker.sock \
+  uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080 --no-proxy-headers
 ```
 
 ---
@@ -63,23 +95,45 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 - `feat:` New feature
 - `fix:` Bug fix
 - `docs:` Documentation only
-- `refactor:` Code restructure without behavior change
+- `refactor:` Code restructure without behaviour change
 - `chore:` Build or tooling changes
 
 ### Pull requests
 
 Before opening a PR:
 
-1. Run `make lint` — must be clean.
-2. Test the golden path manually if changing behavior.
+1. Run `make ci` locally — must be clean. It runs the same gates as
+   the CI workflow: `lint` (ruff), `lint-antipatterns` (AP001–AP014),
+   `lint-js` (no innerHTML interpolation), `lint-md` (no broken
+   internal links), `lint-asvs` (SECURITY.md V1–V18 coverage),
+   `lint-notice` (NOTICE vs `requirements.txt`), `security` (ruff S
+   + pip-audit --strict), `docs-check` (auto-generated docs drift)
+   and `coverage` (unit + property tests against the 90% gate).
+2. Test the golden path manually if changing behaviour.
 3. Update `CHANGELOG.md` under `[Unreleased]`.
 4. Update docs if adding or changing endpoints or config.
+
+### What to expect on review
+
+This project is maintained by one person in spare time. Expect review
+and response on a best-effort cadence — the maintainer does not commit
+to a specific turnaround.
+
+Changes under `.github/`, `pyproject.toml`, or `requirements.txt` require
+maintainer review (see `.github/CODEOWNERS`) — expect a longer wait for
+dependency bumps and CI tweaks than for application-code PRs.
+
+PRs opened from **forks** will see one required-status check
+(`security / Security Review`) skip because it depends on a repo secret
+(`CLAUDE_API_KEY`) that forks cannot read. The other gates
+(lint, anti-pattern, markdown, pip-audit, tests, SBOM/Grype) run
+unchanged.
 
 ---
 
 ## Code Standards
 
-- Follow the patterns established in `docs/code-quality-guide.md` (adapted from the project's quality standards).
+- Follow the patterns established in `docs/dev/code-quality-guide.md` (adapted from the project's quality standards).
 - No magic numbers — use named constants.
 - `raise X from exc` in all `except` blocks.
 - No bare `except Exception: pass` — log or re-raise.

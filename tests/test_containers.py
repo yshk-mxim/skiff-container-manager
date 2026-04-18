@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for container lifecycle endpoints."""
 
 from unittest.mock import MagicMock
@@ -6,29 +8,7 @@ import docker.errors
 import pytest
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
-
-
-def _make_container(
-    short_id="abc123def",
-    name="my-service",
-    image_tag="docker.io/library/nginx:latest",
-    status="running",
-    state_status="running",
-    ports=None,
-    created="2026-01-01T00:00:00Z",
-):
-    c = MagicMock()
-    c.short_id = short_id
-    c.name = name
-    c.image.tags = [image_tag]
-    c.status = status
-    c.ports = ports or {}
-    c.attrs = {
-        "Created": created,
-        "State": {"Status": state_status, "Health": None},
-    }
-    return c
-
+from tests.factories import make_container as _make_container
 
 # ── List containers ────────────────────────────────────────────────────────────
 
@@ -42,7 +22,9 @@ def test_list_containers_empty(client, mock_docker):
 
 @pytest.mark.unit
 def test_list_containers_returns_fields(client, mock_docker):
-    mock_docker.containers.list.return_value = [_make_container()]
+    mock_docker.containers.list.return_value = [_make_container(
+        short_id="abc123def", name="my-service",
+    )]
     resp = client.get("/api/containers", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()

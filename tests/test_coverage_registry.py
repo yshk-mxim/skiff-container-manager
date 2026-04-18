@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for registry proxy endpoints."""
 
 from unittest.mock import MagicMock, patch

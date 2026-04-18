@@ -1,9 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for input validation: IDs, image names, registry, compose files."""
 
 import pytest
 from fastapi import HTTPException
 
-from app import (
+from skiff.validators import (
     validate_compose_file,
     validate_container_id,
     validate_image_registry,
@@ -219,7 +221,7 @@ def test_compose_image_from_unapproved_registry_raises_400():
 
 @pytest.mark.unit
 def test_redact_env_masks_sensitive_keys():
-    from skiff.app import _redact_env
+    from skiff.validators import _redact_env
     env = [
         "DATABASE_URL=postgres://user:pass@host/db",
         "API_KEY=secret123",

@@ -1,27 +1,17 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for image endpoints."""
-
-from unittest.mock import MagicMock
 
 import pytest
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
+from tests.factories import make_image
 
 
 def _make_image(tag="docker.io/library/nginx:latest", short_id="sha256:abc123", size=100_000_000):
-    img = MagicMock()
-    img.tags = [tag]
-    img.short_id = short_id
-    img.attrs = {
-        "Size": size,
-        "Created": "2026-01-01T00:00:00Z",
-        "Id": f"sha256:{short_id}abc",
-        "Architecture": "amd64",
-        "Os": "linux",
-        "RootFS": {"Layers": ["layer1", "layer2"]},
-        "Config": {
-            "Env": [], "Cmd": None, "Entrypoint": None, "ExposedPorts": {}, "Labels": {}, "WorkingDir": "", "User": ""
-        },
-    }
+    """Legacy wrapper preserving this file's specific kwargs shape."""
+    img = make_image(short_id=short_id, tags=[tag], size=size)
+    img.attrs["Config"]["ExposedPorts"] = {}
     img.history.return_value = []
     return img
 

@@ -3,12 +3,32 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "skiff"
+name = "skiff-container-manager"
 version = "1.0.0"
-description = "Cloud-native container manager with a web UI — designed for remote Docker engines over SSH"
+description = "Lightweight web UI and JSON API for Docker Engine — local socket or SSH-tunnelled remote host; no agent, no daemon."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"
+authors = [{ name = "Yakov Shkolnikov and contributors" }]
+keywords = [
+    "docker", "container", "compose", "web-ui", "devops", "fastapi",
+    "ssh-tunnel", "self-hosted", "homelab",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Typing :: Typed",
+]
 dependencies = [
     # CVE note: fastapi>=0.116 pulls starlette>=0.49.1 which fixes CVE-2025-54121 and CVE-2025-62727.
     "fastapi>=0.116",
@@ -22,6 +42,14 @@ dependencies = [
     "python-multipart>=0.0.22",  # CVE-2026-24486 fixed in 0.0.22
     "websockets>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/yshk-mxim/skiff-container-manager"
+Repository = "https://github.com/yshk-mxim/skiff-container-manager"
+Issues = "https://github.com/yshk-mxim/skiff-container-manager/issues"
+Changelog = "https://github.com/yshk-mxim/skiff-container-manager/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/yshk-mxim/skiff-container-manager/blob/main/docs/README.md"
+Security = "https://github.com/yshk-mxim/skiff-container-manager/security/advisories/new"
 
 [project.optional-dependencies]
 dev = [
@@ -50,7 +78,7 @@ where = ["."]
 include = ["skiff*"]
 
 [tool.setuptools.package-data]
-"skiff" = ["static/**/*"]
+"skiff" = ["static/**/*", "_config/*.toml"]
 
 [tool.ruff]
 line-length = 120
@@ -76,6 +104,14 @@ select = [
     "ARG",      # unused arguments
     "TRY",      # tryceratops
     "PERF",     # perflint
+    # Modern anti-pattern rule families enabled after the v3 review.
+    # Each one is currently clean; dropping a new rule family unchecked
+    # would flood the output, so we verified zero violations before
+    # adding it to `select`.
+    "DTZ",      # flake8-datetimez — reject timezone-naive datetimes
+    "FURB",     # refurb — modernize legacy idioms (2025 style)
+    "PTH",      # flake8-use-pathlib — os.path → pathlib.Path
+    "PYI",      # flake8-pyi — stub/type conventions
 ]
 ignore = [
     # FastAPI idioms — intentional
@@ -93,11 +129,18 @@ ignore = [
     "S110",    # try/except/pass in best-effort cleanup
     "BLE001",  # broad Exception — needed for Docker transient error handling
 
-    # Complexity — security validation functions inherently need many branches
-    "PLR2004", # magic values: HTTP status codes and config constants are self-documenting
-    "PLR0912", # too many branches: validate_compose_file and run_container
-    "C901",    # complexity: same functions
-    "PLR0915", # too many statements: exec_shell WebSocket handler
+    # Complexity policy (see tool.ruff.lint.mccabe below for the ceiling):
+    #   CC ≤ 3   default — 2^3=8 paths are actually testable by example
+    #   CC ≤ 5   preferred — senior review + hypothesis covers the space
+    #   CC ≤ 10  hard ceiling — enforced by C901 below; above this is a
+    #            combinatorial explosion no test suite can cover
+    # Magic values stay ignored because HTTP status codes + config
+    # constants are self-documenting at the call site.
+    "PLR2004", # magic values
+    # PLR0912 + PLR0915 ceilings are looser than the McCabe cap we
+    # actually enforce; ignore to avoid noise competing with C901.
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
 
     # Style preferences
     "SIM102",  # nested if: clearer than collapsed form in validation logic
@@ -111,7 +154,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 18
+# Hard ceiling per CLAUDE-side policy. Anything above 10 is practically
+# untestable — 2^10 = 1024 branch paths that example-based pytest can't
+# cover. Functions hitting this limit should be decomposed; if truly
+# irreducible, rely on Pydantic validation at the boundary to shrink
+# the test surface ("accurate by design").
+max-complexity = 10
 
 [tool.ruff.lint.pylint]
 max-args = 12
@@ -119,7 +167,12 @@ max-branches = 12
 max-statements = 60
 
 [tool.ruff.lint.per-file-ignores]
+"tools/**/*.py" = [
+    "T201",    # print is the idiom in CLI scripts
+    "E402",    # sys.path insert before imports is unavoidable here
+]
 "tests/**/*.py" = [
+    "C901",    # complexity: e2e tests encode multi-step Playwright scenarios
     "S101",    # assert in tests
     "PLR2004", # magic values in tests
     "S105",    # hardcoded token values in tests
@@ -133,6 +186,7 @@ max-statements = 60
     "S108",    # /tmp/ paths are acceptable in test fixtures
     "E402",    # module-level imports after pytest_plugins declaration
     "E501",    # line length — long selectors in Playwright tests
+    "PTH",     # os.path.* usage is fine in test fixtures + Playwright setup
 ]
 
 [tool.pytest.ini_options]
@@ -144,6 +198,22 @@ markers = [
     "integration: tests against a real Docker daemon",
     "property: hypothesis property-based tests",
     "e2e: end-to-end Playwright tests requiring live server and Docker tunnel",
+    # R12 — per-module markers; auto-tagged by tests/conftest.py from filename.
+    # Run e.g. `pytest -m containers` or `pytest -m 'images or volumes'`.
+    "containers: targets skiff.routers.containers",
+    "compose: targets skiff.routers.compose",
+    "images: targets skiff.routers.images",
+    "volumes: targets skiff.routers.volumes",
+    "networks: targets skiff.routers.networks",
+    "system: targets skiff.routers.system",
+    "docker_client: targets skiff.docker_client",
+    "websocket: targets WebSocket handlers",
+    "ws: targets WebSocket handlers (alias)",
+    "registry: targets registry-integration routes",
+    "setup: targets the setup-wizard flow",
+    "audit: targets audit-log classification / emission",
+    "middleware: targets ASGI middleware (security headers, audit, body-size)",
+    "undo: targets the undo queue",
 ]
 addopts = ["--strict-markers", "--strict-config"]
 filterwarnings = [
@@ -158,7 +228,10 @@ source = ["skiff"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
-fail_under = 95
+# Contributor-friendly threshold. Current main tracks ~97%, but we don't
+# want a cosmetic branch addition in an external PR to fail CI solely on
+# coverage delta. Maintainer raises locally if the suite is being hardened.
+fail_under = 90
 precision = 1
 show_missing = true
 exclude_lines = [

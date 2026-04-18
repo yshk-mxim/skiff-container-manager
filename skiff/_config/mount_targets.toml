@@ -1,0 +1,53 @@
+# Container-side paths that a mount is forbidden to land on.
+#
+# Zero-trust rationale (P0 security file):
+#
+# [bind] — host-bind volume targets. Mounting /etc over a container
+#   lets the caller smuggle in a rogue /etc/passwd, /etc/shadow, or
+#   nsswitch.conf; /proc / /sys give arbitrary kernel introspection;
+#   /dev exposes the host's device tree; /run + /var/run reveal the
+#   host's private runtime state (dbus, systemd sockets, …).
+#
+#   This list is deliberately smaller than [tmpfs] below: a bind-
+#   mount copies the host's state into the container, so any host
+#   path with secrets / sockets / kernel data is dangerous.
+#
+# [tmpfs] — tmpfs mount targets. tmpfs is a FRESH ramfs for the
+#   container, so /run, /var/run, /var/cache on tmpfs are actually
+#   REQUIRED by many images (nginx, redis, haproxy, postgres initdb).
+#   The list below blocks paths whose tmpfs overlay would mask
+#   existing container OS state (/etc on tmpfs hides baked-in
+#   configuration; /bin on tmpfs hides binaries; / on tmpfs makes
+#   the container non-functional).
+#
+# Any path equal to a blocked entry or starting with `<blocked>/` is
+# rejected. An explicit extension — adding a runtime that needs
+# /boot mounted — is a security-review commit touching this file.
+#
+# OWASP Top 10:2025 mapping: A01 Broken Access Control (mount
+# escapes the container boundary).
+
+[bind]
+paths = [
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/var/run",
+    "/run",
+]
+
+[tmpfs]
+paths = [
+    "/",
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/boot",
+    "/lib",
+    "/lib64",
+    "/usr",
+    "/bin",
+    "/sbin",
+]

@@ -1,11 +1,12 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Additional tests to cover remaining missing lines."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
+import docker.errors
 
-import app as app_module
 import skiff.docker_client as docker_client_module
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
@@ -19,9 +20,9 @@ def test_list_containers_image_exception_fallback(client, mock_docker):
     c.status = "running"
     c.ports = {}
     c.attrs = {"State": {"Status": "running", "Health": None}, "Created": ""}
-    # Make image.tags raise an exception
+    # Make image.tags raise — docker.errors.DockerException is the narrowed catch.
     def _raise(_):
-        raise Exception("no image")  # noqa: TRY002
+        raise docker.errors.DockerException("no image")
     type(c.image).tags = property(_raise)
     mock_docker.containers.list.return_value = [c]
     resp = client.get("/api/containers", headers=AUTH_HEADER)
@@ -99,7 +100,7 @@ def test_list_volumes_containers_exception(client, mock_docker):
         "Labels": {},
     }
     mock_docker.volumes.list.return_value = [vol]
-    mock_docker.containers.list.side_effect = Exception("docker error")
+    mock_docker.containers.list.side_effect = docker.errors.DockerException("docker error")
     resp = client.get("/api/volumes", headers=AUTH_HEADER)
     assert resp.status_code == 200
     # Still returns volumes even when container lookup fails
@@ -173,7 +174,7 @@ def test_push_image_api_error(client, mock_docker):
 # ── _validate_ws_origin: exception in urlparse ───────────────────────────────
 
 def test_validate_ws_origin_urlparse_exception():
-    from app import _validate_ws_origin
+    from skiff.auth import _validate_ws_origin
     ws = MagicMock()
     ws.headers = {"origin": "not-a-url", "host": "localhost"}
     # urlparse won't raise but netloc will be empty, causing return False
@@ -184,10 +185,16 @@ def test_validate_ws_origin_urlparse_exception():
 # ── get_client: close fails during stale ping ─────────────────────────────────
 
 def test_get_client_stale_close_exception():
-    """When ping fails and close() also raises, still invalidates client."""
+    """When ping fails and close() also raises, still invalidates client.
+
+    After R5 narrows the except clauses to docker.errors.DockerException,
+    use that as side_effect (a generic Exception would propagate now).
+    That's the desired new behaviour — unexpected error types surface
+    rather than being silently swallowed."""
+    import docker.errors
     mock_client = MagicMock()
-    mock_client.ping.side_effect = Exception("ping failed")
-    mock_client.close.side_effect = Exception("close also failed")
+    mock_client.ping.side_effect = docker.errors.DockerException("ping failed")
+    mock_client.close.side_effect = docker.errors.DockerException("close also failed")
     mock_new = MagicMock()
     mock_new.ping.return_value = True
 
@@ -197,7 +204,7 @@ def test_get_client_stale_close_exception():
         patch.object(docker_client_module, "_client_failed_at", 0.0),
         patch("skiff.docker_client._build_client", return_value=mock_new),
     ):
-        result = app_module.get_client()
+        result = docker_client_module.get_client()
         assert result is mock_new
 
 
@@ -323,23 +330,25 @@ def test_ws_exec_valid_auth_exec_success(client, mock_docker):
 # ── LICENSE file ──────────────────────────────────────────────────────────────
 
 def test_license_file_exists(client):
-    """Test /LICENSE endpoint serves file."""
+    """/LICENSE endpoint serves the project's license file unconditionally.
+
+    The LICENSE file is shipped with the repo (MIT); if it disappears,
+    the endpoint should fail the test — not silently skip.
+    """
     lic = Path(__file__).parent.parent / "LICENSE"
-    if lic.exists():
-        resp = client.get("/LICENSE")
-        assert resp.status_code == 200
-    else:
-        pytest.skip("No LICENSE file present")
+    assert lic.exists(), "LICENSE file must exist at repo root"
+    resp = client.get("/LICENSE")
+    assert resp.status_code == 200
+    assert b"MIT" in resp.content or b"License" in resp.content
 
 
 def test_index_page(client):
-    """Test / serves index.html."""
-    index = Path(__file__).parent.parent / "static" / "index.html"
-    if index.exists():
-        resp = client.get("/")
-        assert resp.status_code == 200
-    else:
-        pytest.skip("No static/index.html present")
+    """`/` serves the SPA's index.html, wired from skiff/static/."""
+    index = Path(__file__).parent.parent / "skiff" / "static" / "index.html"
+    assert index.exists(), "skiff/static/index.html must exist"
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"<html" in resp.content.lower() or b"<!doctype" in resp.content.lower()
 
 
 # ── container_top non-409 re-raise ────────────────────────────────────────────
@@ -382,7 +391,7 @@ def test_compose_up_symlink_traversal(client, tmp_path):
     (tmp_path / "compose").mkdir()
     link_target.symlink_to(outside)
 
-    with patch("skiff.routers.compose.COMPOSE_DIR", tmp_path / "compose"):
+    with patch("skiff.config.COMPOSE_DIR", tmp_path / "compose"):
         # The symlink "evil" resolves to outside compose dir
         import io
         valid_content = b"services:\n  web:\n    image: docker.io/library/nginx:latest\n"
@@ -399,7 +408,7 @@ def test_compose_up_symlink_traversal(client, tmp_path):
 
 def test_validate_ws_origin_exception_in_urlparse():
     """If urlparse raises, return False."""
-    from app import _validate_ws_origin
+    from skiff.auth import _validate_ws_origin
     ws = MagicMock()
     # A valid non-empty origin not in allowlist, but urlparse will work
     # Test the path where origin_host is empty (no netloc)

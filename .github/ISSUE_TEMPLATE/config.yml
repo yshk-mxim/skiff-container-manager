@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private disclosure)
+    url: https://github.com/yshk-mxim/skiff-container-manager/security/advisories/new
+    about: Please DO NOT file a public issue for security problems. Use GitHub's private security advisory form.
+  - name: Question / discussion
+    url: https://github.com/yshk-mxim/skiff-container-manager/discussions
+    about: General questions, usage help, and ideas belong in Discussions, not Issues.

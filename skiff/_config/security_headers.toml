@@ -1,0 +1,37 @@
+# Security headers applied to every response by the audit middleware.
+#
+# Zero-trust rationale:
+#  - default-src 'self'          only origin-loaded resources
+#  - script-src 'self'           disables inline scripts + all CDNs
+#  - style-src 'self'            with 'unsafe-inline' for inline style
+#                                  attributes on DOM-built widgets
+#  - connect-src 'self'          XHR + WebSocket upgrades allowed only
+#                                  to the serving origin. Modern browsers
+#                                  treat same-origin ws:// / wss:// as
+#                                  covered by 'self'; no `ws:` / `wss:`
+#                                  wildcard needed (and including one
+#                                  would permit cross-origin WebSocket
+#                                  exfiltration from any future XSS).
+#  - img-src 'self' data:        allows the SVG icons encoded as
+#                                  data URIs in the sidebar
+#  - frame-ancestors 'none'      prevents the app being iframed —
+#                                  clickjacking defence
+#
+# The Permissions-Policy denies camera / microphone / geolocation / USB
+# across every origin — this is a management tool, not a device-access
+# app. Any feature that needs these must add a route-specific override.
+#
+# OWASP Top 10:2025 mapping: A02 Security Misconfiguration
+# (default-deny Permissions-Policy, frame-ancestors 'none',
+# HSTS on by default) and A05 Injection (script-src 'self' blocks
+# inline / third-party JS — the dominant XSS surface).
+
+csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+
+permissions_policy = "camera=(), microphone=(), geolocation=(), usb=()"
+
+# HSTS is kept as a separate knob because TLS termination is
+# operator-controlled (see docs/hardening/production.md §1). The value
+# below is the 1-year default; an operator running behind a proxy that
+# already sets HSTS may override via the HSTS_MAX_AGE env var.
+hsts_max_age_seconds = 31536000

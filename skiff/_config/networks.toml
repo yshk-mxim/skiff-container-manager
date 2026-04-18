@@ -1,0 +1,20 @@
+# Docker network policy for the SKIFF router.
+#
+# Zero-trust rationale:
+#  - builtin_names: Docker ships three default networks (bridge, host,
+#    none). Deleting them breaks every container on the host. The
+#    router refuses DELETE requests naming any entry in this list.
+#  - valid_drivers: the allowlist of network drivers SKIFF will create.
+#    Ipvlan / weave / bespoke plugins are intentionally off-list —
+#    they can extend container-to-container attack surface if a
+#    compromised container creates a network the host wasn't expecting.
+#    Extending this list is a security decision (add a row, note why
+#    the driver is safe for this deployment).
+#
+# OWASP Top 10:2025 mapping: A01 Broken Access Control — prevents
+# trivial DoS by deleting bridge / host / none; driver allowlist
+# blocks a compromised caller from creating a network with unreviewed
+# kernel-level semantics (ipvlan, third-party plugins, etc.).
+
+builtin_names = ["bridge", "host", "none"]
+valid_drivers = ["bridge", "overlay", "macvlan", "none"]

@@ -1,0 +1,175 @@
+# Connect-panel tool templates.
+#
+# Each [[tool]] entry produces one entry in the "Connect external tool"
+# dropdown on the System page. The server reads this file and returns
+# rendered snippets (with `{dockerHost}`, `{metricsUrl}`, etc.
+# substituted from live runtime state) via GET /api/connect-snippets.
+#
+# Adding a new integration is one TOML entry — no JS change, no route
+# change. The client picks by `id`, renders the `hint` and `note`
+# as plain text, and streams the `blocks` as <pre>/<code> copy
+# widgets via UI.copyBlock / UI.copyCmd.
+#
+# Template placeholders substituted server-side:
+#   {dockerHost}       current _cfg.docker_host
+#   {metricsUrl}       "{scheme}://{host}/api/system/metrics"
+#   {audit_log_glob}   server-OS audit log path with user=* wildcard
+#                      (macOS: /Users/*/…, Linux: /home/*/…)
+#   {origin}           request Host + scheme (e.g. http://127.0.0.1:8080)
+#   {host}             request Host (no scheme, e.g. 127.0.0.1:8080)
+#   {scheme}           http / https (from X-Forwarded-Proto or request)
+#
+# Each tool has:
+#   id       stable short id (used in the dropdown)
+#   label    human-readable dropdown entry
+#   hint     intro sentence rendered above the snippets
+#   blocks   list of { kind, filename, content } to render
+#            kind = "block" (UI.copyBlock, multi-line) or
+#                   "command" (UI.copyCmd, single-line).
+#            filename is shown as the block's subheading label.
+#   note     optional trailing sentence rendered after all blocks
+
+[[tool]]
+id = "vscode"
+label = "VS Code / Cursor / Windsurf (Docker extension)"
+hint = "Attach VS Code / Cursor / Windsurf to any container SKIFF is managing. Paste into your workspace .vscode/settings.json:"
+note = "Command Palette → \"Dev Containers: Attach to Running Container…\" lists every container SKIFF launched."
+[[tool.blocks]]
+kind = "block"
+filename = "settings.json"
+content = """{
+  "docker.host": "{dockerHost}"
+}"""
+
+[[tool]]
+id = "jetbrains"
+label = "JetBrains IDE (PyCharm / IntelliJ / GoLand / WebStorm)"
+hint = "JetBrains IDE → Settings → Build, Execution, Deployment → Docker → New connection:"
+[[tool.blocks]]
+kind = "command"
+filename = "Unix socket / TCP URL"
+content = "{dockerHost}"
+
+[[tool]]
+id = "cli"
+label = "docker CLI on this workstation"
+hint = "Use the docker CLI on this workstation against the same daemon SKIFF is managing:"
+[[tool.blocks]]
+kind = "command"
+filename = "Export in your shell"
+content = 'export DOCKER_HOST="{dockerHost}"'
+[[tool.blocks]]
+kind = "command"
+filename = "Verify the connection"
+content = "docker ps"
+
+[[tool]]
+id = "prom"
+label = "Prometheus / Grafana Alloy / Datadog (metrics scrape)"
+hint = "Prometheus / Grafana Alloy / Datadog (OpenMetrics) all accept this:"
+[[tool.blocks]]
+kind = "block"
+filename = "prometheus.yml"
+content = """scrape_configs:
+  - job_name: skiff
+    metrics_path: /api/system/metrics
+    scheme: {scheme}
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/skiff-token
+    static_configs:
+      - targets: ['{host}']"""
+[[tool.blocks]]
+kind = "command"
+filename = "Metrics endpoint (verify with: curl -H \"Authorization: Bearer $TOKEN\" ...)"
+content = "{metricsUrl}"
+
+[[tool]]
+id = "loki"
+label = "Grafana Loki (audit log via Alloy)"
+hint = "Grafana Alloy tails the SKIFF audit log into Loki. Save as alloy.river:"
+[[tool.blocks]]
+kind = "block"
+filename = "alloy.river"
+content = """loki.source.file "skiff_audit" {
+  targets = [{ __path__ = "{audit_log_glob}", job = "skiff" }]
+  forward_to = [loki.process.parse_json.receiver]
+}
+loki.process "parse_json" {
+  stage.json {
+    expressions = { event_type = "", status = "", remote = "" }
+  }
+  stage.labels {
+    values = { event_type = "", status = "" }
+  }
+  forward_to = [loki.write.default.receiver]
+}"""
+
+[[tool]]
+id = "splunk"
+label = "Splunk (audit log)"
+hint = "Splunk Universal Forwarder inputs.conf:"
+[[tool.blocks]]
+kind = "block"
+filename = "inputs.conf"
+content = """[monitor://{audit_log_glob}]
+sourcetype = _json
+index = security"""
+
+[[tool]]
+id = "datadog"
+label = "Datadog logs (audit log)"
+hint = "Datadog Agent logs config:"
+[[tool.blocks]]
+kind = "block"
+filename = "skiff.d/conf.yaml"
+content = """logs:
+  - type: file
+    path: {audit_log_glob}
+    service: skiff
+    source: skiff"""
+
+[[tool]]
+id = "elk"
+label = "Elasticsearch / OpenSearch (Filebeat)"
+hint = "Filebeat ndjson input into Elasticsearch / OpenSearch:"
+[[tool.blocks]]
+kind = "block"
+filename = "filebeat.yml"
+content = """filebeat.inputs:
+  - type: filestream
+    id: skiff-audit
+    paths:
+      - {audit_log_glob}
+    parsers:
+      - ndjson:
+          keys_under_root: true
+output.elasticsearch:
+  hosts: ["https://es:9200"]"""
+
+[[tool]]
+id = "oauth2"
+label = "OAuth2 proxy in front of SKIFF"
+hint = "oauth2-proxy in front of SKIFF — lets you use GitHub/Google/Okta for per-user identity. The proxy passes X-Forwarded-User, which SKIFF logs as `user` on every audit entry:"
+[[tool.blocks]]
+kind = "block"
+filename = "Run in a separate shell"
+content = """oauth2-proxy \\
+  --provider=github \\
+  --upstream={origin} \\
+  --http-address=127.0.0.1:4180 \\
+  --cookie-secret="$(openssl rand -hex 16)" \\
+  --client-id="$GITHUB_APP_ID" \\
+  --client-secret="$GITHUB_APP_SECRET" \\
+  --email-domain="*" \\
+  --github-org=myorg"""
+
+[[tool]]
+id = "caddy"
+label = "Caddy (automatic HTTPS)"
+hint = "Caddy handles HTTPS automatically via Let's Encrypt:"
+note = "Then update SKIFF: export ALLOWED_ORIGINS=\"https://containers.example.com\" and restart."
+[[tool.blocks]]
+kind = "command"
+filename = "One-liner (swap the hostname)"
+content = "caddy reverse-proxy --from https://containers.example.com --to {host}"

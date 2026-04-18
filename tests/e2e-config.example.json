@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to tests/e2e-config.json (gitignored) and edit for your environment. Each key maps 1:1 to an E2E_* env var; env vars win if both are set.",
+  "docker_host": "unix:///var/run/docker.sock",
+  "ssh_tunnel": "",
+  "ssh_tunnel_target": "",
+  "allowed_registries": "docker.io,ghcr.io",
+  "port": 18080,
+  "token": "e2e-test-token"
+}

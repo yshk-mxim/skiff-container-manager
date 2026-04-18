@@ -1,33 +1,20 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for image endpoints."""
 
-from unittest.mock import MagicMock
 
 import docker.errors
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
+from tests.factories import make_image as _factory_make_image
 
 
 def _make_image(short_id="sha256abc123", tags=None, size=100 * 1024 * 1024):
-    img = MagicMock()
-    img.short_id = short_id
-    img.tags = tags or ["docker.io/library/nginx:latest"]
-    img.attrs = {
-        "Id": "sha256:" + short_id,
-        "Size": size,
-        "Created": "2026-01-01T00:00:00Z",
-        "Architecture": "amd64",
-        "Os": "linux",
-        "RootFS": {"Layers": ["layer1", "layer2"]},
-        "Config": {
-            "Env": ["PATH=/usr/local/bin"],
-            "Cmd": ["/bin/sh"],
-            "Entrypoint": None,
-            "ExposedPorts": {"80/tcp": {}},
-            "Labels": {},
-            "WorkingDir": "/app",
-            "User": "",
-        },
-    }
+    """Image-specific test mock — factory + ExposedPorts + history shape."""
+    img = _factory_make_image(short_id=short_id, tags=tags, size=size)
+    img.attrs["Config"]["ExposedPorts"] = {"80/tcp": {}}
+    img.attrs["Config"]["Env"] = ["PATH=/usr/local/bin"]
+    img.attrs["Config"]["WorkingDir"] = "/app"
     img.history.return_value = [
         {"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}
     ]
@@ -169,7 +156,7 @@ def test_inspect_image(client, mock_docker):
 
 def test_inspect_image_history_error(client, mock_docker):
     img = _make_image()
-    img.history.side_effect = Exception("history fail")
+    img.history.side_effect = docker.errors.DockerException("history fail")
     mock_docker.images.get.return_value = img
     resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 200

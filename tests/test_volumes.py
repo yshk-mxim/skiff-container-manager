@@ -1,27 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for volume endpoints."""
-
-from unittest.mock import MagicMock
 
 import pytest
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
-
-
-def _make_volume(name="mydata", driver="local", mountpoint="/var/lib/docker/volumes/mydata/_data"):
-    v = MagicMock()
-    v.name = name
-    v.attrs = {
-        "Driver": driver,
-        "Mountpoint": mountpoint,
-        "CreatedAt": "2026-01-01T00:00:00Z",
-        "Labels": {},
-    }
-    return v
+from tests.factories import make_volume as _make_volume
 
 
 @pytest.mark.unit
 def test_list_volumes(client, mock_docker):
-    mock_docker.volumes.list.return_value = [_make_volume()]
+    mock_docker.volumes.list.return_value = [_make_volume(name="mydata")]
     mock_docker.containers.list.return_value = []
     resp = client.get("/api/volumes", headers=AUTH_HEADER)
     assert resp.status_code == 200

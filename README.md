@@ -2,7 +2,7 @@
 
 A lightweight web UI for Docker — works locally on your machine alongside any container runtime, or remotely over SSH. No agent, no daemon, no installation on the Docker host.
 
-Registry allowlists, compose sandboxing, audit logging, WebSocket log streaming, and a browser UI that clears credentials on tab close. No per-seat licensing.
+Registry allowlists, compose sandboxing, audit logging, WebSocket log streaming, and a browser UI that stores credentials in `sessionStorage` only (the browser drops them when the tab closes). MIT-licensed — free for personal and commercial use.
 
 ![SKIFF Container Manager — containers list](docs/screenshot.png)
 
@@ -31,14 +31,16 @@ SKIFF sidesteps all three: it runs as a plain Python process, the socket is forw
 | `docker.sock` exposure | Mounted locally | Mounted into a privileged container | Forwarded over SSH — never mounted |
 | Always-on cost | Must be open | Dedicated management VM required | Start when needed; stop when done |
 | Registry controls | None built-in | Varies | Allowlist enforced server-side |
-| Agent on container host | Not applicable | Required for remote hosts | None — SSH ControlMaster is the transport |
-| Per-user RBAC | None | Supported (some tools) | Single token by default; place an [SSO proxy](SECURITY.md#6-sso-via-identity-proxy-optional-multi-user) in front for per-user identity |
+| Agent on container host | Not applicable | Required for remote hosts | None — SSH tunnel is the transport (ControlMaster when SKIFF's wizard opens it; any `ssh -fNL` works otherwise) |
+| Per-user RBAC | None | Supported (some tools) | Single token by default; front it with an [SSO proxy](docs/hardening/production.md#5-sso-via-identity-proxy-optional-multi-user) for per-user identity |
 
-### Zero trust and cloud workstation environments
+### Zero-trust-compatible deployment
 
-Most container management tools assume implicit trust at the network layer — if you can reach the management plane, you can do anything. SKIFF is designed for environments where that assumption doesn't hold. There is no persistent trusted process on the container host: access is established per-session over SSH, authenticated at the identity layer your organisation already controls (IAP, BeyondCorp, SSH certificates, or any OIDC-aware proxy). The registry allowlist and compose sandboxing enforce least-privilege at the API layer regardless of who is connected, and every action is recorded in a structured audit log.
+SKIFF is designed to slot into a zero-trust deployment without itself being a trust anchor. There is no persistent management process on the container host: access is established per-session over SSH, and the authentication layer is whatever your organisation already runs in front of SKIFF — IAP, BeyondCorp, SSH certificates, or any OIDC-aware proxy (see [`docs/hardening/production.md`](docs/hardening/production.md)). SKIFF enforces its own guardrails at the API layer — registry allowlist, compose sandboxing, structured audit log — independent of who is connected.
 
-The alternative approaches each carry a cost that matters in this context. Tools that run as a container on the host require `docker.sock` access — which is effectively root on the host — and a persistent management VM that becomes part of your attack surface. Editor plugins that support remote Docker hosts give developers full daemon access with no guardrails: any image from any registry, any compose configuration including privileged containers. SKIFF sits between these: a full-featured browser UI with the registry controls, compose sandboxing, and audit trail that neither approach provides.
+This sits between two other common patterns: tools that run on the Docker host and therefore require `docker.sock` access (effectively root) plus a persistent management VM; and editor plugins that give developers full daemon access with no guardrails. SKIFF is a full browser UI with the registry controls, compose sandboxing, and audit trail that neither approach provides — without adding its own long-lived privileged process.
+
+Known gaps (see [`SECURITY.md`](SECURITY.md) for the full list) include a shared bearer token (no built-in per-user invalidation without an SSO proxy) and a mutable registry allowlist during runtime configuration.
 
 ---
 
@@ -74,18 +76,12 @@ The alternative approaches each carry a cost that matters in this context. Tools
 ```bash
 git clone https://github.com/yshk-mxim/skiff-container-manager skiff
 cd skiff
-cp .env.example .env   # API_TOKEN= and DOCKER_HOST are pre-filled for localhost
+cp .env.example .env   # DOCKER_HOST is pre-filled; leave API_TOKEN empty only when binding to 127.0.0.1
 ./run.sh
 # Opens http://127.0.0.1:8080
 ```
 
-`run.sh` creates a `.venv/` virtual environment and installs all dependencies automatically.
-
-> **Zero-config dev mode** (localhost only, no auth):
-> ```bash
-> API_TOKEN="" uvicorn skiff.app:app --host 127.0.0.1 --port 8080
-> ```
-> Leave `API_TOKEN` empty only when binding to localhost — anyone with localhost access can use the UI.
+`run.sh` creates a `.venv/` virtual environment and installs runtime dependencies automatically. This is the one-command path for **running** SKIFF. If you intend to **develop** SKIFF (run tests, contribute), follow [`CONTRIBUTING.md`](CONTRIBUTING.md) instead — it uses `pip install -e .[dev]` so test deps are included.
 
 ### Platform socket paths
 
@@ -124,6 +120,16 @@ export DOCKER_HOST="unix:///tmp/docker.sock"
 
 See [docs/deployment.md](docs/deployment.md) for full remote setup, systemd configuration, and environment variable reference.
 
+### Insecure dev mode (localhost only)
+
+If you just want to click around the UI on your own machine and don't care about auth:
+
+```bash
+API_TOKEN="" uvicorn skiff.app:app --host 127.0.0.1 --port 8080 --no-proxy-headers
+```
+
+Do **not** use this with `BIND_HOST` other than `127.0.0.1`. Anyone who can reach the socket can use the UI.
+
 ---
 
 ## Configuration
@@ -139,13 +145,14 @@ Copy `.env.example` to `.env` and edit. All values can also be set as environmen
 | `BIND_HOST` | `127.0.0.1` | Address uvicorn listens on. |
 | `PORT` | `8080` | Port uvicorn listens on (run.sh only). |
 | `DOCKER_VM_HOST` | _(empty)_ | Hostname shown for container port links in the UI. |
-| `COMPOSE_DIR` | `/data/compose` | Directory where compose files are stored on the server. |
-| `AUDIT_LOG` | `/var/log/skiff-audit.jsonl` | Audit log path. Set to a writable path (e.g. `./audit.jsonl`). |
+| `COMPOSE_DIR` | per-user state dir (see hardening §6) | Directory where uploaded compose YAML files are stored on the SKIFF server. Default is writable without root (e.g. `~/Library/Application Support/skiff/compose/` on macOS). |
+| `AUDIT_LOG` | per-user state dir (see hardening §6) | Audit log path. Default is writable without root (e.g. `~/Library/Application Support/skiff/audit.jsonl` on macOS, `~/.local/state/skiff/audit.jsonl` on Linux). Override in production with a fixed path such as `/var/log/skiff-audit.jsonl`. |
 | `AUDIT_MAX_MB` | `10` | Max size per audit log file in MB. Increase for longer retention (e.g. `200` for ~1-year at moderate traffic). |
 | `AUDIT_BACKUP_COUNT` | `5` | Number of rotated audit log files to keep. Total retention ≈ `AUDIT_MAX_MB × AUDIT_BACKUP_COUNT`. |
-| `GOOGLE_CLOUD_PROJECT` | _(empty)_ | GCP project ID. When set (and `google-cloud-logging` installed via `pip install skiff[gcp]`), all audit log entries are dual-written to GCP Cloud Logging. |
+| `GOOGLE_CLOUD_PROJECT` | _(empty)_ | GCP project ID. When set (and `google-cloud-logging` installed via `pip install 'skiff-container-manager[gcp]'`), all audit log entries are dual-written to GCP Cloud Logging. |
 | `GCP_LOG_NAME` | `skiff-audit` | Cloud Logging log name (only used when `GOOGLE_CLOUD_PROJECT` is set). |
 | `RATE_LIMIT_SCALE` | `1` | Multiply all rate limits by this factor (e.g. `100` for CI / load tests). Must be between 1 and 100. |
+| `PROFILE` | _(empty)_ | One of `homelab`, `dev`, `sre`, `reviewer`, `tutor`, `ci`. Applies a documented bundle of sensible defaults for each persona (see [docs/hardening/production.md §14](docs/hardening/production.md#14-profile-presets)). Explicit env vars always win over the preset. |
 
 ---
 
@@ -185,7 +192,11 @@ sudo systemctl enable --now skiff@$USER
 sudo journalctl -u skiff@$USER -f
 ```
 
-The service reads configuration from `/opt/skiff/.env`.
+The template is per-instance (`skiff@<name>.service`); each instance
+reads `/opt/skiff/<name>.env`. Enable as `systemctl enable --now
+skiff@prod.service`, `systemctl enable --now skiff@staging.service`,
+etc. Each env file sets `PORT`, `DOCKER_HOST`, `API_TOKEN`, and any
+other per-instance overrides.
 
 ---
 
@@ -202,7 +213,7 @@ make test-unit
 
 # Run with hot-reload
 cp .env.example .env   # set API_TOKEN="" for no-auth dev mode
-API_TOKEN="" uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080
+API_TOKEN="" uvicorn skiff.app:app --reload --host 127.0.0.1 --port 8080 --no-proxy-headers
 ```
 
 ```bash
@@ -212,14 +223,14 @@ make test-unit   # fast unit tests (no container daemon required)
 make test-e2e    # Playwright e2e (requires pip install -e .[dev,e2e] && playwright install chromium)
 make coverage    # coverage report
 make security    # ruff --select S security scan
-make ci          # lint + security + unit tests
+make ci          # full CI: lint + lint-antipatterns + lint-js + lint-md + lint-asvs + lint-notice + security + docs-check + coverage
 ```
 
 ---
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the security model, design trade-offs, and vulnerability reporting process. See [docs/production-hardening.md](docs/production-hardening.md) for the operator deployment and hardening guide (TLS, token rotation, registry scoping, SSO, audit log retention, supply chain).
+See [SECURITY.md](SECURITY.md) for the security model, design trade-offs, and vulnerability reporting process. See [docs/hardening/production.md](docs/hardening/production.md) for the operator deployment and hardening guide (TLS, token rotation, registry scoping, SSO, audit log retention, supply chain).
 
 ---
 

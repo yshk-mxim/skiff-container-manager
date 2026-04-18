@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for docker client singleton logic and safe_docker_call."""
 
 import time
@@ -9,14 +11,11 @@ import requests.exceptions
 from fastapi import HTTPException
 
 import skiff.docker_client as docker_client_module
-from app import (
-    docker_client_dep,
-    get_client,
-    safe_docker_call,
-)
 from skiff.config import WS_MAX_PER_IP
+from skiff.docker_client import docker_client_dep, get_client
 from skiff.logging_setup import _audit_file_sink
-from skiff.routers.containers import _ws_acquire, _ws_connections, _ws_release
+from skiff.routers.containers_ws import _ws_acquire, _ws_connections, _ws_release
+from skiff.validators import safe_docker_call
 
 # ── get_client: backoff when _client is None ──────────────────────────────────
 
@@ -70,9 +69,10 @@ def test_get_client_ping_ttl_skips_ping():
 
 
 def test_get_client_ping_stale_invalidates():
-    """When _client exists but ping fails, client is invalidated."""
+    """When _client exists but ping fails (Docker SDK error), client is invalidated."""
+    import docker.errors
     mock_client = MagicMock()
-    mock_client.ping.side_effect = Exception("timeout")
+    mock_client.ping.side_effect = docker.errors.DockerException("timeout")
     mock_new = MagicMock()
     mock_new.ping.return_value = True
 
@@ -89,8 +89,15 @@ def test_get_client_ping_stale_invalidates():
 # ── docker_client_dep ─────────────────────────────────────────────────────────
 
 def test_docker_client_dep_raises_503_on_failure():
-    """docker_client_dep converts exceptions to 503."""
-    with patch("skiff.docker_client.get_client", side_effect=Exception("no docker")):
+    """docker_client_dep converts Docker SDK exceptions to 503.
+
+    After R5 narrowed the catch to (DockerException, OSError), use a
+    matching type. Unrelated exceptions propagate as 500 — intended
+    behaviour so new failure modes surface instead of masquerading as
+    'engine unreachable'."""
+    import docker.errors
+    with patch("skiff.docker_client.get_client",
+               side_effect=docker.errors.DockerException("no docker")):
         with pytest.raises(HTTPException) as exc_info:
             docker_client_dep()
         assert exc_info.value.status_code == 503

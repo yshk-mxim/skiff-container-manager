@@ -5,53 +5,51 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
+import docker.errors
 import requests
 import requests.exceptions
-import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from skiff.auth import AUTH, verify_csrf
-from skiff.config import (
-    IMAGE_PULL_TIMEOUT,
-    REGISTRY_DESC_MAX,
-    REGISTRY_MAX_TAGS,
-    REGISTRY_SEARCH_PAGE_SIZE,
-    REGISTRY_TIMEOUT,
-    RL_DEFAULT,
-    RL_FAST,
-    RL_SLOW,
-    _limit,
-    limiter,
+from skiff import config, validators
+from skiff.auth import AUTH
+from skiff.contract.errors import http_error
+from skiff.contract.responses import (
+    AllowedImageEntry,
+    ImageInspectResponse,
+    ImageSummary,
+    OkResponse,
+    UndoableResponse,
+    _ImageHistoryEntry,
 )
 from skiff.docker_client import docker_client_dep
-from skiff.validators import (
-    _redact_dict,
-    safe_docker_call,
-    validate_image_id,
-    validate_image_registry,
-)
+from skiff.rate import RATE
+from skiff.secure import secure_route
 
-log = structlog.get_logger(__name__)
 router = APIRouter()
 
 
 @router.get("/api/registry/search", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 def registry_search(request: Request, q: str = Query(..., min_length=1, max_length=100)):
     """Proxy Docker Hub image search to avoid browser CORS restrictions."""
     try:
         resp = requests.get(
             "https://hub.docker.com/v2/search/repositories/",
-            params={"query": q, "page_size": REGISTRY_SEARCH_PAGE_SIZE},
-            timeout=REGISTRY_TIMEOUT,
+            params={"query": q, "page_size": config.REGISTRY_SEARCH_PAGE_SIZE},
+            timeout=config.REGISTRY_TIMEOUT,
+            # SSRF hardening: refuse redirects. The URL host is hard-coded
+            # to hub.docker.com; if the hub ever serves a 3xx to another
+            # host we don't want to follow it transparently.
+            allow_redirects=False,
         )
         resp.raise_for_status()
         data = resp.json()
         results = [
             {
                 "repo_name": item.get("repo_name") or item.get("name", ""),
-                "short_description": (item.get("short_description") or "")[:REGISTRY_DESC_MAX],
+                "short_description": (item.get("short_description") or "")[:config.REGISTRY_DESC_MAX],
                 "pull_count": item.get("pull_count", 0),
                 "is_official": bool(item.get("is_official")),
             }
@@ -60,21 +58,27 @@ def registry_search(request: Request, q: str = Query(..., min_length=1, max_leng
         ]
         return {"results": results}
     except requests.exceptions.RequestException as exc:
-        raise HTTPException(502, f"Registry search failed: {exc}") from exc
+        raise http_error("image.registry_search_failed", message=f"Registry search failed: {exc}") from exc
 
 
 @router.get("/api/registry/tags", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 def registry_tags(request: Request, image: str = Query(..., min_length=1, max_length=200)):
     """Fetch available tags for a Docker Hub image."""
     repo = image.strip("/")
     if "/" not in repo:
         repo = f"library/{repo}"
+    # Reject anything outside Docker Hub's repo-name alphabet — belt and
+    # braces on top of FastAPI's length limit so we never interpolate an
+    # exotic codepoint into the upstream URL.
+    if not validators.HUB_REPO_RE.fullmatch(repo):
+        raise http_error("validation.bad_image_name")
     try:
         resp = requests.get(
             f"https://hub.docker.com/v2/repositories/{repo}/tags/",
-            params={"page_size": REGISTRY_MAX_TAGS, "ordering": "last_updated"},
-            timeout=REGISTRY_TIMEOUT,
+            params={"page_size": config.REGISTRY_MAX_TAGS, "ordering": "last_updated"},
+            timeout=config.REGISTRY_TIMEOUT,
+            allow_redirects=False,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -82,160 +86,210 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
             t["name"] for t in data.get("results", [])
             if isinstance(t.get("name"), str) and t["name"]
         ]
-        return {"image": image, "tags": tags[:REGISTRY_MAX_TAGS]}
+        return {"image": image, "tags": tags[:config.REGISTRY_MAX_TAGS]}
     except requests.exceptions.RequestException as exc:
-        raise HTTPException(502, f"Tag fetch failed: {exc}") from exc
+        raise http_error("image.tag_fetch_failed", message=f"Tag fetch failed: {exc}") from exc
 
 
 @router.get("/api/images", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_FAST))
-def list_images(request: Request, client=Depends(docker_client_dep)) -> list[dict]:
+@secure_route.read(RATE.READ)
+def list_images(request: Request, client=Depends(docker_client_dep)) -> list[ImageSummary]:
     """Return all locally available Docker images."""
-    images = safe_docker_call(client.images.list, all=False)
-    return [
-        {
-            "id": img.short_id,
-            "tags": img.tags,
-            "created": img.attrs.get("Created", ""),
-            "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
-        }
-        for img in images
-    ]
+    images = validators.safe_docker_call(client.images.list, all=False)
+    return [ImageSummary.from_docker(img) for img in images]
+
+
+def _first_allowed_tag(img: Any) -> AllowedImageEntry | None:
+    """Return the first tag on `img` whose registry is allowed, else None."""
+    for tag in img.tags:
+        try:
+            validators.validate_image_registry(tag)
+        except HTTPException:
+            continue
+        return AllowedImageEntry(
+            id=img.short_id,
+            tag=tag,
+            size_mb=round((img.attrs.get("Size") or 0) / 1024 / 1024, 1),
+        )
+    return None
 
 
 @router.get("/api/images/allowed", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_FAST))
-def list_allowed_images(request: Request, client=Depends(docker_client_dep)) -> list[dict]:
+@secure_route.read(RATE.READ)
+def list_allowed_images(
+    request: Request, client=Depends(docker_client_dep),
+) -> list[AllowedImageEntry]:
     """Return images from allowed registries only."""
-    images = safe_docker_call(client.images.list, all=False)
-    result = []
-    for img in images:
-        for tag in img.tags:
-            try:
-                validate_image_registry(tag)
-                result.append({
-                    "id": img.short_id,
-                    "tag": tag,
-                    "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
-                })
-                break
-            except HTTPException:
-                pass
-    return result
+    images = validators.safe_docker_call(client.images.list, all=False)
+    entries = (_first_allowed_tag(img) for img in images)
+    return [entry for entry in entries if entry is not None]
 
 
 @router.post("/api/images/pull", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_SLOW))
-async def pull_image(request: Request, image: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(
+    RATE.WRITE, audit="image.pulled",
+    audit_fields=lambda request, image, **kw: {"image": image},  # noqa: ARG005
+)
+async def pull_image(request: Request, image: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Pull an image from an allowed registry."""
-    verify_csrf(request)
-    validate_image_registry(image)
+    validators.validate_image_registry(image)
     loop = asyncio.get_running_loop()
     try:
         await asyncio.wait_for(
             loop.run_in_executor(None, client.images.pull, image),
-            timeout=IMAGE_PULL_TIMEOUT,
+            timeout=config.IMAGE_PULL_TIMEOUT,
         )
     except TimeoutError as exc:
-        raise HTTPException(504, "Image pull timed out") from exc
-    except Exception as exc:
-        raise HTTPException(400, f"Pull failed: {exc}") from exc
-    log.info("image.pulled", image=image)
-    return {"ok": True, "image": image}
+        raise http_error("image.pull_timed_out") from exc
+    except docker.errors.DockerException as exc:
+        raise http_error("image.pull_failed") from exc
+    return OkResponse(image=image)
 
 
 @router.post("/api/images/{image_id}/tag", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_SLOW))
+@secure_route.mutate(
+    RATE.WRITE, audit="image.tagged",
+    audit_fields=lambda request, image_id, repository, tag="latest", **kw:  # noqa: ARG005
+        {"id": image_id, "repository": repository, "tag": tag},
+)
 def tag_image(
     request: Request,
     image_id: str,
     repository: str,
     tag: str = "latest",
     client=Depends(docker_client_dep),
-) -> dict:
+) -> OkResponse:
     """Tag an image with a new name."""
-    verify_csrf(request)
-    validate_image_id(image_id)
-    validate_image_registry(f"{repository}:{tag}")
-    img = safe_docker_call(client.images.get, image_id)
-    safe_docker_call(img.tag, repository, tag=tag)
-    log.info("image.tagged", id=image_id, repository=repository, tag=tag)
-    return {"ok": True}
+    validators.validate_image_id(image_id)
+    validators.validate_image_registry(f"{repository}:{tag}")
+    img = validators.safe_docker_call(client.images.get, image_id)
+    validators.safe_docker_call(img.tag, repository, tag=tag)
+    return OkResponse()
+
+
+def _first_push_error(output: str | None) -> str | None:
+    """Parse streamed push output for an error line. Returns the error or None.
+
+    Docker's push streams JSON-per-line; a push failure embeds
+    `{"error": "…"}`. We only scan when `"error"` appears in the raw
+    string to skip JSON-parse overhead on the happy path.
+    """
+    if not output or '"error"' not in output:
+        return None
+    for line in output.splitlines():
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "error" in d:
+            return d["error"][:200]
+    return None
+
+
+async def _run_push(image: str, client) -> str | None:
+    """Execute the Docker push in the executor, translating errors to http_error."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, client.images.push, image),
+            timeout=config.IMAGE_PULL_TIMEOUT,
+        )
+    except TimeoutError as exc:
+        raise http_error("image.push_timed_out") from exc
+    except docker.errors.DockerException as exc:
+        raise http_error("image.push_failed") from exc
 
 
 @router.post("/api/images/push", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_SLOW))
-async def push_image(request: Request, image: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(
+    RATE.WRITE, audit="image.pushed",
+    audit_fields=lambda request, image, **kw: {"image": image},  # noqa: ARG005
+)
+async def push_image(request: Request, image: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Push an image to an allowed registry."""
-    verify_csrf(request)
-    validate_image_registry(image)
-    loop = asyncio.get_running_loop()
-    try:
-        output = await asyncio.wait_for(
-            loop.run_in_executor(None, client.images.push, image),
-            timeout=IMAGE_PULL_TIMEOUT,
-        )
-    except TimeoutError as exc:
-        raise HTTPException(504, "Image push timed out") from exc
-    except Exception as exc:
-        raise HTTPException(400, f"Push failed: {exc}") from exc
-    # Check for error in streamed output
-    if output and '"error"' in output:
-        push_error: str | None = None
-        for line in output.splitlines():
-            try:
-                d = json.loads(line)
-                if "error" in d:
-                    push_error = d["error"][:200]
-                    break
-            except json.JSONDecodeError:
-                pass
-        if push_error:
-            raise HTTPException(400, push_error)
-    log.info("image.pushed", image=image)
-    return {"ok": True, "image": image}
+    validators.validate_image_registry(image)
+    output = await _run_push(image, client)
+    err = _first_push_error(output)
+    if err:
+        raise http_error("image.push_failed", message=err)
+    return OkResponse(image=image)
 
 
 @router.delete("/api/images/{image_id}", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_SLOW))
+@secure_route.mutate(RATE.WRITE)
 def delete_image(
-    request: Request, image_id: str, force: bool = False, client=Depends(docker_client_dep)
-) -> dict:
-    """Remove a local image by ID."""
-    verify_csrf(request)
-    validate_image_id(image_id)
-    img = safe_docker_call(client.images.get, image_id)
-    safe_docker_call(client.images.remove, img.id, force=force)
-    log.info("image.deleted", id=image_id)
-    return {"ok": True}
+    request: Request, image_id: str, force: bool = False,
+    undo: bool = False, client=Depends(docker_client_dep),
+) -> Any:
+    """Remove a local image by ID. With `undo=true`, removal is delayed 5 s and
+    the response carries an `undo_token` the caller can POST to cancel."""
+    validators.validate_image_id(image_id)
+    img = validators.safe_docker_call(client.images.get, image_id)
+    if undo:
+        from skiff.undo import get_queue
+        token = get_queue().enqueue(
+            "image", image_id,
+            validators.safe_docker_call, client.images.remove, img.id, force=force,
+        )
+        if token is not None:
+            import structlog
+            structlog.get_logger(__name__).info(
+                "image.delete_queued", id=image_id, token_suffix=token[-6:],
+            )
+            return UndoableResponse(undo_token=token, expires_in=config.UNDO_DELAY_SECS)
+    validators.safe_docker_call(client.images.remove, img.id, force=force)
+    import structlog
+    structlog.get_logger(__name__).info("image.deleted", id=image_id)
+    return OkResponse()
+
+
+def _history_created_to_iso(created: Any) -> str:
+    """Normalize `created` from Docker's image.history() to an ISO-8601 string.
+
+    Unlike `image.attrs["Created"]` (which is an ISO-8601 string),
+    `image.history()` returns each layer's `Created` as a Unix timestamp
+    int. The UI presents history entries side-by-side with the top-level
+    created field, so we coerce to ISO here at the boundary to give the
+    contract model one type. An empty value → "" so downstream string
+    operations don't blow up.
+    """
+    from datetime import UTC, datetime
+    if isinstance(created, (int, float)) and created > 0:
+        return datetime.fromtimestamp(created, tz=UTC).isoformat().replace("+00:00", "Z")
+    return str(created or "")
+
+
+def _image_history_entries(img: Any) -> list[_ImageHistoryEntry]:
+    """Best-effort history — an engine error yields an empty list, not a 503.
+
+    History is cosmetic: a missing one shouldn't fail the whole inspect.
+    That's why this doesn't go through `safe_docker_call`.
+    """
+    try:
+        raw = img.history() or []
+    except docker.errors.DockerException:
+        return []
+    return [
+        _ImageHistoryEntry(
+            created=_history_created_to_iso(h.get("Created")),
+            created_by=(h.get("CreatedBy") or "")[:200],
+            size_mb=round((h.get("Size") or 0) / 1024 / 1024, 3),
+            comment=h.get("Comment") or "",
+        )
+        for h in raw[:20]
+    ]
 
 
 @router.get("/api/images/{image_id}/inspect", dependencies=AUTH, tags=["images"])
-@limiter.limit(_limit(RL_DEFAULT))
-def inspect_image(request: Request, image_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.read(RATE.READ)
+def inspect_image(
+    request: Request, image_id: str, client=Depends(docker_client_dep),
+) -> ImageInspectResponse:
     """Return detailed image metadata and layer history."""
-    validate_image_id(image_id)
-    img = safe_docker_call(client.images.get, image_id)
-    attrs = img.attrs
-    history = safe_docker_call(client.api.history, img.id)
-    return {
-        "id": attrs["Id"][:19],
-        "tags": attrs.get("RepoTags", []),
-        "digests": attrs.get("RepoDigests", []),
-        "created": attrs.get("Created", ""),
-        "size_mb": round(attrs.get("Size", 0) / 1024 / 1024, 1),
-        "virtual_size_mb": round(attrs.get("VirtualSize", 0) / 1024 / 1024, 1),
-        "os": attrs.get("Os", ""),
-        "architecture": attrs.get("Architecture", ""),
-        "config": _redact_dict(attrs.get("Config", {})),
-        "layers": len(attrs.get("RootFS", {}).get("Layers", [])),
-        "history": [
-            {
-                "created": h.get("Created", ""),
-                "created_by": h.get("CreatedBy", "")[:200],
-                "size_mb": round(h.get("Size", 0) / 1024 / 1024, 3),
-                "comment": h.get("Comment", ""),
-            }
-            for h in (history or [])[:20]
-        ],
-    }
+    validators.validate_image_id(image_id)
+    img = validators.safe_docker_call(client.images.get, image_id)
+    return ImageInspectResponse.from_docker(
+        img,
+        history=_image_history_entries(img),
+        redacted_config=validators._redact_dict(img.attrs.get("Config") or {}),
+    )

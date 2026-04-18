@@ -1,261 +1,309 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
-"""System info, health, setup, audit, and frontend routes."""
+"""Observe and operate the running server.
+
+Holds the routes that report engine state (`/api/system/info`,
+`/api/system/metrics`, `/api/system/df`) and the config / connect-snippets
+endpoints used by the UI, plus the `/api/docs` landing page and the two
+static handlers (`/` serves the SPA, `/LICENSE` serves the MIT text).
+Setup, health, audit, debug, and undo each live in their own router
+module.
+"""
 from __future__ import annotations
 
-import json
 import os
-import re
 import sys
-import threading
 import time
-from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any
 
-import structlog
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from skiff.auth import (
-    AUTH,
-    _invalidate_session_cache,
-    verify_auth_strict,
-    verify_csrf,
-)
-from skiff.config import (
-    _APP_VERSION,
-    _INDEX_HTML,
-    _LICENSE_FILE,
-    APP_START_MONOTONIC,
-    APP_START_WALL,
-    AUDIT_LOG_PATH,
-    MAX_AUDIT_LINES,
-    MIN_TOKEN_LENGTH,
-    RL_FAST,
-    RL_SLOW,
-    SETUP_LOCKOUT_SECS,
-    SETUP_MAX_ATTEMPTS,
-    SETUP_WINDOW_SECS,
-    TUNNEL_DEFAULT_SOCKET,
-    _cfg,
-    _limit,
-    limiter,
-)
-from skiff.docker_client import (
-    _SSH_TARGET_RE,
-    _invalidate_client,
-    _start_tunnel,
-    _stop_tunnel,
-    docker_client_dep,
-    get_client,
-    get_tunnel_socket_path,
-)
+from skiff import config, docker_client
+from skiff.auth import AUTH  # decorator arg — direct import for readability
+from skiff.rate import RATE
+from skiff.secure import secure_route
 from skiff.validators import safe_docker_call
 
-log = structlog.get_logger(__name__)
 router = APIRouter()
-
-# ── Setup endpoint brute-force protection ────────────────────────────────────
-# Maps client_ip → (failure_count, last_failure_monotonic)
-_setup_failures: dict[str, tuple[int, float]] = {}
-_setup_lock = threading.Lock()
-
-
-def _setup_fail(client_ip: str, reason: str) -> None:
-    """Increment per-IP failure counter and emit an audit log entry."""
-    now = time.monotonic()
-    with _setup_lock:
-        count, _ = _setup_failures.get(client_ip, (0, now))
-        _setup_failures[client_ip] = (count + 1, now)
-    log.info("audit.setup_failed", remote=client_ip, reason=reason)
-
-
-# ── Debug ──────────────────────────────────────────────────
-
-@router.get("/debug/threads", dependencies=AUTH, tags=["system"])
-async def debug_threads():
-    """Return active thread stack traces for debugging. Requires authentication."""
-    import traceback
-    frames = sys._current_frames()
-    result = {}
-    for tid, frame in frames.items():
-        tb = "".join(traceback.format_stack(frame))
-        result[str(tid)] = tb
-    return {"thread_count": len(frames), "threads": result}
-
-
-# ── Auth Info (no auth needed) ─────────────────────────────
-
-@router.get("/api/auth-required", tags=["auth"])
-def auth_required():
-    """Returns whether auth is required and frontend config. No secrets exposed."""
-    return {"required": bool(_cfg.api_token)}
 
 
 # ── Config ─────────────────────────────────────────────────
 
-@router.get("/api/config", dependencies=AUTH, tags=["auth"])
-@limiter.limit(_limit(RL_FAST))
-def get_config(request: Request):
-    """Return non-secret server configuration for the UI."""
-    return {
-        "allowed_registries": _cfg.allowed_registries,
-        "docker_vm_host": _cfg.docker_vm_host,
-        "docker_host": _cfg.docker_host,
-    }
+_LOOPBACK_BINDS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-# ── Setup (only active when unconfigured) ─────────────────
+def _resolve_knob(knob_name: str, spec) -> Any:
+    """Return the current value of an exposed knob.
 
-@router.get("/api/setup-state", tags=["setup"])
-def setup_state():
-    """Returns configuration state for the setup wizard. No auth required."""
-    if _cfg.api_token:
-        # Minimal response when already configured — avoid leaking tunnel socket paths
-        # to unauthenticated callers on a live server.
-        return {"configured": True, "from_env": _cfg.from_env}
-    tunnel_socket = get_tunnel_socket_path()
-    # Sanitise the stored tunnel socket path before any filesystem use.
-    # Validate the basename only (cross-platform: /tmp → /private/tmp on macOS).
-    # re.fullmatch breaks CodeQL taint propagation — .group(0) is recognised as a
-    # clean value. Final path is reconstructed from clean basename + trusted /tmp root.
-    _ts_name = os.path.basename(tunnel_socket) if tunnel_socket else ""
-    _ts_match = re.fullmatch(r"[a-zA-Z0-9._\-]+\.sock", _ts_name) if _ts_name else None
-    _ts_path = str(Path("/tmp").resolve() / _ts_match.group(0)) if _ts_match else ""  # noqa: S108
-    return {
-        "configured": False,
-        "from_env": _cfg.from_env,
-        "tunnel_active": bool(_ts_path and os.path.exists(_ts_path)),
-        "tunnel_socket": _ts_path or TUNNEL_DEFAULT_SOCKET,
-    }
+    Three sources, in priority order:
+      1. live _cfg.<attr> for mutable knobs (setup-wizard edits visible)
+      2. validator(env_value) when env is set and the knob has a validator
+      3. spec.default otherwise
 
-
-@router.post("/api/setup", tags=["setup"])
-@limiter.limit(_limit(RL_SLOW))
-def do_setup(
-    request: Request,
-    docker_host: str = Body(...),
-    api_token: str = Body(...),
-    allowed_registries: str = Body(default=""),
-):
-    """Configure the server in-memory. Only callable when unconfigured and not from env."""
-    verify_csrf(request)
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.monotonic()
-    with _setup_lock:
-        if client_ip in _setup_failures:
-            count, last_t = _setup_failures[client_ip]
-            if count >= SETUP_MAX_ATTEMPTS and (now - last_t) < SETUP_LOCKOUT_SECS:
-                log.warning("audit.setup_lockout", remote=client_ip, remaining=SETUP_LOCKOUT_SECS - (now - last_t))
-                raise HTTPException(429, "Too many failed setup attempts — try again later")
-            if (now - last_t) >= SETUP_LOCKOUT_SECS:
-                del _setup_failures[client_ip]
-    if time.monotonic() - APP_START_MONOTONIC > SETUP_WINDOW_SECS:
-        raise HTTPException(403, "Setup window has closed — restart the server to reconfigure")
-    if _cfg.from_env:
-        raise HTTPException(403, "Server is configured via environment variables — setup endpoint disabled")
-    if _cfg.api_token:
-        raise HTTPException(403, "Already configured")
-    if not api_token or len(api_token) < MIN_TOKEN_LENGTH:
-        _setup_fail(client_ip, "token_too_short")
-        raise HTTPException(400, f"api_token must be at least {MIN_TOKEN_LENGTH} characters")
-    if not docker_host:
-        _setup_fail(client_ip, "missing_docker_host")
-        raise HTTPException(400, "docker_host is required")
-    _dh = docker_host.strip()
-    _parsed = urlparse(_dh)
-    if _parsed.scheme not in ("unix", "tcp", "npipe"):
-        _setup_fail(client_ip, "bad_docker_host_scheme")
-        raise HTTPException(400, "docker_host must use unix://, tcp://, or npipe:// scheme")
-    if _parsed.scheme == "tcp":
-        import ipaddress
-        _host = _parsed.hostname or ""
-        try:
-            ipaddress.ip_address(_host)
-        except ValueError:
-            _setup_fail(client_ip, "bad_docker_host_address")
-            raise HTTPException(400, "tcp:// docker_host must specify an IP address, not a hostname") from None
-        if not (1 <= (_parsed.port or 0) <= 65535):
-            _setup_fail(client_ip, "bad_docker_host_port")
-            raise HTTPException(400, "tcp:// docker_host must include a valid port")
-    # Clear failure counter on successful validation
-    with _setup_lock:
-        _setup_failures.pop(client_ip, None)
-    _cfg.api_token = api_token.strip()
-    _cfg.docker_host = _dh
-    _cfg.allowed_registries = [r.strip() for r in allowed_registries.split(",") if r.strip()]
-    _invalidate_client()
-    _invalidate_session_cache()
-    log.info("setup.configured", docker_host=_cfg.docker_host, registries=_cfg.allowed_registries)
-    return {"ok": True}
-
-
-@router.post("/api/setup/tunnel", tags=["setup"])
-@limiter.limit(_limit(RL_SLOW))
-def start_tunnel(
-    request: Request,
-    ssh_target: str = Body(..., embed=True),
-):
-    """Start an SSH ControlMaster tunnel to the Docker VM. Setup-only endpoint.
-
-    The socket path is always the server-controlled constant TUNNEL_DEFAULT_SOCKET —
-    no user-provided path reaches the subprocess, eliminating command/path injection.
+    Validator errors fall back to the default so a bad env entry can't
+    500 /api/config.
     """
-    verify_csrf(request)
-    if _cfg.from_env:
-        raise HTTPException(403, "Setup endpoints disabled when configured via environment")
-    if _cfg.api_token:
-        raise HTTPException(403, "Already configured")
-    if not _SSH_TARGET_RE.match(ssh_target):
-        raise HTTPException(400, "ssh_target must be user@host")
+    attr = knob_name.lower()
+    if hasattr(config._cfg, attr):
+        return getattr(config._cfg, attr)
+    raw = os.environ.get(knob_name, spec.default)
+    if raw is None or spec.validator is None:
+        return raw
     try:
-        _start_tunnel(ssh_target)
-    except ValueError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    # socket_path is the server-controlled constant used internally by _start_tunnel.
-    _sp = Path(TUNNEL_DEFAULT_SOCKET).resolve()
-    return {"ok": True, "socket_path": str(_sp), "docker_host": f"unix://{_sp}"}
+        return spec.validator(raw)
+    except (ValueError, TypeError):
+        return spec.default
 
 
-@router.delete("/api/setup/tunnel", tags=["setup"])
-@limiter.limit(_limit(RL_SLOW))
-def stop_tunnel_endpoint(request: Request):
-    """Stop the managed SSH tunnel."""
-    verify_csrf(request)
-    if _cfg.from_env:
-        raise HTTPException(403, "Setup endpoints disabled when configured via environment")
-    _stop_tunnel()
-    return {"ok": True}
+def _is_insecure_mode(bind: str) -> bool:
+    """True when bound to a non-loopback interface with no API_TOKEN set."""
+    return bind not in _LOOPBACK_BINDS and not config._cfg.api_token.strip()
 
 
-# ── Health Endpoints (no auth) ─────────────────────────────
+@router.get("/api/config", dependencies=AUTH, tags=["auth"])
+@secure_route.read(RATE.READ)
+def get_config(request: Request):
+    """Return non-secret server configuration for the UI.
 
-@router.get("/health", tags=["health"])
-async def health():
-    """Liveness — never checks Docker to avoid restart loops."""
-    return {"status": "ok", "uptime_seconds": int(time.time() - APP_START_WALL), "version": _APP_VERSION}
+    Derived from the `config_knob` registry — each knob with
+    `expose=True, secret=False` contributes one field. Computed fields
+    (profile / bind_host / rate_limit_scale / insecure_mode) are layered
+    on top. `insecure_mode` is computed server-side so a compromised
+    client can't silence the warning banner.
+    """
+    import skiff.config as _config_module
+    bind = config.BIND_HOST or "127.0.0.1"
+    resolved = {
+        knob_name.lower(): _resolve_knob(knob_name, spec)
+        for knob_name, spec in config.knobs().items()
+        if spec.expose and not spec.secret
+    }
+    # The PORT knob captures the uvicorn default at import time, not the
+    # port the server is currently bound to. Fix the field to reflect the
+    # live port so scrapers that build "visit me" links from /api/config
+    # get the right number.
+    live_port = request.url.port
+    if live_port is not None:
+        resolved["port"] = int(live_port)
+    # AUDIT_MAX_MB's validator stores bytes internally (value * 1024²) so
+    # the raw lowercased field would be bytes under a name that says "MB".
+    # Emit both: the MB integer the operator set AND the authoritative
+    # byte count under a correctly-named field. Same pattern applies to
+    # any other "display unit != storage unit" knob added later.
+    if "audit_max_mb" in resolved:
+        bytes_value = resolved["audit_max_mb"]
+        resolved["audit_max_bytes"] = bytes_value
+        try:
+            resolved["audit_max_mb"] = int(bytes_value) // (1024 * 1024)
+        except (TypeError, ValueError):
+            pass  # keep raw value if non-int (shouldn't happen)
+    return {
+        **resolved,
+        "profile": config.PROFILE,
+        "bind_host": bind,
+        "rate_limit_scale": _config_module._RATE_SCALE,
+        "insecure_mode": _is_insecure_mode(bind),
+    }
 
 
-@router.get("/ready", tags=["health"])
-def ready():
-    """Readiness — returns 503 if Docker is unreachable."""
-    try:
-        client = get_client()
-        info = client.info()
-        return {
-            "status": "ready",
-            "docker_version": info.get("ServerVersion", "unknown"),
-            "containers_running": info.get("ContainersRunning", 0),
+# ── Connect snippets ──────────────────────────────────────
+
+def _audit_log_glob() -> str:
+    """Return the audit-log path so scrapers can tail it across a fleet.
+
+    The connect-snippets TOML uses this as `{audit_log_glob}`. If the
+    operator configured a fixed `AUDIT_LOG` path (the recommended
+    production setup), that's returned verbatim. Otherwise we fall back
+    to a platform-shaped per-user glob — illustrative for a local install.
+    """
+    configured = str(config.AUDIT_LOG_PATH)
+    default_state = str(config._STATE_ROOT / "audit.jsonl")
+    if configured != default_state:
+        return configured
+    if sys.platform == "darwin":
+        return "/Users/*/Library/Application Support/skiff/audit.jsonl"
+    if sys.platform.startswith("linux"):
+        return "/home/*/.local/state/skiff/audit.jsonl"
+    # Windows / BSD / other: emit the resolved path; fleet-level scraping
+    # on non-mainstream OSes should configure AUDIT_LOG explicitly.
+    return configured
+
+
+def _render_snippet(template: str, ctx: dict[str, str]) -> str:
+    """Substitute `{placeholder}` tokens in a connect-snippet template.
+
+    Uses dict.get fallbacks so a typo in the TOML (e.g. `{dockerhost}`)
+    leaves the literal braces in the rendered snippet rather than
+    crashing with KeyError — operators reading the snippet will notice
+    the unresolved placeholder and file a fix.
+    """
+    for key, val in ctx.items():
+        template = template.replace("{" + key + "}", val)
+    return template
+
+
+@router.get("/api/connect-snippets", dependencies=AUTH, tags=["system"])
+@secure_route.read(RATE.READ)
+def connect_snippets(request: Request, tool: str | None = None) -> dict:
+    """Return rendered per-tool snippets for the Connect-external-tool panel.
+
+    The catalogue lives in `skiff/_config/connect_snippets.toml`; this endpoint
+    interpolates live runtime values (docker_host, origin, scheme, etc.)
+    into each block and returns the ready-to-render list. No user input
+    reaches the TOML template; `request` supplies the scheme / host used
+    by the Prometheus / Caddy / oauth2-proxy snippets.
+
+    Pass `?tool=<id>` to return only that tool's block — useful for the
+    Copy-snippet UX without shipping all 10 tools to the browser.
+    """
+    # Forwarded headers are only honoured when TRUST_FORWARDED_HEADERS is set,
+    # otherwise any caller could override the origin shown in the snippets.
+    if config.TRUST_FORWARDED_HEADERS:
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "localhost:8080")
+    else:
+        scheme = request.url.scheme
+        host = request.headers.get("host", "localhost:8080")
+    origin = f"{scheme}://{host}"
+    ctx = {
+        "dockerHost": config._cfg.docker_host or "unix:///var/run/docker.sock",
+        "scheme": scheme,
+        "host": host,
+        "origin": origin,
+        "metricsUrl": f"{origin}/api/system/metrics",
+        "audit_log_glob": _audit_log_glob(),
+    }
+    raw_tools = config._TOML_CONNECT_SNIPPETS.get("tool", [])
+    if tool:
+        raw_tools = [t for t in raw_tools if t.get("id") == tool]
+    rendered: list[dict[str, Any]] = [
+        {
+            "id": t["id"],
+            "label": t["label"],
+            "hint": _render_snippet(t.get("hint", ""), ctx),
+            "note": _render_snippet(t.get("note", ""), ctx),
+            "blocks": [
+                {
+                    "kind": b.get("kind", "block"),
+                    "filename": b.get("filename", ""),
+                    "content": _render_snippet(b.get("content", ""), ctx),
+                }
+                for b in t.get("blocks", [])
+            ],
         }
-    except Exception:
-        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "Docker engine unreachable"})
+        for t in raw_tools
+    ]
+    return {"tools": rendered}
+
+
+# ── OpenAPI docs landing (no auth, CSP-safe) ──────────────
+# The default FastAPI Swagger UI / ReDoc routes are disabled because they
+# pull assets from a CDN, violating our strict CSP. This landing page
+# offers the raw spec + deep links into editor.swagger.io (opens in a
+# new tab — no connect-src cost to this page). A tiny static script at
+# /static/core/docs.js stitches in window.location at view time.
+
+_API_DOCS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKIFF API documentation</title>
+<style>
+  :root { --accent: #0d9488; --muted: #64748b; color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         max-width: 720px; margin: 48px auto; padding: 0 24px; line-height: 1.6; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, monospace; }
+  @media (prefers-color-scheme: dark) { code { background: #1b2236; color: #e2e8f0; } }
+  a.btn { display: inline-block; padding: 10px 16px; margin: 4px 8px 4px 0;
+          background: var(--accent); color: #fff; border-radius: 6px;
+          text-decoration: none; font-weight: 500; }
+  a.btn.secondary { background: transparent; color: var(--accent);
+                    border: 1px solid var(--accent); }
+  .section { margin: 24px 0; padding: 16px; border: 1px solid #e5e7eb;
+             border-radius: 8px; }
+  @media (prefers-color-scheme: dark) {
+    .section { border-color: #26324a; }
+    body { background: #0b1220; color: #e2e8f0; }
+  }
+</style>
+</head>
+<body>
+<h1>SKIFF API documentation</h1>
+<p>OpenAPI 3.1 schema for every endpoint this server exposes, with request/response
+shapes, rate limits, and required authentication. The spec is the source of truth;
+pick the viewer that suits your workflow.</p>
+
+<div class="section">
+  <strong>Raw spec</strong>
+  <p>Machine-readable JSON. Suitable for code generation
+  (<code>openapi-generator</code>, <code>oapi-codegen</code>, etc.)
+  and for importing into any OpenAPI-aware tool.</p>
+  <a class="btn" href="/api/openapi.json">Download openapi.json</a>
+  <a class="btn secondary" href="/api/openapi.json" target="_blank">Open in browser</a>
+</div>
+
+<div class="section">
+  <strong>Interactive explorer</strong>
+  <p>Our Content Security Policy blocks the default Swagger UI (CDN assets).
+  Open the spec in Swagger Editor instead — paste your server URL
+  in the top bar to make "Try it out" requests hit this instance.</p>
+  <a class="btn" href="https://editor.swagger.io/?url="
+     id="editor-link" target="_blank">Open in Swagger Editor</a>
+  <a class="btn secondary" href="https://petstore.swagger.io/?url="
+     id="petstore-link" target="_blank">Open in Swagger UI</a>
+</div>
+
+<div class="section">
+  <strong>Quick curl</strong>
+  <pre><code>curl -H "Authorization: Bearer $TOKEN" \\
+  -H "X-Requested-With: ContainerManager" \\
+  <span id="origin"></span>/api/containers</code></pre>
+</div>
+
+<script src="/static/core/docs.js"></script>
+</body>
+</html>
+"""
+
+
+@router.get("/api/docs", include_in_schema=False, tags=["system"])
+@secure_route.public(RATE.PUBLIC)
+def api_docs_landing(request: Request) -> Response:
+    """Discoverability landing page for the OpenAPI spec (CSP-safe).
+
+    Rate-limited at the PUBLIC tier. The raw `/api/openapi.json` is
+    FastAPI-managed (not defined in this file) and is similarly unauthed;
+    see SECURITY.md for the explicit enumeration of endpoints exempt
+    from bearer-token auth (health probes, auth-discovery, API spec
+    discoverability — each is rate-limited).
+    """
+    return Response(
+        content=_API_DOCS_HTML,
+        media_type="text/html; charset=utf-8",
+        # CSP for THIS response: strict `script-src 'self'` (no unsafe-inline —
+        # the origin-stitcher script lives at /static/core/docs.js). No
+        # `connect-src` beyond 'self' — the Swagger Editor / Petstore buttons
+        # open editor.swagger.io in a NEW TAB via target="_blank"; this page
+        # never fetches them.
+        headers={
+            "Content-Security-Policy":
+                "default-src 'self'; script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; "
+                "frame-ancestors 'none'",
+        },
+    )
 
 
 # ── System Info ────────────────────────────────────────────
 
 @router.get("/api/system/info", dependencies=AUTH, tags=["system"])
-@limiter.limit(_limit(RL_SLOW))
-def system_info(request: Request, client=Depends(docker_client_dep)) -> dict:
+@secure_route.read(RATE.READ)
+def system_info(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
     """Return Docker engine version, OS, hardware, and container counts."""
     info = safe_docker_call(client.info)
     ver = safe_docker_call(client.version)
@@ -282,9 +330,105 @@ def system_info(request: Request, client=Depends(docker_client_dep)) -> dict:
     }
 
 
+# ── Prometheus-format metrics ─────────────────────────────
+# AUTH'd because metrics include container names + image paths (workload
+# leak). Scrapers pass the bearer token like any other client.
+
+
+def _escape_prom_label(value: str) -> str:
+    """Escape a label value per Prometheus exposition format (§ Text format)."""
+    return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+
+
+def _docker_host_label(raw: str) -> str:
+    """Derive a stable, non-leaking label value from a Docker host URL.
+
+    The raw value (e.g. `unix:///tmp/skiff-docker.sock` or
+    `tcp://10.0.1.23:2375`) reveals deployment topology to every scraper
+    that reads the metrics endpoint. Across a fleet with a shared
+    Prometheus this is multi-tenant leakage: every tenant's socket layout
+    ends up in a shared datastore.
+    We emit a stable short-hash of the raw value instead. Operators who
+    need per-instance breakdown should set an external `instance` label
+    at scrape time via Prometheus relabel config.
+    """
+    import hashlib
+    if not raw:
+        return "unset"
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+    return f"h_{digest[:12]}"
+
+
+@router.get("/api/system/metrics", dependencies=AUTH, tags=["system"])
+@secure_route.read(RATE.READ)
+def system_metrics(request: Request, client=Depends(docker_client.docker_client_dep)) -> PlainTextResponse:
+    """Prometheus text-format metrics snapshot.
+
+    Deployments can wire this into Google Cloud Managed Service for Prometheus,
+    vanilla Prometheus, or Datadog's Prometheus check. Gauges only — counters
+    would need persistent state we don't keep. Memory, CPU, disk, and container
+    counts are all derived from client.info()/df() so one HTTP call gets a
+    consistent snapshot without multiple Docker round-trips drifting.
+    """
+    info = safe_docker_call(client.info)
+    df = safe_docker_call(client.df)
+    image_bytes = sum(i.get("Size", 0) for i in (df.get("Images") or []))
+    container_bytes = sum(c.get("SizeRw", 0) for c in (df.get("Containers") or []))
+    volume_bytes = sum((v.get("UsageData") or {}).get("Size", 0) for v in (df.get("Volumes") or []))
+    build_cache_bytes = sum(b.get("Size", 0) for b in (df.get("BuildCache") or []))
+
+    uptime = int(time.time() - config.APP_START_WALL)
+    # Hashed docker_host label — see `_docker_host_label` for why the raw
+    # path is never emitted (multi-tenant scraper topology leak).
+    docker_host_label = _escape_prom_label(_docker_host_label(config._cfg.docker_host or ""))
+
+    lines = [
+        "# HELP skiff_uptime_seconds How long the SKIFF process has been running.",
+        "# TYPE skiff_uptime_seconds gauge",
+        f"skiff_uptime_seconds {uptime}",
+        "# HELP skiff_containers_total Total containers on the managed engine (running + stopped + paused).",
+        "# TYPE skiff_containers_total gauge",
+        f"skiff_containers_total{{docker_host=\"{docker_host_label}\"}} {info.get('Containers', 0)}",
+        "# HELP skiff_containers_running Currently running containers.",
+        "# TYPE skiff_containers_running gauge",
+        f"skiff_containers_running{{docker_host=\"{docker_host_label}\"}} {info.get('ContainersRunning', 0)}",
+        "# HELP skiff_containers_paused Paused containers.",
+        "# TYPE skiff_containers_paused gauge",
+        f"skiff_containers_paused{{docker_host=\"{docker_host_label}\"}} {info.get('ContainersPaused', 0)}",
+        "# HELP skiff_containers_stopped Stopped containers.",
+        "# TYPE skiff_containers_stopped gauge",
+        f"skiff_containers_stopped{{docker_host=\"{docker_host_label}\"}} {info.get('ContainersStopped', 0)}",
+        "# HELP skiff_images_total Total images on the managed engine.",
+        "# TYPE skiff_images_total gauge",
+        f"skiff_images_total{{docker_host=\"{docker_host_label}\"}} {info.get('Images', 0)}",
+        "# HELP skiff_engine_cpus Logical CPUs reported by the engine.",
+        "# TYPE skiff_engine_cpus gauge",
+        f"skiff_engine_cpus {info.get('NCPU', 0)}",
+        "# HELP skiff_engine_memory_bytes Total RAM reported by the engine.",
+        "# TYPE skiff_engine_memory_bytes gauge",
+        f"skiff_engine_memory_bytes {info.get('MemTotal', 0)}",
+        "# HELP skiff_disk_images_bytes Bytes consumed by pulled images.",
+        "# TYPE skiff_disk_images_bytes gauge",
+        f"skiff_disk_images_bytes {image_bytes}",
+        "# HELP skiff_disk_containers_bytes Bytes consumed by container writable layers.",
+        "# TYPE skiff_disk_containers_bytes gauge",
+        f"skiff_disk_containers_bytes {container_bytes}",
+        "# HELP skiff_disk_volumes_bytes Bytes consumed by named volumes.",
+        "# TYPE skiff_disk_volumes_bytes gauge",
+        f"skiff_disk_volumes_bytes {volume_bytes}",
+        "# HELP skiff_disk_build_cache_bytes Bytes consumed by the BuildKit cache.",
+        "# TYPE skiff_disk_build_cache_bytes gauge",
+        f"skiff_disk_build_cache_bytes {build_cache_bytes}",
+    ]
+    body = "\n".join(lines) + "\n"
+    # Per Prometheus exposition format, the text version 0.0.4 is still current
+    # as of 2026 and is what Cloud Managed Prometheus / Datadog expect.
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 @router.get("/api/system/df", dependencies=AUTH, tags=["system"])
-@limiter.limit(_limit("5/minute"))
-def system_disk_usage(request: Request, client=Depends(docker_client_dep)) -> dict:
+@secure_route.read(RATE.AUTH_SENSITIVE)  # df is expensive — rate-limit low
+def system_disk_usage(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
     """Return disk usage breakdown for images, containers, volumes, and build cache."""
     df = safe_docker_call(client.df)
     images = df.get("Images") or []
@@ -316,18 +460,26 @@ def system_disk_usage(request: Request, client=Depends(docker_client_dep)) -> di
     }
 
 
+# ── Prune ──────────────────────────────────────────────────
+
+import structlog  # noqa: E402 — log is only used by the prune handlers below
+
+log = structlog.get_logger(__name__)
+
+
 @router.post("/api/system/prune", dependencies=AUTH, tags=["system"])
-@limiter.limit("2/minute")
-def system_prune(request: Request, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed counts)
+def system_prune(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
     """Remove all stopped containers, dangling images, and unused networks."""
-    verify_csrf(request)
     containers = safe_docker_call(client.containers.prune)
     images = safe_docker_call(client.images.prune)
     networks = safe_docker_call(client.networks.prune)
-    log.info("system.pruned",
-             containers=len(containers.get("ContainersDeleted") or []),
-             images=len(images.get("ImagesDeleted") or []),
-             networks=len(networks.get("NetworksDeleted") or []))
+    log.info(
+        "system.pruned",
+        containers=len(containers.get("ContainersDeleted") or []),
+        images=len(images.get("ImagesDeleted") or []),
+        networks=len(networks.get("NetworksDeleted") or []),
+    )
     return {
         "containers_deleted": len(containers.get("ContainersDeleted") or []),
         "images_deleted": len(images.get("ImagesDeleted") or []),
@@ -339,75 +491,24 @@ def system_prune(request: Request, client=Depends(docker_client_dep)) -> dict:
 
 
 @router.post("/api/system/prune-build-cache", dependencies=AUTH, tags=["system"])
-@limiter.limit("2/minute")
-def prune_build_cache(request: Request, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed size)
+def prune_build_cache(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
     """Clear Docker build cache and return the amount of space reclaimed."""
-    verify_csrf(request)
     result = safe_docker_call(client.api.prune_builds)
     space = result.get("SpaceReclaimed", 0)
     log.info("build_cache.pruned", space_mb=round(space / 1024 / 1024, 1))
     return {"space_reclaimed_mb": round(space / 1024 / 1024, 1)}
 
 
-# ── Audit Log ──────────────────────────────────────────────
-
-@router.get("/api/system/audit-log", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit("20/minute")
-def get_audit_log(request: Request, tail: int = Query(default=200, le=MAX_AUDIT_LINES, ge=1)):
-    """Return the last N lines of the app audit log, read efficiently without loading the full file."""
-    if not AUDIT_LOG_PATH.exists():
-        return []
-    # Read only the last chunk of the file to avoid loading hundreds of MB into memory.
-    # Assumes average line length of ~300 bytes; read 2x that budget to be safe.
-    chunk_size = tail * 600
-    raw_lines: list[str] = []
-    try:
-        with AUDIT_LOG_PATH.open("rb") as fh:
-            fh.seek(0, 2)
-            file_size = fh.tell()
-            seek_to = max(0, file_size - chunk_size)
-            fh.seek(seek_to)
-            chunk = fh.read()
-        raw_lines = chunk.decode("utf-8", errors="replace").splitlines()
-        if seek_to > 0:
-            raw_lines = raw_lines[1:]  # discard potentially partial first line
-    except OSError:
-        return []
-    result = []
-    for raw_line in raw_lines[-tail:]:
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        try:
-            result.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            result.append({"raw": stripped})
-    return result
-
-
-@router.get("/api/system/audit-log/download", dependencies=[Depends(verify_auth_strict)], tags=["audit"])
-@limiter.limit(_limit(RL_SLOW))
-def download_audit_log(request: Request):
-    """Download the full audit log as a JSONL file (streamed to avoid memory spikes)."""
-    if not AUDIT_LOG_PATH.exists():
-        return PlainTextResponse("", media_type="application/x-ndjson",
-                                 headers={"Content-Disposition": 'attachment; filename="audit.jsonl"'})
-    return FileResponse(
-        path=str(AUDIT_LOG_PATH),
-        media_type="application/x-ndjson",
-        headers={"Content-Disposition": 'attachment; filename="audit.jsonl"'},
-    )
-
-
-# ── Frontend ───────────────────────────────────────────────
+# ── Frontend (SPA + MIT license) ──────────────────────────
 
 @router.get("/", include_in_schema=False)
 async def index() -> Response:
     """Serve the SPA frontend."""
-    return Response(content=_INDEX_HTML, media_type="text/html")
+    return Response(content=config._INDEX_HTML, media_type="text/html")
 
 
 @router.get("/LICENSE", include_in_schema=False)
 def license_file() -> FileResponse:
     """Serve the MIT LICENSE file."""
-    return FileResponse(_LICENSE_FILE, media_type="text/plain")
+    return FileResponse(config._LICENSE_FILE, media_type="text/plain")

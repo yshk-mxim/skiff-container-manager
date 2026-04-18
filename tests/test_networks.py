@@ -1,24 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for network endpoints."""
-
-from unittest.mock import MagicMock
 
 import pytest
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
-
-
-def _make_network(short_id="net123", name="mynet", driver="bridge"):
-    n = MagicMock()
-    n.short_id = short_id
-    n.name = name
-    n.attrs = {
-        "Driver": driver,
-        "Scope": "local",
-        "Internal": False,
-        "IPAM": {"Config": []},
-        "Containers": {},
-    }
-    return n
+from tests.factories import make_network as _make_network
 
 
 @pytest.mark.unit

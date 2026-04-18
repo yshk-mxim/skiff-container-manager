@@ -1,0 +1,95 @@
+# Docker-Compose sandbox — the forbidden-keys table and disallowed
+# network / ipc / pid modes the compose validator enforces.
+#
+# Zero-trust rationale (P0 security file):
+#
+# Compose lets service authors set *a lot* of properties that pierce
+# the container sandbox. The keys below are the ones we refuse to let
+# a compose upload pass, sorted by the escape they would enable:
+#
+# [forbidden.presence] — keys whose mere presence is a red flag. Any
+#   value (even `false`) indicates the author is trying to use a
+#   feature we don't allow. If an operator wants one of these, it's
+#   a site-specific exception and belongs removed from this list by
+#   a security-review commit, not at upload time.
+#
+# [forbidden.truthy] — keys that are harmless at default but dangerous
+#   when set. `cap_add: [SYS_ADMIN]` grants root capabilities;
+#   `sysctls: net.ipv4.ip_forward=1` reconfigures the host network.
+#   Empty / false / null values pass the check.
+#
+# [forbidden.top] — top-level compose keys that reference host files
+#   outside the sandbox (configs / secrets read from host paths).
+#
+# [blocked.network_modes] — network_mode settings that join the host
+#   network namespace or attach to an arbitrary container/service
+#   (breaks isolation).
+#
+# [blocked.ipc_modes] — ipc: host / shareable exposes shared memory
+#   to other processes; cross-container kernel memory leaks become
+#   possible.
+#
+# Editing this file is a security decision — CODEOWNERS + SBOM diff
+# protect it. Adding a key to any list tightens the sandbox; removing
+# one loosens it. The compose validator will raise
+# `compose.service_forbidden_key` / `compose.service_bad_network_mode`
+# / etc. from the http_error catalogue on a violation, so the wire
+# shape is the same whichever key was flagged.
+#
+# OWASP Top 10:2025 mapping: A01 Broken Access Control (sandbox
+# escape) and A02 Security Misconfiguration (defaults deny).
+
+[forbidden]
+# Keys rejected outright when present in a service definition.
+# (cap_add/userns_mode could arguably be [truthy] if "[]" is safe,
+# but we err on the side of refusing any mention.)
+presence = [
+    "privileged",
+    "configs",
+    "secrets",
+    "build",
+    "devices",
+]
+
+# Keys that are forbidden ONLY when they carry a truthy value (empty
+# dict / list / null is allowed — many compose authors leave these as
+# placeholders).
+truthy = [
+    "cap_add",
+    "userns_mode",
+    "sysctls",
+    "security_opt",
+    "shm_size",
+    "extends",
+    "volumes_from",
+    "env_file",
+    "cgroup_parent",
+    "dns",
+    "dns_search",
+    "extra_hosts",
+    "tmpfs",
+    "uts",
+    "cgroupns_mode",
+    "storage_opt",
+    "device_cgroup_rules",
+]
+
+# Top-level compose keys blocked before per-service inspection.
+#
+# `include` pulls in arbitrary external YAML that bypasses the per-
+# service validator entirely: the merged document's service keys are
+# NOT re-checked against [forbidden.presence] / [forbidden.truthy] /
+# [blocked]. Leaving this here would let a well-formed parent compose
+# smuggle `privileged: true` via an included fragment.
+# `extends` has the same shape at the service level (blocked under
+# [forbidden.truthy] above); the top-level symmetry matters too.
+top = [
+    "configs",
+    "secrets",
+    "include",
+    "extends",
+]
+
+[blocked]
+network_modes = ["host", "container", "service"]
+ipc_modes     = ["host", "shareable"]

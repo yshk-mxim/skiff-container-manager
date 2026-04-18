@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for middleware, helpers, and validation functions."""
 
 from unittest.mock import patch
@@ -5,15 +7,15 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
-import app as app_module
-from app import (
+import skiff.config as config_module
+from skiff.validators import (
     _sanitize_stderr,
     _validate_mount_target,
     validate_compose_file,
     validate_container_name,
     validate_image_registry,
 )
-from tests.conftest import AUTH_HEADER
+from tests.conftest import AUTH_CSRF, AUTH_HEADER
 
 # ── SecurityHeadersMiddleware ─────────────────────────────────────────────────
 
@@ -26,7 +28,10 @@ def test_security_headers_present(client):
     assert resp.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=(), usb=()"
 
 
-def test_security_headers_hsts_for_https(client):
+def test_security_headers_hsts_for_https(client, monkeypatch):
+    """HSTS emits on TLS — but only when the front proxy is trusted."""
+    import skiff.config as cfg
+    monkeypatch.setattr(cfg, "TRUST_FORWARDED_HEADERS", True)
     resp = client.get("/health", headers={"x-forwarded-proto": "https"})
     assert "Strict-Transport-Security" in resp.headers
 
@@ -36,11 +41,38 @@ def test_security_headers_no_hsts_for_http(client):
     assert "Strict-Transport-Security" not in resp.headers
 
 
+def test_security_headers_no_hsts_when_forwarded_proto_untrusted(client):
+    """Without TRUST_FORWARDED_HEADERS, X-Forwarded-Proto cannot flip HSTS."""
+    resp = client.get("/health", headers={"x-forwarded-proto": "https"})
+    assert "Strict-Transport-Security" not in resp.headers
+
+
 # ── AuditLogMiddleware ────────────────────────────────────────────────────────
 
 def test_audit_log_middleware_logs_api_requests(client, mock_docker):
     mock_docker.containers.list.return_value = []
     # Just make an API call and verify it doesn't crash (middleware logs it)
+    resp = client.get("/api/containers", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+
+
+# ── R17 BodySizeLimitMiddleware ───────────────────────────────────────────────
+
+def test_body_size_limit_rejects_oversize_content_length(client):
+    """Content-Length > cap returns 413 before touching the router."""
+    import skiff.config as cfg
+    oversize = b"x" * (cfg.MAX_BODY_BYTES + 1)
+    resp = client.post(
+        "/api/compose/up?project_name=demo",
+        headers={**AUTH_CSRF, "Content-Type": "application/octet-stream"},
+        content=oversize,
+    )
+    assert resp.status_code == 413
+    assert resp.json()["detail"]["code"] == "validation.body_too_large"
+
+
+def test_body_size_limit_allows_small_requests(client, mock_docker):
+    mock_docker.containers.list.return_value = []
     resp = client.get("/api/containers", headers=AUTH_HEADER)
     assert resp.status_code == 200
 
@@ -142,7 +174,7 @@ def test_validate_image_registry_invalid_format():
 
 def test_validate_image_registry_short_name_no_docker_io():
     """Short names (nginx) rejected when docker.io not in allowed list."""
-    with patch.object(app_module._cfg, "allowed_registries", ["ghcr.io"]):
+    with patch.object(config_module._cfg, "allowed_registries", ["ghcr.io"]):
         with pytest.raises(HTTPException) as exc:
             validate_image_registry("nginx")
         assert exc.value.status_code == 400
@@ -150,14 +182,14 @@ def test_validate_image_registry_short_name_no_docker_io():
 
 def test_validate_image_registry_empty_allowed():
     """Empty allowed_registries allows all registries."""
-    with patch.object(app_module._cfg, "allowed_registries", []):
+    with patch.object(config_module._cfg, "allowed_registries", []):
         # Should not raise
         validate_image_registry("anyregistry.io/img:latest")
 
 
 def test_validate_image_registry_docker_io_allowed():
     """Short names allowed when docker.io in allowed list."""
-    with patch.object(app_module._cfg, "allowed_registries", ["docker.io"]):
+    with patch.object(config_module._cfg, "allowed_registries", ["docker.io"]):
         validate_image_registry("nginx")
 
 
@@ -231,3 +263,142 @@ def test_rate_limit_health_not_limited(client):
     for _ in range(5):
         resp = client.get("/health")
         assert resp.status_code == 200
+
+
+# ── GCP/Kubernetes-style resource quantity parsers ────────────────────────────
+# parse_memory_quantity + parse_cpu_quantity underpin POST /api/containers/{id}/update.
+# Parser correctness is CRITICAL: an off-by-unit bug could let a user bypass the
+# MAX_CONTAINER_MEM / MAX_CONTAINER_CPU caps. Test every unit + a pile of errors.
+
+from skiff.validators import parse_cpu_quantity, parse_memory_quantity
+
+
+@pytest.mark.parametrize("value,expected", [
+    (0, 0),
+    (1024, 1024),
+    ("0", 0),
+    ("1024", 1024),
+    ("256Mi", 256 * 1024 * 1024),
+    ("1Gi", 1024 ** 3),
+    ("2Gi", 2 * 1024 ** 3),
+    ("500M", 500 * 10 ** 6),
+    ("1G", 10 ** 9),
+    ("512Ki", 512 * 1024),
+    ("1Ti", 1024 ** 4),
+    ("100k", 100 * 1000),
+    ("0.5Gi", int(0.5 * 1024 ** 3)),
+])
+def test_parse_memory_quantity_valid(value, expected):
+    assert parse_memory_quantity(value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "",
+    "abc",
+    "256Xi",           # unknown unit
+    "Mi256",           # unit before number
+    "-100",            # negative int as string (regex rejects)
+    "256 Mi 512",      # extra tokens
+    None,              # not a str/int
+    [],                # not a str/int
+    True,              # bool is a subclass of int — must be rejected explicitly
+    False,
+])
+def test_parse_memory_quantity_invalid(value):
+    with pytest.raises(HTTPException) as exc:
+        parse_memory_quantity(value)
+    assert exc.value.status_code == 400
+
+
+def test_parse_memory_quantity_negative_int_rejected():
+    with pytest.raises(HTTPException):
+        parse_memory_quantity(-1)
+
+
+@pytest.mark.parametrize("value,expected", [
+    (0, 0.0),
+    (1, 1.0),
+    (0.5, 0.5),
+    ("0", 0.0),
+    ("1", 1.0),
+    ("2", 2.0),
+    ("0.5", 0.5),
+    ("500m", 0.5),
+    ("100m", 0.1),
+    ("2000m", 2.0),
+])
+def test_parse_cpu_quantity_valid(value, expected):
+    assert parse_cpu_quantity(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [
+    "",
+    "abc",
+    "500mm",           # invalid suffix
+    "m500",            # suffix before number
+    "-1",
+    None,
+    [],
+    True,              # bool subclass of int — must be rejected explicitly
+    False,
+])
+def test_parse_cpu_quantity_invalid(value):
+    with pytest.raises(HTTPException) as exc:
+        parse_cpu_quantity(value)
+    assert exc.value.status_code == 400
+
+
+def test_parse_cpu_quantity_negative_float_rejected():
+    with pytest.raises(HTTPException):
+        parse_cpu_quantity(-0.5)
+
+
+# ── _validate_tmpfs direct edge cases (for 100% critical-path coverage) ──────
+
+from skiff.validators import _validate_tmpfs
+
+
+def test_validate_tmpfs_not_dict_rejected():
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs("not a dict", 10, 512)
+    assert exc.value.status_code == 400
+
+
+def test_validate_tmpfs_too_many_mounts():
+    tmpfs = {f"/mnt{i}": "rw" for i in range(11)}
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs(tmpfs, 10, 512)
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "validation.tmpfs_too_many"
+
+
+def test_validate_tmpfs_opts_not_string():
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs({"/tmp": 123}, 10, 512)
+    assert exc.value.status_code == 400
+
+
+def test_validate_tmpfs_opts_too_long():
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs({"/tmp": "rw," * 200}, 10, 512)
+    assert exc.value.status_code == 400
+
+
+def test_validate_tmpfs_size_non_integer():
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs({"/tmp": "rw,size=abc"}, 10, 512)
+    assert exc.value.status_code == 400
+
+
+def test_validate_tmpfs_size_unit_variations():
+    # All three size units should be parsed without raising
+    _validate_tmpfs({"/tmp": "rw,size=1024k"}, 10, 512)  # 1 MB
+    _validate_tmpfs({"/tmp": "rw,size=16m"}, 10, 512)    # 16 MB
+    _validate_tmpfs({"/tmp": "rw,size=1g"}, 10, 2048)    # 1024 MB
+    _validate_tmpfs({"/tmp": "rw,size=1048576"}, 10, 512)  # bytes (no unit)
+
+
+def test_validate_tmpfs_non_string_path():
+    with pytest.raises(HTTPException) as exc:
+        _validate_tmpfs({123: "rw"}, 10, 512)
+    assert exc.value.status_code == 400

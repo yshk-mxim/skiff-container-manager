@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import docker.errors
 import pytest
 
-import app as app_module
-from skiff.routers.containers import exec_shell, run_container, stream_logs
+import skiff.config as config_module
+from skiff.routers.containers import run_container
+from skiff.routers.containers_ws import exec_shell, stream_logs
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,15 +58,15 @@ async def test_stream_logs_idle_timeout_message():
     mock_client.containers.get.return_value = mock_container
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=mock_client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=mock_client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
         # Force wait_for inside read_logs to raise TimeoutError immediately
         patch("skiff.routers.containers.asyncio.wait_for", side_effect=TimeoutError()),
     ):
@@ -89,15 +91,15 @@ async def test_stream_logs_gen_close_exception_swallowed():
     mock_client.containers.get.return_value = mock_container
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=mock_client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=mock_client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await stream_logs(ws, "abc1234567890123")  # must not raise
@@ -117,15 +119,15 @@ async def test_stream_logs_ws_close_exception_swallowed():
     mock_client.containers.get.return_value = mock_container
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=mock_client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=mock_client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await stream_logs(ws, "abc1234567890123")  # must not raise
@@ -160,18 +162,18 @@ async def test_exec_shell_bash_detection_exception():
     """Exception during exec_run('which bash') is swallowed; falls back to /bin/sh."""
     ws = _make_ws()
     client, _sock = _make_exec_mock_client()
-    client.containers.get.return_value.exec_run.side_effect = RuntimeError("exec failed")
+    client.containers.get.return_value.exec_run.side_effect = docker.errors.DockerException("exec failed")
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")
@@ -189,15 +191,15 @@ async def test_exec_shell_read_output_data_sent():
     client, _ = _make_exec_mock_client(recv_side_effect=[b"hello\n", b""])
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")
@@ -216,17 +218,17 @@ async def test_exec_shell_read_output_idle_timeout():
     _sock._sock.setblocking = MagicMock()
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
         # Set idle timeout to 0 so the very first TimeoutError triggers the message
-        patch("skiff.routers.containers.WS_EXEC_IDLE_TIMEOUT", 0),
+        patch("skiff.config.WS_EXEC_IDLE_TIMEOUT", 0),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")
@@ -242,15 +244,15 @@ async def test_exec_shell_read_output_exception_breaks():
     _sock._sock.recv.side_effect = ConnectionResetError("peer reset")
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")  # must not raise
@@ -266,15 +268,15 @@ async def test_exec_shell_large_input_closes_4008():
     client, _sock = _make_exec_mock_client(recv_side_effect=[b""])
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")
@@ -291,15 +293,15 @@ async def test_exec_shell_ws_close_exception_swallowed():
     client, _sock = _make_exec_mock_client(recv_side_effect=[b""])
 
     with (
-        patch("skiff.routers.containers._validate_ws_origin", return_value=True),
+        patch("skiff.routers.containers_ws.auth._validate_ws_origin", return_value=True),
         patch(
-            "skiff.routers.containers._validate_ws_token_from_message",
+            "skiff.routers.containers_ws.auth._validate_ws_token_from_message",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("skiff.routers.containers.get_client", return_value=client),
-        patch("skiff.routers.containers.CONTAINER_ID_RE") as mock_re,
-        patch("skiff.routers.containers.ws_keepalive", new_callable=AsyncMock),
+        patch("skiff.routers.containers_ws.get_client", return_value=client),
+        patch("skiff.routers.containers_ws.validators.CONTAINER_ID_RE") as mock_re,
+        patch("skiff.routers.containers_ws.auth.ws_keepalive", new_callable=AsyncMock),
     ):
         mock_re.match.return_value = MagicMock()
         await exec_shell(ws, "abc1234567890123")  # must not raise
@@ -324,21 +326,20 @@ def test_run_container_port_as_tuple(mock_docker):
     mock_docker.containers.run.return_value = mock_container
 
     # Pass a port value as a 2-tuple — this is the (host_ip, host_port) format
-    # that some Docker SDK wrappers return; the defensive branch at line 136 handles it.
-    # All Body-annotated parameters must be passed explicitly (not left at their
-    # Body(default=None) defaults) when calling the function directly.
-    with patch.object(app_module._cfg, "allowed_registries", ["docker.io"]):
+    # that some Docker SDK wrappers return; the defensive branch in
+    # run_container handles it. After R3 the body fields live on a
+    # RunContainerRequest model; we cast ports through dict(str→str)
+    # because the model types the values narrower than this test needs.
+    from skiff.contract.requests import RunContainerRequest
+
+    body = RunContainerRequest.model_construct(
+        ports={"8080/tcp": ("127.0.0.1", "8080")},  # tuple bypasses Pydantic validation via model_construct
+    )
+    with patch.object(config_module._cfg, "allowed_registries", ["docker.io"]):
         result = run_container(
             request=mock_request,
             image="docker.io/library/nginx:latest",
-            ports={"8080/tcp": ("127.0.0.1", "8080")},  # tuple value triggers line 136-137
-            environment=None,
-            command=None,
-            volumes=None,
-            restart_policy=None,
-            network=None,
-            labels=None,
-            read_only=True,
+            body=body,
             client=mock_docker,
         )
 

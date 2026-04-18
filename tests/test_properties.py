@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """
 Property-based tests using Hypothesis.
 
@@ -13,7 +15,7 @@ from fastapi import HTTPException
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app import (
+from skiff.validators import (
     CONTAINER_ID_RE,
     PROJECT_NAME_RE,
     validate_compose_file,

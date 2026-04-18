@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """
 Full-lifecycle Playwright e2e tests for SKIFF Container Manager.
 
@@ -24,71 +26,53 @@ pytest.importorskip("playwright", reason="playwright not installed — run: pip 
 
 pytestmark = pytest.mark.e2e
 
-BASE_URL = "http://127.0.0.1:18080"
-E2E_TOKEN = "e2e-test-token"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-SHORT = 10_000   # ms — fast DOM operations
-MEDIUM = 30_000  # ms — Docker API round-trip
-LONG = 90_000    # ms — image pull / container start
-
-
-def _nav_to(page, section: str):
-    """Click the sidebar link for *section* and wait for the heading."""
-    page.locator(f".sidebar a:has-text('{section.capitalize()}')").click()
-    page.wait_for_selector(f"h2:has-text('{section.capitalize()}')", timeout=MEDIUM)
-
+from tests.conftest_e2e import E2E_TOKEN
+from tests.e2e_helpers import LONG, MEDIUM, SHORT
+from tests.e2e_helpers import nav_to as _nav_to
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Authentication
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.e2e
-def test_login_with_valid_token(live_server):
-    """Navigate, enter valid token, verify containers page loads."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        pg = browser.new_page()
+def test_login_with_valid_token(live_server, browser):
+    """Navigate, enter valid token, verify containers page loads.
+
+    Uses pytest-playwright's session-scoped `browser` fixture (with its own
+    context) so we don't conflict with another test file's asyncio loop."""
+    ctx = browser.new_context()
+    try:
+        pg = ctx.new_page()
         pg.goto(live_server)
         sign_in = pg.locator("button:has-text('Sign in')")
         if sign_in.count() > 0:
             pg.locator("input[type='password']").fill(E2E_TOKEN)
             sign_in.click()
-        # Sidebar renders immediately after login (no Docker round-trip needed).
         pg.wait_for_selector(".sidebar", timeout=MEDIUM)
         assert pg.locator(".sidebar a:has-text('Containers')").count() > 0
-        browser.close()
+    finally:
+        ctx.close()
 
 
 @pytest.mark.e2e
-def test_login_with_invalid_token(live_server):
+def test_login_with_invalid_token(live_server, browser):
     """Enter wrong token, verify error is shown and containers list is absent."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        pg = browser.new_page()
+    ctx = browser.new_context()
+    try:
+        pg = ctx.new_page()
         pg.goto(live_server)
         sign_in = pg.locator("button:has-text('Sign in')")
         if sign_in.count() == 0:
-            # Auth not required — skip
-            browser.close()
             pytest.skip("Server running without auth")
         pg.locator("input[type='password']").fill("wrong-token-xyz")
         sign_in.click()
-        # After clicking sign-in the token is stored and the app attempts to
-        # fetch containers. A 401 (or 429) response should leave us on the login page.
-        # Wait for login button to reappear or any toast indicating failure.
         pg.wait_for_selector(
             "button:has-text('Sign in'), .toast, [class*='toast']",
             timeout=MEDIUM,
         )
-        # Containers table must NOT be visible — we're either on login page or rate-limited
         assert pg.locator("table").count() == 0
-        browser.close()
+    finally:
+        ctx.close()
 
 
 @pytest.mark.e2e
@@ -420,25 +404,34 @@ def test_image_run_button(page, live_server, docker_client):
 
 @pytest.mark.e2e
 def test_image_delete(page, live_server, docker_client):
-    """Pull a test image, delete it via UI, verify it disappears."""
-    test_tag = "alpine:e2etest"
-    # Ensure the image exists by tagging alpine locally
-    if docker_client:
-        try:
-            img = docker_client.images.get("alpine:latest")
-            img.tag("alpine", tag="e2etest")
-        except Exception:
-            pass
+    """Pull a test image, delete it via UI, verify it disappears.
+
+    Uses a unique tag (alpine:e2etest-del) so prior test_tag_image / other
+    image-touching tests can't poison this run. If alpine:latest isn't
+    present locally we pull it here — otherwise a fresh engine (or a
+    previous delete test) leaves this test depending on another's state."""
+    test_tag = "alpine:e2etest-del"
+    if not docker_client:
+        pytest.skip("docker_client fixture unavailable")
+    # Ensure alpine:latest exists (pull is idempotent).
+    try:
+        docker_client.images.get("alpine:latest")
+    except Exception:
+        docker_client.images.pull("alpine", tag="latest")
+    # Create the tag the test will delete. Remove any stale copy first.
+    try:
+        docker_client.images.remove(test_tag, force=True)
+    except Exception:
+        pass
+    img = docker_client.images.get("alpine:latest")
+    img.tag("alpine", tag="e2etest-del")
 
     _nav_to(page, "images")
     page.wait_for_selector("table", timeout=MEDIUM)
-
-    if page.locator(f"text={test_tag}").count() == 0:
-        pytest.skip("Test image alpine:e2etest not available — skipping delete test")
+    page.wait_for_selector(f"text={test_tag}", timeout=MEDIUM)
 
     page.on("dialog", lambda d: d.accept())
     page.locator(f"tr:has-text('{test_tag}')").locator("button:has-text('Delete')").click()
-    # Give the delete API time to respond then check
     page.wait_for_timeout(3000)
     page.wait_for_selector(f"text={test_tag}", state="detached", timeout=MEDIUM)
     assert page.locator(f"text={test_tag}").count() == 0
@@ -461,7 +454,7 @@ def test_create_and_delete_volume(page, live_server, docker_client):
     _nav_to(page, "volumes")
     page.locator("button:has-text('Create volume')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
-    page.locator("#vol-name").fill(vol_name)
+    page.locator('input[name="name"]').fill(vol_name)
     page.locator(".modal button:has-text('Create')").click()
 
     page.wait_for_selector(f"text={vol_name}", timeout=MEDIUM)
@@ -479,13 +472,26 @@ def test_create_and_delete_volume(page, live_server, docker_client):
 
 @pytest.mark.e2e
 def test_builtin_networks_show_badge(page, live_server):
-    """Verify bridge, host, and none networks have a 'built-in' badge."""
+    """Verify bridge, host, and none networks have a 'built-in' badge.
+
+    The name appears in the first column; filter by a direct-child cell
+    match so rows that mention the name inside the Driver column (e.g.
+    a bridge-driver user network leftover from an earlier test) don't
+    accidentally match a name lookup.
+    """
     _nav_to(page, "networks")
     page.wait_for_selector("table", timeout=MEDIUM)
     for net_name in ("bridge", "host", "none"):
-        row = page.locator(f"tr:has-text('{net_name}')")
-        if row.count() > 0:
-            assert "built-in" in row.first.text_content()
+        # Match the row whose FIRST cell's text is exactly `net_name`
+        # (possibly followed by the badge span). `>> nth=0` narrows to
+        # the name cell; `has-text` on the parent row scopes it.
+        rows = page.locator("tbody tr").filter(
+            has=page.locator(f"td:first-child:text-matches('^\\s*{net_name}\\b')")
+        )
+        if rows.count() == 0:
+            # Network not present on this engine (e.g. custom config)
+            continue
+        assert "built-in" in rows.first.text_content()
 
 
 @pytest.mark.e2e
@@ -500,7 +506,7 @@ def test_create_and_delete_network(page, live_server, docker_client):
     _nav_to(page, "networks")
     page.locator("button:has-text('Create network')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
-    page.locator("#net-name").fill(net_name)
+    page.locator('input[name="name"]').fill(net_name)
     page.locator(".modal button:has-text('Create')").click()
 
     page.wait_for_selector(f"text={net_name}", timeout=MEDIUM)
@@ -555,15 +561,28 @@ def test_hub_search_shows_tags_on_click(page, live_server):
 
 @pytest.mark.e2e
 def test_popular_chip_shows_tags(page, live_server):
-    """Click the 'postgres' popular chip in Pull modal, verify tag list appears."""
+    """Click the 'postgres' popular chip in Pull modal, verify tag list appears.
+
+    Depends on Docker Hub reachability; the server proxies /api/registry/tags
+    to hub.docker.com. If the external call fails (rate-limit, slow network),
+    the test skips rather than flaking — the UI shows a 'No tags found' or
+    loading state that isn't a bug in SKIFF."""
     _nav_to(page, "images")
     page.locator("button:has-text('Pull image')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
 
     page.locator("button:has-text('postgres')").first.click()
-    page.wait_for_selector("text=latest", timeout=MEDIUM)
-    assert page.locator("text=latest").count() > 0
-
+    # Use LONG timeout — Docker Hub can be slow under load.
+    try:
+        page.wait_for_selector(
+            "[data-testid='hub-tag-row'], text=No tags found, text=Tag fetch failed",
+            timeout=LONG,
+        )
+    except Exception:
+        pytest.skip("Docker Hub unreachable from CI — popular-chip test depends on it")
+    # If we hit "No tags found" / error, skip; real success shows a tag row.
+    if page.locator("[data-testid='hub-tag-row']").count() == 0:
+        pytest.skip("Docker Hub returned empty/error for postgres tags")
     page.locator("button:has-text('Cancel')").click()
 
 
@@ -2338,7 +2357,7 @@ def test_toast_auto_dismisses(page, live_server, docker_client):
     # Create a volume to trigger a success toast
     page.locator("button:has-text('Create volume')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
-    page.locator("#vol-name").fill("e2e-toast-dismiss-vol2")
+    page.locator('input[name="name"]').fill("e2e-toast-dismiss-vol2")
     page.locator(".modal button:has-text('Create')").click()
 
     # Wait for the success toast to appear
@@ -2425,7 +2444,13 @@ def test_volumes_empty_state_message(page, live_server, docker_client):
 
 @pytest.mark.e2e
 def test_networks_builtin_badge_display(page, live_server):
-    """bridge, host, and none networks should show a 'built-in' badge in the networks table."""
+    """bridge, host, and none networks should show a 'built-in' badge in the networks table.
+
+    "bridge" also appears as a DRIVER value for user-created networks (compose creates
+    `<project>_default` with driver=bridge), so `tr:has-text('bridge')` can match the
+    wrong row depending on alphabetical order. Scope to rows whose FIRST cell is the
+    literal "bridge" — those are the built-in networks by name.
+    """
     _nav_to(page, "networks")
     page.wait_for_selector("table", timeout=MEDIUM)
 
@@ -2433,10 +2458,13 @@ def test_networks_builtin_badge_display(page, live_server):
     builtin_badges = page.locator("td:has-text('built-in')")
     assert builtin_badges.count() > 0, "Expected at least one 'built-in' badge in networks table"
 
-    # Specifically check bridge
-    bridge_row = page.locator("tr:has-text('bridge')")
-    if bridge_row.count() > 0:
-        assert "built-in" in bridge_row.first.text_content()
+    # Specifically check bridge — match the name-cell exactly, not a substring anywhere
+    # in the row (avoids false-positives on compose_default which has driver=bridge).
+    bridge_name_cell = page.locator("tr td:first-child").filter(has_text="bridge").first
+    if bridge_name_cell.count() > 0:
+        # Walk up to the row and assert the badge is present
+        bridge_row = bridge_name_cell.locator("..")
+        assert "built-in" in bridge_row.text_content()
 
 
 @pytest.mark.e2e
@@ -2909,7 +2937,7 @@ def test_volume_create_shows_in_list(page, live_server, docker_client):
     # Check modal title
     assert "Create volume" in page.locator(".modal h3").text_content()
 
-    page.locator("#vol-name").fill(vol_name)
+    page.locator('input[name="name"]').fill(vol_name)
     page.locator(".modal button:has-text('Create')").click()
 
     # Success toast should appear
@@ -2945,9 +2973,9 @@ def test_network_create_shows_driver(page, live_server, docker_client):
     page.locator("button:has-text('Create network')").click()
     page.wait_for_selector(".modal", timeout=SHORT)
 
-    page.locator("#net-name").fill(net_name)
+    page.locator('input[name="name"]').fill(net_name)
     # Select bridge driver
-    page.locator("#net-driver").select_option(value="bridge")
+    page.locator('select[name="driver"]').select_option(value="bridge")
     page.locator(".modal button:has-text('Create')").click()
 
     page.wait_for_selector(f"text={net_name}", timeout=MEDIUM)

@@ -1,13 +1,48 @@
 repos:
+  # Ruff — lint + security ruleset + auto-fix on commit
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.2
     hooks:
       - id: ruff
-        args: [--fix]
+        args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
+
+  # YAML / TOML parse check — catches broken compose-in-doc snippets and
+  # pyproject.toml edits that would break pip install in CI.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        args: [--unsafe]  # --unsafe allows YAML tags used by GitHub Actions
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
 
   - repo: https://github.com/pypa/pip-audit
     rev: v2.9.0
     hooks:
       - id: pip-audit
         args: [--strict, -r, requirements.txt]
+
+  # Project-specific anti-pattern guard — catches the v3-review smells
+  # (nested try/except, try-with-if-on-outcome, bulky imports from
+  # skiff.*, and getattr-with-default-literal on non-framework types).
+  # Complements ruff; the set is intentionally small + repo-specific.
+  - repo: local
+    hooks:
+      - id: lint-antipatterns
+        name: SKIFF anti-pattern guard
+        entry: python3 tools/lint_antipatterns.py --check
+        language: system
+        types: [python]
+        pass_filenames: false
+
+  # R24 — gitleaks secret scan on staged changes. Catches accidental
+  # commits of .env files, GCP service-account JSONs, API tokens, SSH
+  # private keys, etc. before they reach origin. Zero-trust rationale:
+  # a single leaked SKIFF API_TOKEN gives full control of the remote
+  # Docker host (documented trade-off, see SECURITY.md §Design Trade-offs).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks

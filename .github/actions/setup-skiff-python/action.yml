@@ -1,0 +1,28 @@
+name: Setup SKIFF Python
+description: >-
+  Checkout the repo, install Python 3.12, cache pip, and install the
+  dev extras. Shared by ci.yml / security.yml / future e2e.yml so the
+  setup block doesn't drift between workflows.
+
+inputs:
+  python-version:
+    description: Python version to install (default 3.12).
+    required: false
+    default: "3.12"
+  install-extras:
+    description: Pip extras to install (default dev).
+    required: false
+    default: "dev"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install -e ".[${{ inputs.install-extras }}]"

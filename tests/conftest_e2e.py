@@ -1,36 +1,32 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """E2E test fixtures using Playwright and a live uvicorn server.
 
-Configuration via environment variables (all optional — defaults work for local dev):
+Configuration precedence (highest wins):
 
-  E2E_DOCKER_HOST        Unix socket or TCP URL for the Docker daemon.
-                         Default: unix:///tmp/docker.sock
-                         Examples:
-                           unix:///var/run/docker.sock   (local Docker Engine)
-                           unix:///tmp/docker.sock       (SSH tunnel)
-                           tcp://192.168.1.10:2375       (remote TCP)
+  1. Environment variables: E2E_DOCKER_HOST, E2E_SSH_TUNNEL,
+     E2E_ALLOWED_REGISTRIES, E2E_PORT, E2E_TOKEN.
+  2. `tests/e2e-config.json` (gitignored; see `tests/e2e-config.example.json`).
+  3. Built-in defaults.
 
-  E2E_SSH_TUNNEL         If set to "user@host", the fixture opens an SSH tunnel
-                         before starting the server and closes it after.
-                         E.g.: E2E_SSH_TUNNEL=dev@my-docker-vm
-                         When using a GCP VM: E2E_SSH_TUNNEL=user@<GCP_VM_IP>
+The JSON file is the stable home for target setup — SSH tunnel user@host,
+Docker socket path, registry allowlist — so contributors can point the
+suite at their own environment without editing test code or setting env
+vars every invocation.
 
-  E2E_ALLOWED_REGISTRIES Comma-separated registry prefixes to allow.
-                         Default: docker.io,ghcr.io
-
-  E2E_PORT               Port for the test server. Default: 18080.
-
-  E2E_TOKEN              Bearer token for the test server. Default: e2e-test-token.
-
-Example — run against a GCP VM:
-  E2E_SSH_TUNNEL=dev@10.0.0.5 \\
-  E2E_DOCKER_HOST=unix:///tmp/docker.sock \\
-  E2E_ALLOWED_REGISTRIES=us-docker.pkg.dev/my-project/ \\
-  pytest -m e2e tests/
+Keys (all optional):
+  docker_host         → E2E_DOCKER_HOST (unix://… or tcp://…; default probes local sockets)
+  ssh_tunnel          → E2E_SSH_TUNNEL  (user@host for session-scoped tunnel; "" disables)
+  allowed_registries  → E2E_ALLOWED_REGISTRIES (comma-separated prefixes)
+  port                → E2E_PORT (default 18080)
+  token               → E2E_TOKEN (default e2e-test-token)
 """
 
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import subprocess
 import time
 
@@ -43,13 +39,61 @@ try:
 except ImportError:
     sync_playwright = None  # type: ignore[assignment]  # e2e tests skipped when playwright not installed
 
-# ── Configuration from environment ─────────────────────────────────────────
-E2E_TOKEN = os.environ.get("E2E_TOKEN", "e2e-test-token")
-E2E_DOCKER_HOST = os.environ.get("E2E_DOCKER_HOST", "unix:///tmp/docker.sock")
-E2E_SSH_TUNNEL = os.environ.get("E2E_SSH_TUNNEL", "")  # "user@host" or ""
-E2E_ALLOWED_REGISTRIES = os.environ.get("E2E_ALLOWED_REGISTRIES", "docker.io,ghcr.io")
-E2E_PORT = int(os.environ.get("E2E_PORT", "18080"))
+# ── Configuration from JSON + environment ──────────────────────────────────
+_CONFIG_PATH = pathlib.Path(__file__).parent / "e2e-config.json"
+_CONFIG: dict[str, object] = {}
+if _CONFIG_PATH.exists():
+    try:
+        _CONFIG = json.loads(_CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        _CONFIG = {}
+
+
+def _cfg(env_key: str, json_key: str, default: str) -> str:
+    """Env var wins, then JSON config, then default."""
+    env_val = os.environ.get(env_key)
+    if env_val is not None:
+        return env_val
+    json_val = _CONFIG.get(json_key)
+    return str(json_val) if json_val is not None else default
+
+
+E2E_TOKEN = _cfg("E2E_TOKEN", "token", "e2e-test-token")
+E2E_SSH_TUNNEL = _cfg("E2E_SSH_TUNNEL", "ssh_tunnel", "")  # "user@host" or ""
+E2E_ALLOWED_REGISTRIES = _cfg("E2E_ALLOWED_REGISTRIES", "allowed_registries", "docker.io,ghcr.io")
+E2E_PORT = int(_cfg("E2E_PORT", "port", "18080"))
 BASE_URL = f"http://127.0.0.1:{E2E_PORT}"
+
+
+def _discover_local_docker_host() -> str:
+    """Probe the shipped docker_probe.toml paths for a live Unix socket.
+
+    Returns the first reachable path as a `unix://...` URL. The tests
+    need a real Docker daemon (fake SDK mocks don't test the UI end-to-
+    end), and defaulting to /tmp/docker.sock meant every contributor on
+    Colima / OrbStack / Docker Desktop saw /api/system/info → 503 and
+    the System page abort partway through render.
+
+    Shares its probe list with `skiff/routers/system.py`
+    (skiff/_config/docker_probe.toml) so local dev and the setup wizard see
+    the same runtimes.
+    """
+    from skiff.config import _TOML_DOCKER_PROBE
+    for raw in _TOML_DOCKER_PROBE["paths"]:
+        p = os.path.expanduser(raw)
+        if os.path.exists(p):
+            return f"unix://{p}"
+    return "unix:///tmp/docker.sock"  # SSH-tunnel default — will fail visibly if Docker is absent
+
+
+# E2E_DOCKER_HOST priority: explicit env var → discovered local socket.
+# When E2E_SSH_TUNNEL is set, the caller is expected to also set
+# E2E_DOCKER_HOST to the tunnel-side path (typically /tmp/docker.sock).
+E2E_DOCKER_HOST = (
+    os.environ.get("E2E_DOCKER_HOST")
+    or str(_CONFIG.get("docker_host") or "")
+    or _discover_local_docker_host()
+)
 
 # Socket path extracted from DOCKER_HOST for tunnel target and docker_client
 _SOCKET_PATH = (
@@ -323,3 +367,37 @@ def pytest_configure(config):
         "markers",
         "e2e: end-to-end tests requiring a live server and a Docker daemon",
     )
+
+
+# ── Screenshot-on-failure hook ───────────────────────────────────────────────
+# When an e2e test fails, dump the Playwright page's screenshot + console
+# errors to `tests/e2e-artifacts/<testname>.png` for postmortem. Nothing
+# writes on passing tests. The hook finds the `page` fixture instance on
+# the test's call-time local namespace.
+import pathlib
+
+_E2E_ARTIFACT_DIR = pathlib.Path(__file__).parent / "e2e-artifacts"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    pg = None
+    # Try Playwright `page` fixture first; fall back to any attribute named `page`.
+    if hasattr(item, "funcargs"):
+        pg = item.funcargs.get("page")
+    if pg is None:
+        return
+    try:
+        _E2E_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = item.nodeid.replace("/", "_").replace(":", "_").replace("::", "_")[:120]
+        path = _E2E_ARTIFACT_DIR / f"{safe_name}.png"
+        pg.screenshot(path=str(path), full_page=True)
+        errors = getattr(pg, "_e2e_js_errors", [])
+        if errors:
+            (_E2E_ARTIFACT_DIR / f"{safe_name}.js-errors.txt").write_text("\n".join(errors))
+    except Exception:
+        pass

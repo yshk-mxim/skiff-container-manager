@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """
 Security-focused tests: registry bypass attempts, compose sandbox escapes,
 volume path traversal, and response header checks.
@@ -8,7 +10,11 @@ These test real defensive logic — not happy paths.
 import pytest
 from fastapi import HTTPException
 
-from app import BLOCKED_COMPOSE_SERVICE_KEYS, validate_compose_file, validate_image_registry
+from skiff.validators import (
+    BLOCKED_COMPOSE_SERVICE_KEYS,
+    validate_compose_file,
+    validate_image_registry,
+)
 from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── Registry bypass attempts ───────────────────────────────────────────────────

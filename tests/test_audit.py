@@ -6,8 +6,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import skiff.app as app_module
+import skiff.app as app_module  # noqa: F401
 import skiff.auth as auth_module
+import skiff.config as config_module
 from skiff.app import app
 from skiff.logging_setup import _classify_event
 
@@ -18,11 +19,11 @@ TOKEN = "testtoken1234567890"
 
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
-    monkeypatch.setattr(app_module._cfg, "api_token", TOKEN)
-    monkeypatch.setattr(app_module._cfg, "from_env", True)
-    app_module._invalidate_session_cache()
+    monkeypatch.setattr(config_module._cfg, "api_token", TOKEN)
+    monkeypatch.setattr(config_module._cfg, "from_env", True)
+    auth_module._invalidate_session_cache()
     yield
-    app_module._invalidate_session_cache()
+    auth_module._invalidate_session_cache()
 
 
 @pytest.fixture()
@@ -34,14 +35,21 @@ def client():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("method,path,status,expected_type", [
-    ("POST",   "/api/containers/abc123/start",  200, "container.action"),
+    # After R26 the classification layer uses the decorator-declared
+    # `audit=<name>` directly — no more parallel "historical" names
+    # drifting from what handlers actually emit. The names below match
+    # @secure_route.mutate(audit=...) in each router module.
+    ("POST",   "/api/containers/abc123/start",  200, "container.started"),
     ("POST",   "/api/containers/run",           200, "container.run"),
     ("DELETE", "/api/containers/abc123",        200, "container.removed"),
-    ("POST",   "/api/images/pull",              200, "image.pull"),
-    ("POST",   "/api/compose/up",               200, "compose.deployed"),
-    ("DELETE", "/api/compose/mystack",          200, "compose.torn_down"),
+    ("POST",   "/api/images/pull",              200, "image.pulled"),
+    ("POST",   "/api/compose/up",               200, "compose.up"),
+    ("POST",   "/api/compose/down",             200, "compose.down"),
     ("GET",    "/api/system/audit-log",         200, "audit.log_read"),
-    ("POST",   "/api/setup",                    200, "setup.configured"),
+    # /api/setup has no audit= annotation (intentional — the setup
+    # endpoint's own log line is the authoritative audit event), so
+    # classification falls through to the /api/ catch-all.
+    ("POST",   "/api/setup",                    200, "api.request"),
     ("GET",    "/api/volumes",                  401, "auth.denied"),
     ("GET",    "/api/containers",               429, "rate_limit.exceeded"),
     ("GET",    "/api/unknown/path",             200, "api.request"),
@@ -79,11 +87,11 @@ def test_session_rejected_after_timeout(client, monkeypatch):
     client.get("/api/containers", headers=AUTH)
 
     # Fast-forward past the absolute timeout
-    monkeypatch.setattr(auth_module, "SESSION_ABS_TIMEOUT", -1)
+    monkeypatch.setattr(config_module, "SESSION_ABS_TIMEOUT", -1)
 
     r = client.get("/api/containers", headers=AUTH)
     assert r.status_code == 401
-    assert "expired" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "auth.session_expired"
 
 
 @pytest.mark.unit
@@ -110,9 +118,9 @@ def test_forwarded_user_accepted_without_error(client):
 
 @pytest.mark.unit
 def test_audit_max_bytes_default():
-    assert app_module.AUDIT_MAX_BYTES == 10 * 1024 * 1024
+    assert config_module.AUDIT_MAX_BYTES == 10 * 1024 * 1024
 
 
 @pytest.mark.unit
 def test_audit_backup_count_default():
-    assert app_module.AUDIT_BACKUP_COUNT == 5
+    assert config_module.AUDIT_BACKUP_COUNT == 5

@@ -9,35 +9,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-import app as app_module
 import skiff.auth as auth_module
 import skiff.config as config_module
 import skiff.docker_client as docker_client_module
 import skiff.logging_setup as logging_setup_module
-from app import (
-    _classify_event,
-    _limit,
-    _redact_dict,
-    _validate_ws_origin,
-    _validate_ws_token_from_message,
-)
-from skiff.routers import compose as compose_module
-from skiff.routers import system as system_module
+from skiff.auth import _validate_ws_origin, _validate_ws_token_from_message
+from skiff.config import _limit
+from skiff.logging_setup import _classify_event
+from skiff.validators import _redact_dict
 from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── _Config: wildcard ALLOWED_ORIGINS ────────────────────────────────────────
 
 def test_config_wildcard_origins_raises():
-    with patch.dict(os.environ, {"ALLOWED_ORIGINS": "*", "API_TOKEN": ""}):
-        with pytest.raises(ValueError, match="ALLOWED_ORIGINS must not contain"):
-            config_module._Config()
+    # Wildcard guard lives on the validator now (F3: config_knob refactor).
+    # _Config re-instantiation would hit the duplicate-knob guard first, so
+    # we test the validator directly — same semantic coverage, no init dance.
+    with pytest.raises(ValueError, match="ALLOWED_ORIGINS must not contain"):
+        config_module._csv_list_no_wildcard("*")
 
 
 # ── _make_audit_handler: OSError path ────────────────────────────────────────
 
 def test_make_audit_handler_oserror_returns_none():
-    """When RotatingFileHandler raises OSError, _make_audit_handler returns None."""
-    with patch("skiff.logging_setup.logging.handlers.RotatingFileHandler", side_effect=OSError("permission denied")):
+    """When the RotatingFileHandler subclass raises OSError, _make_audit_handler returns None.
+
+    We now use `_TightRotatingFileHandler` (which chmods to 0600); patch
+    at that call site instead of the stdlib class.
+    """
+    with patch("skiff.logging_setup._TightRotatingFileHandler", side_effect=OSError("permission denied")):
         result = logging_setup_module._make_audit_handler()
     assert result is None
 
@@ -104,16 +104,21 @@ def test_audit_file_sink_handler_oserror_swallowed():
 # ── _build_client: keepalive exception ───────────────────────────────────────
 
 def test_build_client_keepalive_exception_swallowed():
-    """Exception in TCP keepalive setup must be swallowed; client still returned."""
+    """Exception in TCP keepalive setup must be swallowed; client still returned.
+
+    After R5 narrowed the catch to (AttributeError, OSError), switch
+    side_effect to AttributeError — that covers the 'transport doesn't
+    expose poolmanager' path. A RuntimeError would propagate now (and
+    that's the intended new behaviour — unexpected types surface)."""
     mock_client = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.poolmanager.connection_pool_kw = {}
-    # Raise when mounting
-    mock_client.api.mount.side_effect = RuntimeError("no transport")
+    # Raise when mounting — AttributeError per R5's narrowed catch.
+    mock_client.api.mount.side_effect = AttributeError("no transport")
     with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
         with patch("skiff.docker_client.HTTPAdapter", return_value=mock_adapter):
             # Use a TCP host to trigger the keepalive code path
-            with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
+            with patch.object(config_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
                 result = docker_client_module._build_client()
     mock_client.ping.assert_called_once()
     assert result is mock_client
@@ -126,7 +131,7 @@ def test_build_client_keepalive_tcp_success():
     mock_adapter.poolmanager.connection_pool_kw = {}
     with patch("skiff.docker_client.docker.DockerClient", return_value=mock_client):
         with patch("skiff.docker_client.HTTPAdapter", return_value=mock_adapter):
-            with patch.object(app_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
+            with patch.object(config_module._cfg, "docker_host", "tcp://192.168.1.1:2376"):
                 result = docker_client_module._build_client()
     mock_client.api.mount.assert_called_once()
     mock_client.ping.assert_called_once()
@@ -142,8 +147,8 @@ def test_stop_tunnel_locked_with_active_tunnel():
         patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
         patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
         patch("skiff.docker_client.subprocess.run") as mock_run,
-        patch("skiff.docker_client.os.path.exists", return_value=True),
-        patch("skiff.docker_client.os.unlink") as mock_unlink,
+        patch("skiff.docker_client.Path.exists", return_value=True),
+        patch("skiff.docker_client.Path.unlink") as mock_unlink,
     ):
         mock_run.return_value = MagicMock(returncode=0)
         docker_client_module._stop_tunnel_locked()
@@ -159,8 +164,8 @@ def test_stop_tunnel_locked_unlink_oserror_swallowed():
         patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
         patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
         patch("skiff.docker_client.subprocess.run", return_value=MagicMock(returncode=0)),
-        patch("skiff.docker_client.os.path.exists", return_value=True),
-        patch("skiff.docker_client.os.unlink", side_effect=OSError("busy")),
+        patch("skiff.docker_client.Path.exists", return_value=True),
+        patch("skiff.docker_client.Path.unlink", side_effect=OSError("busy")),
     ):
         docker_client_module._stop_tunnel_locked()
         assert docker_client_module._tunnel_ctl_sock == ""
@@ -172,9 +177,9 @@ def test_start_tunnel_timeout():
     with (
         patch("skiff.docker_client.subprocess.run", side_effect=subprocess.TimeoutExpired(["ssh"], 10)),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", return_value=False),
+        patch("skiff.docker_client.Path.exists", return_value=False),
     ):
-        with pytest.raises(ValueError, match="timed out"):
+        with pytest.raises(docker_client_module.TunnelError, match="timed out"):
             docker_client_module._start_tunnel("user@host")
 
 
@@ -183,9 +188,9 @@ def test_start_tunnel_no_ssh_binary():
     with (
         patch("skiff.docker_client.subprocess.run", side_effect=FileNotFoundError),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", return_value=False),
+        patch("skiff.docker_client.Path.exists", return_value=False),
     ):
-        with pytest.raises(ValueError, match="ssh binary"):
+        with pytest.raises(docker_client_module.TunnelError, match="ssh binary"):
             docker_client_module._start_tunnel("user@host")
 
 
@@ -197,9 +202,9 @@ def test_start_tunnel_nonzero_returncode():
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", return_value=False),
+        patch("skiff.docker_client.Path.exists", return_value=False),
     ):
-        with pytest.raises(ValueError, match="SSH failed"):
+        with pytest.raises(docker_client_module.TunnelError, match="SSH failed"):
             docker_client_module._start_tunnel("user@host")
 
 
@@ -211,11 +216,11 @@ def test_start_tunnel_socket_never_appears():
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", return_value=False),
-        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.Path.exists", return_value=False),
+        patch("skiff.config.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.config.TUNNEL_SOCKET_POLL", 0.001),
     ):
-        with pytest.raises(ValueError, match="socket did not appear"):
+        with pytest.raises(docker_client_module.TunnelError, match="socket did not appear"):
             docker_client_module._start_tunnel("user@host")
 
 
@@ -230,8 +235,8 @@ def test_start_tunnel_existing_socket_unlinked():
     result.stderr = b""
     call_count = [0]
 
-    def _exists(path):
-        if str(path) == str(sock_resolved):
+    def _exists(self):
+        if str(self) == str(sock_resolved):
             call_count[0] += 1
             return call_count[0] == 1  # exists first time (unlink), not after
         return False
@@ -239,19 +244,52 @@ def test_start_tunnel_existing_socket_unlinked():
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
-        patch("skiff.docker_client.os.unlink"),
-        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.Path.exists", new=_exists),
+        patch("skiff.docker_client.Path.unlink"),
+        patch("skiff.config.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.config.TUNNEL_SOCKET_POLL", 0.001),
     ):
-        with pytest.raises(ValueError):  # socket won't appear — that's OK
+        with pytest.raises(docker_client_module.TunnelError):  # socket won't appear — that's OK
             docker_client_module._start_tunnel("user@host")
 
 
 def test_start_tunnel_invalid_ssh_target():
-    """_start_tunnel raises ValueError for ssh_target that fails regex."""
-    with pytest.raises(ValueError, match="Invalid ssh_target"):
+    """_start_tunnel raises TunnelError with bad_ssh_target code on malformed target."""
+    with pytest.raises(docker_client_module.TunnelError, match="Invalid ssh_target") as exc_info:
         docker_client_module._start_tunnel("not-valid")
+    assert exc_info.value.code == "bad_ssh_target"
+
+
+# ── _classify_ssh_stderr ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stderr,expected_code", [
+    ("Permission denied (publickey).", "auth_failed"),
+    ("Permission denied (publickey,password).", "auth_failed"),
+    ("Host key verification failed.", "host_key_mismatch"),
+    ("REMOTE HOST IDENTIFICATION HAS CHANGED!", "host_key_mismatch"),
+    ("ssh: Could not resolve hostname foo: nodename nor servname provided", "unknown_host"),
+    ("ssh: connect to host foo port 22: Connection refused", "connection_refused"),
+    ("ssh: connect to host foo port 22: Operation timed out", "timeout"),
+    ("Warning: Identity file /root/.ssh/id_rsa not accessible: No such file or directory.", "no_key"),
+    ("some totally weird failure", "other"),
+    ("", "other"),
+])
+def test_classify_ssh_stderr(stderr, expected_code):
+    code, help_text = docker_client_module._classify_ssh_stderr(stderr)
+    assert code == expected_code
+    assert isinstance(help_text, str)
+
+
+def test_tunnel_error_carries_code_and_help():
+    """TunnelError preserves code/help_text for the router to surface."""
+    err = docker_client_module.TunnelError("msg", "auth_failed", "help text")
+    assert str(err) == "msg"
+    assert err.code == "auth_failed"
+    assert err.help_text == "help text"
+    assert isinstance(err, Exception)
+    # TunnelError no longer inherits from ValueError — setup.py catches
+    # TunnelError directly now, and tests assert on that specific class.
+    assert not isinstance(err, ValueError)
 
 
 # ── Session cache eviction when full ─────────────────────────────────────────
@@ -259,26 +297,26 @@ def test_start_tunnel_invalid_ssh_target():
 def test_session_cache_evicts_oldest_when_full():
     """When session cache is full, oldest entry is evicted."""
     auth_module._invalidate_session_cache()
-    old_max = auth_module._SESSION_CACHE_MAX
+    old_max = config_module._SESSION_CACHE_MAX
     try:
-        auth_module._SESSION_CACHE_MAX = 3
+        config_module._SESSION_CACHE_MAX = 3
         # Fill the cache
         for i in range(3):
             h = f"token{i:016d}"
             auth_module._session_first_seen[h] = float(i)
         # Adding a new token should evict oldest (token0... = 0.0)
-        with patch.object(app_module._cfg, "api_token", TOKEN):
+        with patch.object(config_module._cfg, "api_token", TOKEN):
             auth_module._check_session_age(TOKEN)
         assert len(auth_module._session_first_seen) == 3
     finally:
-        auth_module._SESSION_CACHE_MAX = old_max
+        config_module._SESSION_CACHE_MAX = old_max
         auth_module._invalidate_session_cache()
 
 
 # ── verify_auth_strict: no api_token raises 503 ──────────────────────────────
 
 def test_verify_auth_strict_no_token(client):
-    with patch.object(app_module._cfg, "api_token", ""):
+    with patch.object(config_module._cfg, "api_token", ""):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 503
 
@@ -312,25 +350,25 @@ def test_run_container_too_many_ports(client, mock_docker):
     ports = {f"{3000+i}/tcp": str(3000+i) for i in range(11)}
     resp = client.post(_RUN_URL, json={"ports": ports}, headers=AUTH_CSRF)
     assert resp.status_code == 400
-    assert "Too many port" in resp.json()["detail"]
+    assert resp.json()["detail"]["code"] == "container.port_count_exceeds_cap"
 
 
 def test_run_container_invalid_container_port(client, mock_docker):
     resp = client.post(_RUN_URL, json={"ports": {"bad!port": "8080"}}, headers=AUTH_CSRF)
     assert resp.status_code == 400
-    assert "Invalid container port" in resp.json()["detail"]
+    assert "Invalid container port" in resp.json()["detail"]["message"]
 
 
 def test_run_container_invalid_host_port(client, mock_docker):
     resp = client.post(_RUN_URL, json={"ports": {"8080/tcp": "notaport"}}, headers=AUTH_CSRF)
     assert resp.status_code == 400
-    assert "Invalid host port" in resp.json()["detail"]
+    assert "Invalid host port" in resp.json()["detail"]["message"]
 
 
 def test_run_container_privileged_host_port(client, mock_docker):
     resp = client.post(_RUN_URL, json={"ports": {"80/tcp": "80"}}, headers=AUTH_CSRF)
     assert resp.status_code == 400
-    assert "privileged" in resp.json()["detail"]
+    assert "privileged" in resp.json()["detail"]["message"]
 
 
 # ── Command too long ─────────────────────────────────────────────────────────
@@ -338,7 +376,7 @@ def test_run_container_privileged_host_port(client, mock_docker):
 def test_run_container_command_too_long(client, mock_docker):
     resp = client.post(_RUN_URL, json={"command": "x" * 4097}, headers=AUTH_CSRF)
     assert resp.status_code == 400
-    assert "Command too long" in resp.json()["detail"]
+    assert resp.json()["detail"]["code"] == "container.command_too_long"
 
 
 # ── Log endpoints: since/until params ────────────────────────────────────────
@@ -387,7 +425,7 @@ def test_validate_ws_origin_unknown_origin():
     """Origin not in the allowlist and not matching server host returns False."""
     ws = MagicMock()
     ws.headers = {"origin": "http://evil.example.com", "host": "legit-server.dev"}
-    with patch.object(auth_module._cfg, "allowed_origins", ["http://127.0.0.1:8080"]):
+    with patch.object(config_module._cfg, "allowed_origins", ["http://127.0.0.1:8080"]):
         result = _validate_ws_origin(ws)
     assert result is False
 
@@ -396,7 +434,7 @@ def test_validate_ws_origin_empty_allowed_origins():
     """Empty allowed_origins list → allow all (no restrictions configured)."""
     ws = MagicMock()
     ws.headers = {}
-    with patch.object(auth_module._cfg, "allowed_origins", []):
+    with patch.object(config_module._cfg, "allowed_origins", []):
         result = _validate_ws_origin(ws)
     assert result is True
 
@@ -406,7 +444,7 @@ def test_validate_ws_origin_urlparse_exception():
     ws = MagicMock()
     ws.headers = {"origin": "http://some-origin.com", "host": "server"}
     with (
-        patch.object(auth_module._cfg, "allowed_origins", ["http://other.com"]),
+        patch.object(config_module._cfg, "allowed_origins", ["http://other.com"]),
         patch("skiff.auth.urlparse", side_effect=ValueError("parse error")),
     ):
         result = _validate_ws_origin(ws)
@@ -421,7 +459,7 @@ async def test_validate_ws_token_session_expired():
     ws = MagicMock()
     ws.receive_text = AsyncMock(return_value=f"AUTH {TOKEN}")
     with (
-        patch.object(app_module._cfg, "api_token", TOKEN),
+        patch.object(config_module._cfg, "api_token", TOKEN),
         patch("skiff.auth._check_session_age", side_effect=HTTPException(401, "Session expired")),
     ):
         result = await _validate_ws_token_from_message(ws)
@@ -436,7 +474,7 @@ async def test_validate_ws_token_lockout_active():
     ws.client.host = "10.99.1.1"
     auth_module._ws_auth_failures["10.99.1.1"] = (config_module.WS_AUTH_MAX_ATTEMPTS, time.monotonic())
     try:
-        with patch.object(app_module._cfg, "api_token", TOKEN):
+        with patch.object(config_module._cfg, "api_token", TOKEN):
             result = await _validate_ws_token_from_message(ws)
         assert result is False
     finally:
@@ -453,7 +491,7 @@ async def test_validate_ws_token_lockout_expired():
     # Failure older than WS_AUTH_LOCKOUT_SECS (300 s)
     auth_module._ws_auth_failures["10.99.1.2"] = (99, time.monotonic() - 400)
     try:
-        with patch.object(app_module._cfg, "api_token", TOKEN):
+        with patch.object(config_module._cfg, "api_token", TOKEN):
             result = await _validate_ws_token_from_message(ws)
         assert result is True
         assert "10.99.1.2" not in auth_module._ws_auth_failures
@@ -470,7 +508,7 @@ async def test_ws_keepalive_http_exception_closes_4003():
     with (
         patch("skiff.auth.asyncio.sleep", new_callable=AsyncMock),
         patch("skiff.auth._check_session_age", side_effect=HTTPException(401, "expired")),
-        patch.object(auth_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
+        patch.object(config_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
     ):
         await auth_module.ws_keepalive(ws)
     ws.close.assert_called_once_with(code=4003)
@@ -484,7 +522,7 @@ async def test_ws_keepalive_send_exception_breaks():
     with (
         patch("skiff.auth.asyncio.sleep", new_callable=AsyncMock),
         patch("skiff.auth._check_session_age"),
-        patch.object(auth_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
+        patch.object(config_module, "WS_KEEPALIVE_REVALIDATE_EVERY", 1),
     ):
         await auth_module.ws_keepalive(ws)
     # Exits cleanly — no exception propagated
@@ -532,7 +570,7 @@ def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
     import json as _json
     lines = [_json.dumps({"event": f"e{i}"}) + "\n" for i in range(1000)]
     log_file.write_text("".join(lines))
-    with patch.object(system_module, "AUDIT_LOG_PATH", log_file):
+    with patch("skiff.config.AUDIT_LOG_PATH", log_file):
         resp = client.get("/api/system/audit-log?tail=5", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert len(resp.json()) == 5
@@ -541,7 +579,7 @@ def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
 def test_get_audit_log_oserror_returns_empty(client, tmp_path):
     """Missing audit log file returns empty list."""
     nonexistent = tmp_path / "missing.jsonl"
-    with patch.object(system_module, "AUDIT_LOG_PATH", nonexistent):
+    with patch("skiff.config.AUDIT_LOG_PATH", nonexistent):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.json() == []
@@ -551,7 +589,7 @@ def test_get_audit_log_oserror_returns_empty(client, tmp_path):
 
 def test_download_audit_log_missing(client, tmp_path):
     nonexistent = tmp_path / "missing.jsonl"
-    with patch.object(system_module, "AUDIT_LOG_PATH", nonexistent):
+    with patch("skiff.config.AUDIT_LOG_PATH", nonexistent):
         resp = client.get("/api/system/audit-log/download", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.content == b""
@@ -570,7 +608,7 @@ services:
       SECRET_KEY: supersecret
       PORT: "8080"
 """
-    with patch.object(compose_module, "COMPOSE_DIR", compose_dir):
+    with patch("skiff.config.COMPOSE_DIR", compose_dir):
         with patch("skiff.routers.compose.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
             import io
 
@@ -595,7 +633,7 @@ services:
       - PORT=8080
 """
     import io
-    with patch.object(compose_module, "COMPOSE_DIR", tmp_path):
+    with patch("skiff.config.COMPOSE_DIR", tmp_path):
         with patch("skiff.routers.compose.subprocess.run", return_value=MagicMock(returncode=0, stderr=b"")):
             resp = client.post(
                 "/api/compose/up",
@@ -620,7 +658,7 @@ def test_rate_limit_scale_invalid():
 # ── Setup endpoint: stop_tunnel from_env blocked ─────────────────────────────
 
 def test_stop_tunnel_endpoint_blocked_when_from_env(client):
-    with patch.object(app_module._cfg, "from_env", True):
+    with patch.object(config_module._cfg, "from_env", True):
         resp = client.delete("/api/setup/tunnel", headers=AUTH_CSRF)
     assert resp.status_code == 403
 
@@ -628,15 +666,23 @@ def test_stop_tunnel_endpoint_blocked_when_from_env(client):
 # ── _main entrypoint ─────────────────────────────────────────────────────────
 
 def test_main_calls_uvicorn():
-    """_main() calls uvicorn.run with the correct app string."""
+    """_main() routes config constants into uvicorn.run, including the
+    TRUST_FORWARDED_HEADERS-gated proxy_headers / forwarded_allow_ips
+    flags (off by default so X-Forwarded-For can't be forged on a direct
+    connection)."""
     import skiff.app
-    bind = "127.0.0.1"
+    from skiff import config
     with patch("uvicorn.run") as mock_run:
-        with patch.dict(os.environ, {"BIND_HOST": bind, "PORT": "9000"}):
-            skiff.app._main()
-        mock_run.assert_called_once_with(
-            "skiff.app:app", host=bind, port=9000, workers=1, log_level="warning"
-        )
+        skiff.app._main()
+    mock_run.assert_called_once_with(
+        "skiff.app:app",
+        host=config.BIND_HOST,
+        port=config.APP_PORT,
+        workers=config.UVICORN_WORKERS,
+        log_level=config.UVICORN_LOG_LEVEL,
+        proxy_headers=config.TRUST_FORWARDED_HEADERS,
+        forwarded_allow_ips="*" if config.TRUST_FORWARDED_HEADERS else "",
+    )
 
 
 # ── _stop_tunnel_locked: subprocess exception swallowed ──────────────────────
@@ -648,7 +694,7 @@ def test_stop_tunnel_locked_subprocess_exception():
         patch.object(docker_client_module, "_tunnel_ssh_target", "user@host"),
         patch.object(docker_client_module, "_tunnel_socket_path", "/tmp/skiff.sock"),
         patch("skiff.docker_client.subprocess.run", side_effect=OSError("proc error")),
-        patch("skiff.docker_client.os.path.exists", return_value=False),
+        patch("skiff.docker_client.Path.exists", return_value=False),
     ):
         docker_client_module._stop_tunnel_locked()  # must not raise
 
@@ -657,7 +703,6 @@ def test_stop_tunnel_locked_subprocess_exception():
 
 def test_start_tunnel_oserror_on_unlink_swallowed():
     """OSError when unlinking existing socket before tunnel start is swallowed."""
-    import os as _os_real
     from pathlib import Path as _Path
 
     from skiff.config import TUNNEL_DEFAULT_SOCKET
@@ -667,31 +712,30 @@ def test_start_tunnel_oserror_on_unlink_swallowed():
     result.stderr = b""
     call_count = [0]
 
-    def _exists(path):
-        if str(path) == str(sock_resolved):
+    def _exists(self):
+        if str(self) == str(sock_resolved):
             call_count[0] += 1
             return call_count[0] == 1  # exists on first check (triggers unlink attempt)
         return False
 
-    # Capture the real unlink before patching so the anonymous conf-file cleanup
-    # (os.unlink(_conf_path) immediately after mkstemp) still works. Only raise
-    # OSError for the socket path — that is what this test is covering.
-    _real_unlink = _os_real.unlink
+    # Only raise OSError for the socket path — the real unlink is still
+    # needed for the anonymous conf-file cleanup inside mkstemp teardown.
+    _real_unlink = _Path.unlink
 
-    def _unlink_se(path):
-        if str(path) == str(sock_resolved):
+    def _unlink_se(self):
+        if str(self) == str(sock_resolved):
             raise OSError("busy")
-        _real_unlink(path)  # allow conf-file unlink to proceed normally
+        _real_unlink(self)
 
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
-        patch("skiff.docker_client.os.unlink", side_effect=_unlink_se),
-        patch("skiff.docker_client.TUNNEL_SOCKET_WAIT", 0.001),
-        patch("skiff.docker_client.TUNNEL_SOCKET_POLL", 0.001),
+        patch("skiff.docker_client.Path.exists", new=_exists),
+        patch("skiff.docker_client.Path.unlink", new=_unlink_se),
+        patch("skiff.config.TUNNEL_SOCKET_WAIT", 0.001),
+        patch("skiff.config.TUNNEL_SOCKET_POLL", 0.001),
     ):
-        with pytest.raises(ValueError):  # socket never appears in poll — that's OK
+        with pytest.raises(docker_client_module.TunnelError):  # socket never appears in poll — that's OK
             docker_client_module._start_tunnel("user@host")
 
 
@@ -706,8 +750,8 @@ def test_start_tunnel_success():
     result.stderr = b""
     exist_calls = [0]
 
-    def _exists(path):
-        if str(path) == str(sock_resolved):
+    def _exists(self):
+        if str(self) == str(sock_resolved):
             exist_calls[0] += 1
             # First call: no existing socket (skip unlink); second+ call: socket appeared
             return exist_calls[0] >= 2
@@ -716,8 +760,8 @@ def test_start_tunnel_success():
     with (
         patch("skiff.docker_client.subprocess.run", return_value=result),
         patch("skiff.docker_client._stop_tunnel_locked"),
-        patch("skiff.docker_client.os.path.exists", side_effect=_exists),
-        patch("skiff.docker_client.os.unlink"),
+        patch("skiff.docker_client.Path.exists", new=_exists),
+        patch("skiff.docker_client.Path.unlink"),
     ):
         docker_client_module._start_tunnel("user@host")
         # Assertions must be inside the with block before patch restores globals
@@ -737,15 +781,15 @@ def test_classify_event_fallthrough_unknown_path():
 
 def test_setup_tcp_invalid_port(client):
     """TCP docker_host with invalid port returns 400."""
-    with patch.object(app_module._cfg, "api_token", ""):
-        with patch.object(app_module._cfg, "from_env", False):
+    with patch.object(config_module._cfg, "api_token", ""):
+        with patch.object(config_module._cfg, "from_env", False):
             resp = client.post(
                 "/api/setup",
                 json={"docker_host": "tcp://192.168.1.1:0", "api_token": TOKEN, "allowed_registries": ""},
                 headers=AUTH_CSRF,
             )
     assert resp.status_code == 400
-    assert "valid port" in resp.json()["detail"]
+    assert "valid port" in resp.json()["detail"]["message"]
 
 
 # ── GCP Cloud Logging init: exception path ───────────────────────────────────

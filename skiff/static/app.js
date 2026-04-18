@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Yakov Shkolnikov and contributors
 "use strict";
 const API = '/api';
 let currentPage = 'containers';
@@ -6,7 +8,68 @@ let dockerOk = false;
 let _lastContainers = null;
 let _refreshInFlight = false;
 let _dockerVmHost = '';
+let _appDockerHost = '';
 const MAX_LOG_LINES = 10000;
+// Mirrors VALID_RESTART_POLICIES in skiff/config.py — kept in sync manually.
+// If this ever drifts, the Clone modal's restart select silently falls back to
+// "no" which is safe but may confuse users; covered by e2e.
+const VALID_RESTART_POLICIES_CLIENT = ['no', 'on-failure', 'unless-stopped', 'always'];
+
+/**
+ * Run a DELETE with the undo window, then show a toast whose "Undo" link
+ * cancels the pending operation. Falls back to a plain "X deleted" toast
+ * when the server didn't return an undo_token (queue full / undo disabled).
+ *
+ * Usage:
+ *   undoableDelete('/api/containers/abc', 'Container', loadContainers);
+ */
+async function undoableDelete(url, kindLabel, refresh) {
+  var sep = url.indexOf('?') >= 0 ? '&' : '?';
+  var resp = await apiFetch(url + sep + 'undo=1', { method: 'DELETE' });
+  if (resp && resp.undo_token) {
+    // Build a toast with an inline Undo link. The toast library auto-removes
+    // after ~3s; the undo window is 5s, but the user has already seen the
+    // toast and can click Undo while it's visible.
+    var container = document.querySelector('.toast-container') ||
+      document.body.appendChild(UI.el('div', { class: 'toast-container' }));
+    var undoLink = UI.el('span', {
+      class: 'undo-link', text: t('undo.button'),
+      on: {
+        click: function() {
+          apiFetch(API + '/undo/' + encodeURIComponent(resp.undo_token),
+                   { method: 'POST' })
+            .then(function() {
+              if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+              UI.toast(t('undo.toast'), 'success');
+              if (refresh) refresh();
+            })
+            .catch(function() { UI.toast(t('undo.window_passed'), 'error'); });
+        },
+      },
+    });
+    var toastEl = UI.el('div', { class: 'toast info' },
+      UI.el('span', { text: kindLabel + t('undo.deleted_suffix') }),
+      undoLink,
+    );
+    container.appendChild(toastEl);
+    setTimeout(function() { if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl); }, 5000);
+    // After the undo window closes server-side, the queued op fires. Re-fetch
+    // so the UI reflects the final state — otherwise the user sees the row
+    // still present for 5s, then clicks elsewhere and comes back to find it
+    // gone with no feedback. expires_in is seconds; add a 500ms grace so we
+    // query after the timer has definitely fired.
+    var reload_ms = Math.max(0, (resp.expires_in || 5) * 1000) + 500;
+    setTimeout(function() { if (refresh) refresh(); }, reload_ms);
+  } else {
+    toast(kindLabel + t('undo.deleted_suffix'), 'info');
+  }
+  if (refresh) refresh();
+}
+
+
+// Core widgets (command palette, theme toggle) live in
+// skiff/static/core/{palette,theme}.js and load as separate <script>
+// tags in index.html.
 
 function esc(s) {
   var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML;
@@ -14,7 +77,7 @@ function esc(s) {
 
 var _inFlight = new Set();
 function guardedAction(key, fn) {
-  if (_inFlight.has(key)) { toast('Action already in progress', 'info'); return Promise.resolve(); }
+  if (_inFlight.has(key)) { toast(t('undo.action_in_progress'), 'info'); return Promise.resolve(); }
   _inFlight.add(key);
   return Promise.resolve().then(fn).finally(function() { _inFlight.delete(key); });
 }
@@ -51,10 +114,31 @@ function closeDetailWS() {
 }
 
 // ── Auth ──
-// Session timeout: 15-min idle + 8-hour absolute (per governance policy)
+// Session timeout defaults: 15-min idle + 8-hour absolute. Both are
+// overridden from /api/config at boot if the operator set the
+// SESSION_IDLE_SECS / SESSION_ABS_TIMEOUT env vars on the server — so a
+// deployment tightening the window doesn't need an app.js edit.
+// The defaults here are the fallback if /api/config hasn't resolved yet
+// (e.g. for requests fired before the initial config fetch).
 var SESSION_IDLE_MS = 15 * 60 * 1000;
 var SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1000;
 var _idleTimer = null;
+
+function _applySessionTimeoutsFromConfig(appCfg) {
+  // Server-side knobs: SESSION_IDLE_SECS (seconds) and SESSION_ABS_TIMEOUT
+  // (seconds). Both are `expose=True`, so /api/config serves them.
+  // Cap the values at sane bounds so a bad value can't freeze the UI
+  // (idle < 60s would lock out the user before any page finishes loading).
+  if (!appCfg) return;
+  var idle = Number(appCfg.session_idle_secs);
+  if (isFinite(idle) && idle >= 60 && idle <= 24 * 60 * 60) {
+    SESSION_IDLE_MS = idle * 1000;
+  }
+  var abs_ = Number(appCfg.session_abs_timeout);
+  if (isFinite(abs_) && abs_ >= 300 && abs_ <= 7 * 24 * 60 * 60) {
+    SESSION_ABSOLUTE_MS = abs_ * 1000;
+  }
+}
 
 function getToken() { return sessionStorage.getItem('api_token') || ''; }
 function setToken(t) {
@@ -149,13 +233,26 @@ function showLogin() {
   wrap.appendChild(brand);
   var box = document.createElement('div'); box.style.cssText = 'width:340px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.07)';
   var h3 = document.createElement('h3'); h3.textContent = 'Sign in'; h3.style.cssText = 'margin-bottom:4px;font-size:18px'; box.appendChild(h3);
-  var sub = document.createElement('p'); sub.innerHTML = 'Enter your API token to continue.<br><span style="font-size:11px">Your token is the value of <code>API_TOKEN</code> in your <code>.env</code> file.</span>'; sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:20px'; box.appendChild(sub);
+  var sub = document.createElement('p'); sub.innerHTML = 'Enter the API token you saved during setup.<br><span style="font-size:11px">If you chose &ldquo;Save .env&rdquo;, the token is in that file as <code>API_TOKEN=</code>.</span>'; sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:20px'; box.appendChild(sub);
   var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'; box.appendChild(lbl);
   var inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'Paste your API token';
   inp.style.cssText = 'width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--card);color:var(--text)';
   box.appendChild(inp);
   var btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Sign in'; btn.style.cssText = 'margin-top:16px;width:100%;padding:10px;font-size:14px';
-  btn.onclick = function() { if (!inp.value.trim()) { inp.style.borderColor='var(--red)'; return; } setToken(inp.value.trim()); showPage('containers'); };
+  btn.onclick = function() {
+    if (!inp.value.trim()) { inp.style.borderColor = 'var(--red)'; return; }
+    setToken(inp.value.trim());
+    // The init IIFE exits early when there's no token at page-load time, so
+    // /api/config (which populates _appDockerHost for the unreachable-Docker
+    // tunnel detection) never runs on a post-startup login. Fetch it here so
+    // the Reconnect-button branch works without a full page reload. Swallow
+    // failures — the app is still usable with _appDockerHost empty.
+    apiFetch(API + '/config').then(function(appCfg) {
+      if (appCfg.docker_vm_host) _dockerVmHost = appCfg.docker_vm_host;
+      if (appCfg.docker_host) _appDockerHost = appCfg.docker_host;
+      _applySessionTimeoutsFromConfig(appCfg);
+    }).catch(function() {}).finally(function() { showPage('containers'); });
+  };
   inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') btn.click(); });
   inp.addEventListener('input', function() { inp.style.borderColor=''; });
   box.appendChild(btn);
@@ -201,7 +298,16 @@ async function apiFetch(url, opts) {
   }
   if (res.status === 401) { sessionStorage.removeItem('api_token'); toast('Authentication failed — check your API token', 'error'); showLogin(); throw new Error('Authentication required'); }
   if (res.status === 429) { throw new Error('Rate limited — please wait a moment and try again'); }
-  if (!res.ok) { const err = await res.json().catch(function() { return { detail: res.statusText }; }); throw new Error(err.detail || 'Request failed'); }
+  if (!res.ok) {
+    const err = await res.json().catch(function() { return { detail: res.statusText }; });
+    // Preserve structured details (e.g. {detail: {message, code, help}}) so callers
+    // can render classified errors. Error.message is always a string for display.
+    var detail = err.detail;
+    var msg = (detail && typeof detail === 'object') ? (detail.message || 'Request failed') : (detail || 'Request failed');
+    var e = new Error(msg);
+    if (detail && typeof detail === 'object') e.detail = detail;
+    throw e;
+  }
   setDockerStatus(true);
   return res.json();
 }
@@ -217,21 +323,28 @@ function setDockerStatus(ok, msg) {
   } else {
     el.innerHTML = '<span class="dot down"></span> <span>Disconnected</span>';
     banner.className = 'status-banner error';
-    var _dockerHost = (typeof _appConfig !== 'undefined' && _appConfig && _appConfig.docker_host) || '';
     // Build banner with DOM methods — docker_host is server-supplied and must not go into innerHTML
     while (banner.firstChild) banner.removeChild(banner.firstChild);
     var _strong = document.createElement('strong');
     _strong.textContent = 'Container engine unreachable. ';
     banner.appendChild(_strong);
-    if (_dockerHost && !_dockerHost.startsWith('unix:///var/run/docker')) {
-      var _hint = document.createTextNode('Open an SSH tunnel to your Docker host, then reload: ');
-      var _code = document.createElement('code');
-      _code.style.cssText = 'font-size:12px;user-select:all';
-      _code.textContent = 'ssh -fNL /tmp/docker.sock:/var/run/docker.sock user@docker-host';
-      banner.appendChild(_hint);
-      banner.appendChild(_code);
+    // Heuristic: tunnel-like sockets (/tmp/skiff-* or path containing "tunnel") are
+    // managed by SKIFF — direct the user to Containers page where the Reconnect
+    // button lives. Other unix:// sockets are local runtimes. tcp:// is remote Docker.
+    var _isTunnelSocket = _appDockerHost && /^unix:\/\/.*(skiff|tunnel)/i.test(_appDockerHost);
+    var _isTcp = _appDockerHost && /^tcp:\/\//i.test(_appDockerHost);
+    if (_isTunnelSocket) {
+      banner.appendChild(document.createTextNode(
+        'SSH tunnel is down \u2014 open the Containers page to reconnect.'
+      ));
+    } else if (_isTcp) {
+      banner.appendChild(document.createTextNode(
+        'Check that the remote Docker daemon is reachable at ' + _appDockerHost + ' and accepting TLS.'
+      ));
     } else {
-      banner.appendChild(document.createTextNode('Make sure Docker Desktop (or dockerd) is running, then reload the page.'));
+      banner.appendChild(document.createTextNode(
+        'Make sure your Docker runtime (Docker Desktop, Colima, OrbStack, dockerd, etc.) is running, then reload.'
+      ));
     }
     banner.style.display = 'block';
   }
@@ -252,6 +365,25 @@ function showPage(page) {
   var pages = { containers: loadContainers, images: loadImages, volumes: loadVolumes, networks: loadNetworks, compose: showCompose, system: loadSystem };
   (pages[page] || loadContainers)();
 }
+
+// Page-navigation factory. Sidebar/palette still read from the
+// hardcoded dispatch above because hot reloading the dispatch under test
+// pressure (live_server fixture) exposes an asyncio-loop subtlety; the
+// registry is populated for future callers (UI.getPages for persona
+// filtering, wizard "what's here" modal, help system). Keep in sync when
+// a new page is added.
+(function registerPages() {
+  [
+    { id: 'containers', label: 'Containers', order: 10, keywords: ['ps', 'ls'] },
+    { id: 'images',     label: 'Images',     order: 20, keywords: ['pull', 'image'] },
+    { id: 'volumes',    label: 'Volumes',    order: 30, keywords: ['mount'] },
+    { id: 'networks',   label: 'Networks',   order: 40, keywords: ['net'] },
+    { id: 'compose',    label: 'Compose',    order: 50, keywords: ['stack'] },
+    { id: 'system',     label: 'System',     order: 60,
+      personas: ['dev', 'sre', 'reviewer', 'ci'],
+      keywords: ['prune', 'metrics', 'audit'] },
+  ].forEach(function(d) { UI.registerPage(d); });
+})();
 
 function makeBtn(label, onclick, cls) {
   var btn = document.createElement('button');
@@ -287,6 +419,201 @@ function relTime(iso) {
   return Math.floor(s/86400) + 'd ago';
 }
 
+// Thin aliases to the UI widget library (skiff/static/ui.js). These keep the
+// call sites in app.js short while we finish migrating everything to `UI.*`.
+var copyToClipboard = UI.copy;
+var _makeCopyableCommand = UI.copyCmd;
+
+/**
+ * "How do I start Docker?" card for the unreachable-Docker empty state.
+ * Shows copy-paste runtime-start commands grouped by OS. All recommended
+ * commands are non-root / user-space (Colima, OrbStack, Podman machine).
+ * sudo-required commands (systemctl) are flagged as such so junior users
+ * don't paste them blindly.
+ */
+function _renderStartDockerHelper(parent) {
+  var isMac = navigator.platform && /Mac|iPhone|iPod|iPad/i.test(navigator.platform);
+  // On Linux (and anything not explicitly Mac), also show Linux runtimes.
+  var showMac = isMac || !navigator.platform;
+  var showLinux = !isMac || !navigator.platform;
+
+  var card = document.createElement('div');
+  card.style.cssText = 'margin-top:20px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:640px;text-align:left';
+
+  var h4 = document.createElement('p');
+  h4.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em';
+  h4.textContent = 'First time? Start your container runtime';
+  card.appendChild(h4);
+
+  var intro = document.createElement('p');
+  intro.style.cssText = 'font-size:13px;color:var(--text);margin-bottom:14px;line-height:1.5';
+  intro.textContent = 'Pick the runtime you have installed (or install one), then click Copy and paste the command in a terminal. No admin rights needed for the recommended options.';
+  card.appendChild(intro);
+
+  function addRuntime(name, descr, cmd, tag) {
+    var row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--border-subtle)';
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:4px;';
+    var nameEl = document.createElement('strong');
+    nameEl.style.cssText = 'font-size:13px;color:var(--text-strong)';
+    nameEl.textContent = name;
+    head.appendChild(nameEl);
+    if (tag) {
+      var tagEl = document.createElement('span');
+      tagEl.style.cssText = 'font-size:10px;padding:1px 8px;border-radius:10px;background:' +
+        (tag === 'recommended' ? 'var(--badge-running-bg);color:var(--badge-running-fg)' :
+         tag === 'sudo' ? 'var(--badge-stopped-bg);color:var(--badge-stopped-fg)' :
+         'var(--border);color:var(--muted)');
+      tagEl.textContent = tag;
+      head.appendChild(tagEl);
+    }
+    row.appendChild(head);
+    var descrEl = document.createElement('div');
+    descrEl.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:6px';
+    descrEl.textContent = descr;
+    row.appendChild(descrEl);
+    row.appendChild(_makeCopyableCommand(cmd));
+    card.appendChild(row);
+  }
+
+  if (showMac) {
+    addRuntime(
+      'Colima',
+      'Free, user-space container runtime. If not installed: brew install colima docker docker-compose',
+      'colima start',
+      'recommended',
+    );
+    addRuntime(
+      'OrbStack',
+      'Commercial app with a free tier. Just open the app and it starts a user-space runtime.',
+      'open -a OrbStack',
+      '',
+    );
+    addRuntime(
+      'Rancher Desktop',
+      'Open the Rancher Desktop app from Applications and wait for the green checkmark.',
+      'open -a "Rancher Desktop"',
+      '',
+    );
+  }
+  if (showLinux) {
+    addRuntime(
+      'Podman (rootless)',
+      'User-space container runtime. Socket usually at /run/user/$UID/podman/podman.sock.',
+      'systemctl --user start podman.socket',
+      'recommended',
+    );
+    addRuntime(
+      'Docker Engine',
+      'System-wide Docker daemon. Requires admin privileges.',
+      'sudo systemctl start docker',
+      'sudo',
+    );
+  }
+  addRuntime(
+    'Nothing installed yet?',
+    (showMac
+      ? 'Install Colima via Homebrew: non-root, no GUI, works on Apple Silicon and Intel.'
+      : 'Install Podman or Docker via your distro package manager.'),
+    (showMac ? 'brew install colima docker docker-compose' : 'sudo apt install podman'),
+    (showMac ? '' : 'sudo'),
+  );
+
+  var note = document.createElement('p');
+  note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5';
+  note.textContent = 'After starting the runtime, reload this page. If you already used one of these and it\'s running, check that DOCKER_HOST points at its socket (see the "Common values" hint in the setup wizard).';
+  card.appendChild(note);
+
+  parent.appendChild(card);
+}
+
+// ── Unreachable-Docker empty state ──
+// Renders the "cannot reach Docker" panel tailored to the configured docker_host.
+// For server-managed SSH tunnels: asynchronously fetches /api/tunnel/status and
+// offers a one-click Reconnect that re-opens the tunnel using the server-stored
+// ssh_target (zero-trust: target never leaves the server). For user-managed
+// tunnels or local runtimes: shows a concise hint, no form.
+function _renderUnreachableDocker(main) {
+  main.innerHTML = '';
+  var errDiv = document.createElement('div');
+  errDiv.className = 'empty-state';
+  var h3 = document.createElement('h3');
+  h3.textContent = 'Cannot reach Docker engine';
+  errDiv.appendChild(h3);
+  var p = document.createElement('p');
+  p.style.cssText = 'margin-top:8px;max-width:480px';
+  var isTunnelSocket = _appDockerHost && /^unix:\/\/.*(skiff|tunnel)/i.test(_appDockerHost);
+  if (!isTunnelSocket) {
+    p.textContent = 'Your container runtime isn\'t responding at ' + (_appDockerHost || 'the configured socket') + '. Start it and reload this page.';
+    errDiv.appendChild(p);
+    main.appendChild(errDiv);
+    // Helpful panel for juniors: copy-paste commands to start a runtime.
+    _renderStartDockerHelper(main);
+    return;
+  }
+  // Tunnel-shaped socket: ask the server whether it's managed before deciding the UX.
+  p.textContent = 'Checking tunnel status\u2026';
+  errDiv.appendChild(p);
+  main.appendChild(errDiv);
+  apiFetch(API + '/tunnel/status').then(function(st) {
+    while (errDiv.firstChild) errDiv.removeChild(errDiv.firstChild);
+    var h = document.createElement('h3');
+    h.textContent = 'Cannot reach Docker engine';
+    errDiv.appendChild(h);
+    var desc = document.createElement('p');
+    desc.style.cssText = 'margin-top:8px;max-width:480px';
+    if (st.managed) {
+      desc.textContent = 'The managed SSH tunnel to your Docker host dropped. Reconnect to restore the link — SKIFF will reuse the SSH target it stored during setup.';
+      errDiv.appendChild(desc);
+      var btnWrap = document.createElement('div');
+      btnWrap.style.cssText = 'margin-top:16px;display:flex;gap:10px;align-items:center;';
+      var btn = document.createElement('button');
+      btn.className = 'btn primary';
+      btn.textContent = 'Reconnect tunnel';
+      var status = document.createElement('span');
+      status.style.cssText = 'font-size:12px;color:var(--muted);';
+      btn.addEventListener('click', function() {
+        btn.disabled = true;
+        var original = btn.textContent;
+        btn.textContent = 'Reconnecting\u2026';
+        status.textContent = '';
+        apiFetch(API + '/tunnel/reconnect', { method: 'POST' }).then(function() {
+          status.style.color = 'var(--green, #22c55e)';
+          status.textContent = '\u2713 Tunnel re-opened';
+          setTimeout(function() { loadContainers(); }, 500);
+        }).catch(function(err) {
+          btn.disabled = false;
+          btn.textContent = original;
+          status.style.color = 'var(--red, #f87171)';
+          // err.message is already the server's classified message; err.detail may carry help
+          var help = (err && err.detail && err.detail.help) ? ' \u2014 ' + err.detail.help : '';
+          status.textContent = '\u2717 ' + (err.message || 'Reconnect failed') + help;
+        });
+      });
+      btnWrap.appendChild(btn);
+      btnWrap.appendChild(status);
+      errDiv.appendChild(btnWrap);
+    } else {
+      // Socket looks tunnel-like but server has no stored target (e.g. env-configured
+      // DOCKER_HOST pointing at a user-managed socket). Minimal guidance, no form.
+      desc.textContent = 'SKIFF is configured to use a tunnel socket at ' + (_appDockerHost || '') + '. Open your SSH tunnel, then reload this page.';
+      errDiv.appendChild(desc);
+    }
+  }).catch(function() {
+    // Status fetch itself failed (e.g. session expired) — fall back to generic hint.
+    while (errDiv.firstChild) errDiv.removeChild(errDiv.firstChild);
+    var h = document.createElement('h3');
+    h.textContent = 'Cannot reach Docker engine';
+    errDiv.appendChild(h);
+    var d = document.createElement('p');
+    d.style.cssText = 'margin-top:8px;max-width:480px';
+    d.textContent = 'Could not query tunnel status. Try reloading the page.';
+    errDiv.appendChild(d);
+  });
+}
+
+
 // ── Containers ──
 /**
  * Load the container list from the API, render it into the containers page, and wire up
@@ -307,49 +634,21 @@ async function loadContainers() {
     refreshTimer = managedInterval(loadContainers, 5000);
   } catch (e) {
     _refreshInFlight = false;
+    // If apiFetch already redirected to login (401), showLogin() has written
+    // the login form into #main. Don't stomp on it with the docker-down UI.
+    // Also don't schedule a refresh timer — the user needs to sign in first.
+    if (e && e.message === 'Authentication required') {
+      clearInterval(refreshTimer);
+      return;
+    }
+    // Flip the sidebar status on any refresh failure — not just 503 (which
+    // apiFetch handles directly). Before this, mid-session 500s / network
+    // timeouts left cached data on-screen with no user-visible error, so
+    // users didn't know the list was stale. setDockerStatus will reset to ok
+    // on the next successful refresh.
+    setDockerStatus(false, e.message || 'Container list refresh failed');
     if (!_lastContainers) {
-      main.innerHTML = '';
-      var errDiv = document.createElement('div');
-      errDiv.className = 'empty-state';
-      errDiv.innerHTML = '<h3>Cannot reach Docker engine</h3>' +
-        '<p style="margin-top:8px;max-width:480px">The app cannot connect to the Docker daemon. Open an SSH tunnel to your Docker host, then reload the page.</p>';
-      // Tunnel builder form
-      var form = document.createElement('div');
-      form.style.cssText = 'margin-top:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:480px;text-align:left';
-      form.innerHTML = '<p style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.04em">Build your tunnel command</p>' +
-        '<label style="font-size:13px">User</label>' +
-        '<input id="tunnel-user" placeholder="e.g. dev" style="margin-bottom:8px">' +
-        '<label style="font-size:13px">Host</label>' +
-        '<input id="tunnel-host" placeholder="e.g. 192.168.1.10 or myserver.local" style="margin-bottom:12px">';
-      // Set values via DOM property (not innerHTML) to prevent XSS
-      form.querySelector('#tunnel-user').value = sessionStorage.getItem('tunnelUser') || '';
-      form.querySelector('#tunnel-host').value = sessionStorage.getItem('tunnelHost') || '';
-      var cmdPre = document.createElement('pre');
-      cmdPre.id = 'tunnel-cmd';
-      cmdPre.style.cssText = 'background:var(--sidebar-bg);color:#e2e8f0;border-radius:6px;padding:12px;font-size:12px;white-space:pre-wrap;word-break:break-all;cursor:pointer;margin-bottom:8px';
-      cmdPre.title = 'Click to copy';
-      form.appendChild(cmdPre);
-      var copyNote = document.createElement('p');
-      copyNote.style.cssText = 'font-size:11px;color:var(--muted)';
-      copyNote.textContent = 'Click the command to copy it, then run it in your terminal. After the tunnel is open, reload this page.';
-      form.appendChild(copyNote);
-      errDiv.appendChild(form);
-      main.appendChild(errDiv);
-      function updateCmd() {
-        var u = form.querySelector('#tunnel-user').value.trim() || 'user';
-        var h = form.querySelector('#tunnel-host').value.trim() || 'docker-host';
-        sessionStorage.setItem('tunnelUser', u); sessionStorage.setItem('tunnelHost', h);
-        cmdPre.textContent = 'ssh -fNL /tmp/docker.sock:/var/run/docker.sock ' + u + '@' + h;
-      }
-      form.querySelector('#tunnel-user').addEventListener('input', updateCmd);
-      form.querySelector('#tunnel-host').addEventListener('input', updateCmd);
-      cmdPre.addEventListener('click', function() {
-        navigator.clipboard.writeText(cmdPre.textContent).then(function() {
-          cmdPre.style.outline = '2px solid var(--green,#22c55e)';
-          setTimeout(function() { cmdPre.style.outline = ''; }, 1200);
-        });
-      });
-      updateCmd();
+      _renderUnreachableDocker(main);
     }
     clearInterval(refreshTimer);
     refreshTimer = managedInterval(loadContainers, 5000);
@@ -503,7 +802,9 @@ function renderContainers(containers) {
     }
     bg.appendChild(makeActionBtn('Delete', function() {
       if (!confirm('Delete container "' + c.name + '"?')) throw new Error('Cancelled');
-      return guardedAction('del-c-' + c.id, function() { return apiFetch(API+'/containers/'+c.id+'?force=true',{method:'DELETE'}).then(function(){toast(c.name+' deleted','info');loadContainers();}); });
+      return guardedAction('del-c-' + c.id, function() {
+        return undoableDelete(API + '/containers/' + c.id + '?force=true', c.name, loadContainers);
+      });
     }, 'btn danger'));
     tdActions.appendChild(bg);
     tr.append(tdName, tdImage, tdStatus, tdPorts, tdCreated, tdActions);
@@ -719,6 +1020,24 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
 }
 
 // ── Inspect ──
+// Convert bytes to a compact GCP/Kubernetes-style quantity ("256Mi", "1Gi").
+// Uses IEC binary units since that's what Docker reports internally.
+function _fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n === 0) return '0';
+  var units = ['', 'Ki', 'Mi', 'Gi', 'Ti'];
+  var i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  // 1 decimal unless it would end in .0
+  var s = (n % 1 === 0) ? n.toFixed(0) : n.toFixed(1);
+  return s + units[i];
+}
+// CpuQuota/CpuPeriod → fractional CPUs. Period=0 means no quota set.
+function _fmtCpus(quota, period) {
+  if (!quota || !period) return '';
+  return (quota / period).toFixed(2).replace(/\.00$/, '');
+}
+
 async function showInspectContent(id) {
   var el = document.getElementById('detail-content');
   el.innerHTML = '<div class="refreshing">Loading...</div>';
@@ -726,32 +1045,38 @@ async function showInspectContent(id) {
     var d = await apiFetch(API+'/containers/'+id+'/inspect');
     el.innerHTML = '';
     var panel = document.createElement('div'); panel.className = 'inspect-panel';
+    // Thin wrapper around UI.kvSection so the existing call sites keep their
+    // "addSection(title, entries)" shape — entries are [label, value] pairs
+    // per the legacy convention.
     function addSection(title, entries) {
-      var sec = document.createElement('div'); sec.className = 'inspect-section';
-      var h4 = document.createElement('h4'); h4.textContent = title; sec.appendChild(h4);
-      entries.forEach(function(entry) {
-        var row = document.createElement('div'); row.className = 'inspect-kv';
-        var k = document.createElement('div'); k.className = 'k'; k.textContent = entry[0];
-        var v = document.createElement('div'); v.className = 'v mono';
-        v.textContent = typeof entry[1] === 'object' ? JSON.stringify(entry[1], null, 2) : String(entry[1] == null ? '' : entry[1]);
-        row.append(k, v); sec.appendChild(row);
-      });
-      panel.appendChild(sec);
+      panel.appendChild(UI.kvSection(title, entries));
     }
-    // Rename button
-    var renameRow = document.createElement('div'); renameRow.style.cssText = 'margin-bottom:12px;display:flex;gap:8px;align-items:center';
+    // Rename + Clone row
+    var actionRow = document.createElement('div'); actionRow.style.cssText = 'margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
     var renameInp = document.createElement('input'); renameInp.value = d.name; renameInp.style.cssText = 'padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;width:200px';
-    renameRow.append(renameInp, makeActionBtn('Rename', function() {
+    actionRow.append(renameInp, makeActionBtn('Rename', function() {
       var newName = renameInp.value;
       if (newName === d.name) throw new Error('Name unchanged');
       return guardedAction('rename-c-'+id, function() {
         return apiFetch(API+'/containers/'+id+'/rename?name='+encodeURIComponent(newName),{method:'POST'}).then(function(){toast('Renamed to '+newName,'success');showDetail(id, newName, 'inspect');});
       });
     }, 'btn small'));
-    panel.appendChild(renameRow);
+    // Clone with changes — opens the Run modal pre-filled from this container.
+    // Immutable params (ports/volumes/env/network/command/read-only/tmpfs) become
+    // editable there; the server uses inherit_from for env preservation.
+    var cloneBtn = document.createElement('button');
+    cloneBtn.className = 'btn small';
+    cloneBtn.textContent = 'Clone with changes';
+    cloneBtn.title = 'Open Run modal pre-filled with this container\'s config — edit any field and launch a copy, optionally replacing this one.';
+    cloneBtn.addEventListener('click', function() { showRunModal(null, d); });
+    actionRow.append(cloneBtn);
+    panel.appendChild(actionRow);
     addSection('General', [['ID',d.id],['Name',d.name],['Image',d.image],['Created',d.created],['Status',d.state.Status],['PID',d.state.Pid],['Restarts',d.restart_count],['Platform',d.platform]]);
     addSection('Config', [['Command',(d.config.cmd||[]).join(' ')],['Entrypoint',(d.config.entrypoint||[]).join(' ')],['Working Dir',d.config.working_dir],['User',d.config.user||'(default)'],['Hostname',d.config.hostname]]);
-    addSection('Resources', [['Memory Limit',d.host_config.memory_limit_mb+' MB'],['CPU Shares',d.host_config.cpu_shares],['Restart Policy',d.host_config.restart_policy||'none'],['Read-only FS',d.host_config.readonly_rootfs],['Security',d.host_config.security_opt]]);
+    // Editable Resources section — uses POST /api/containers/{id}/update for the
+    // live-mutable fields. Values round-trip through GCP-style units (Mi/Gi, 0.5)
+    // to keep the UX familiar for Cloud Run / GKE users.
+    _renderEditableResources(panel, d, id);
     if (d.config.env && d.config.env.length) { addSection('Environment', d.config.env.map(function(e) { var p = e.split('='); return [p[0], p.slice(1).join('=')]; })); }
     if (d.mounts && d.mounts.length) { addSection('Mounts', d.mounts.map(function(m) { return [m.destination, m.source+' ('+m.type+(m.rw?',rw':',ro')+')']; })); }
     if (d.health_check && d.health_check.status !== 'none') {
@@ -762,9 +1087,217 @@ async function showInspectContent(id) {
       }
       addSection('Health Check', hcEntries);
     }
-    if (Object.keys(d.network).length) { addSection('Networks', Object.entries(d.network).map(function(e) { return [e[0], 'IP: '+e[1].ip+' GW: '+e[1].gateway]; })); }
+    if (Object.keys(d.network).length) { addSection('Networks', Object.entries(d.network).map(function(e) { return [e[0], 'IP: '+e[1].ip_address+' GW: '+e[1].gateway]; })); }
     el.appendChild(panel);
   } catch (e) { el.textContent = 'Error: ' + e.message; }
+}
+
+// Render the Resources section with inline-editable fields for live-updatable
+// constraints (memory, cpus, pids_limit, restart_policy). Immutable fields
+// (read-only FS, security_opt, tmpfs) appear below as read-only. Editing any
+// field enables Save/Cancel; Save issues a single PATCH-like POST with only the
+// changed fields in the body. Zero-trust: token carried by apiFetch, CSRF set.
+function _renderEditableResources(panel, d, containerId) {
+  var hc = d.host_config || {};
+  var sec = document.createElement('div'); sec.className = 'inspect-section';
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:6px;';
+  var h4 = document.createElement('h4'); h4.textContent = 'Resources';
+  h4.style.cssText = 'margin:0;';
+  var badge = document.createElement('span');
+  badge.textContent = 'Live-updatable';
+  badge.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:12px;background:#1e3a5f;color:#93c5fd;';
+  badge.title = 'These fields can be changed without recreating the container.';
+  hdr.append(h4, badge);
+  sec.appendChild(hdr);
+
+  // Current values (GCP-style display)
+  var curMem = _fmtBytes(hc.memory_bytes);
+  var curMemRes = _fmtBytes(hc.memory_reservation_bytes);
+  var curCpus = _fmtCpus(hc.cpu_quota, hc.cpu_period || 100000);
+  var curCpuShares = hc.cpu_shares || '';
+  var curPids = hc.pids_limit || '';
+  var curRp = (hc.restart_policy && hc.restart_policy.Name) || 'no';
+  var curRetry = (hc.restart_policy && hc.restart_policy.MaximumRetryCount) || '';
+
+  // Helpers to build an editable row. The label cell gets a UI.helpIcon with
+  // the per-field "why this matters" explanation, rendered as a native
+  // `title` tooltip — reduces the need to read docs for each setting.
+  var inputs = {};
+  function editRow(label, key, value, placeholder, hint, helpText) {
+    var k = UI.el('div', { class: 'k' },
+      UI.el('span', { text: label }),
+      helpText ? UI.helpIcon(helpText) : null,
+    );
+    var inp = UI.el('input', {
+      type: 'text', value: value, placeholder: placeholder || '',
+      style: 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;'
+           + 'font-size:12px;font-family:monospace;width:160px;'
+           + 'background:var(--card);color:var(--text)',
+      on: { input: function() { updateButtons(); } },
+    });
+    inp.dataset.originalValue = value;
+    inputs[key] = inp;
+    var v = UI.el('div', { class: 'v', style: 'display:flex;flex-direction:column;gap:3px' }, inp);
+    if (hint) {
+      v.appendChild(UI.el('div', { style: 'font-size:10px;color:var(--muted)', text: hint }));
+    }
+    sec.appendChild(UI.el('div', { class: 'inspect-kv' }, k, v));
+  }
+
+  editRow('Memory limit', 'memory', curMem, '256Mi, 1Gi, 512M',
+    'IEC (Mi/Gi) or decimal (M/G). Empty = no limit.',
+    'Hard ceiling on container memory. Container is killed if it exceeds this. Accepts 256Mi, 1Gi, or decimal units like 512M. Cannot exceed SKIFF\'s global cap (MAX_CONTAINER_MEM).');
+  editRow('Memory reservation', 'memory_reservation', curMemRes, '128Mi',
+    'Soft limit; container starts being killed above this under pressure.',
+    'Soft memory floor. The engine tries to keep at least this much available to the container even when the host is under memory pressure. Lower than Memory limit.');
+  editRow('CPUs', 'cpus', curCpus, '0.5, 1, 500m',
+    'Fractional cores. "500m" = 0.5 CPU (Kubernetes style).',
+    'Fractional CPUs. Under the hood this sets cpu_quota / cpu_period. 1 = one full core. 0.5 or 500m = half a core. Cannot exceed SKIFF\'s global cap (MAX_CONTAINER_CPU).');
+  editRow('CPU shares', 'cpu_shares', curCpuShares, '1024',
+    'Relative weight 2-1024 (advanced; leave blank for default).',
+    'Relative CPU weight when multiple containers contend for CPU. 1024 is the default. Value only matters at saturation. Leave blank unless you\'re tuning multi-container workloads.');
+  editRow('PIDs limit', 'pids_limit', curPids, '100',
+    'Max processes inside container.',
+    'Cap on the number of processes/threads the container can spawn. Defends against fork-bombs. Typical web services need 50-200.');
+
+  // Restart policy — select + optional retry
+  var rpRow = document.createElement('div'); rpRow.className = 'inspect-kv';
+  var rpK = document.createElement('div'); rpK.className = 'k'; rpK.textContent = 'Restart policy';
+  var rpV = document.createElement('div'); rpV.className = 'v';
+  rpV.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  var rpSel = document.createElement('select');
+  rpSel.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--card);color:var(--text);';
+  ['no', 'on-failure', 'unless-stopped', 'always'].forEach(function(n) {
+    var o = document.createElement('option'); o.value = n; o.textContent = n;
+    if (n === curRp) o.selected = true;
+    rpSel.appendChild(o);
+  });
+  rpSel.dataset.originalValue = curRp;
+  var rpRetry = document.createElement('input');
+  rpRetry.type = 'number'; rpRetry.min = '0'; rpRetry.max = '5';
+  rpRetry.value = curRetry; rpRetry.placeholder = 'retries';
+  rpRetry.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;width:80px;background:var(--card);color:var(--text);';
+  rpRetry.dataset.originalValue = String(curRetry);
+  rpRetry.style.display = (curRp === 'on-failure') ? 'inline-block' : 'none';
+  rpSel.addEventListener('change', function() {
+    rpRetry.style.display = (rpSel.value === 'on-failure') ? 'inline-block' : 'none';
+    updateButtons();
+  });
+  rpRetry.addEventListener('input', updateButtons);
+  inputs.restart_policy_name = rpSel;
+  inputs.restart_policy_retry = rpRetry;
+  rpV.append(rpSel, rpRetry);
+  rpRow.append(rpK, rpV); sec.appendChild(rpRow);
+
+  // Save / Cancel buttons — hidden until a change is made
+  var btnRow = document.createElement('div');
+  btnRow.style.cssText = 'margin-top:10px;display:flex;gap:8px;align-items:center;';
+  var saveBtn = document.createElement('button');
+  saveBtn.className = 'btn primary small';
+  saveBtn.textContent = 'Save changes';
+  saveBtn.disabled = true;
+  var cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn small';
+  cancelBtn.textContent = 'Revert';
+  cancelBtn.disabled = true;
+  var status = document.createElement('span');
+  status.style.cssText = 'font-size:12px;color:var(--muted);';
+  btnRow.append(saveBtn, cancelBtn, status);
+  sec.appendChild(btnRow);
+
+  function hasChanges() {
+    for (var key in inputs) {
+      if (inputs[key].value !== inputs[key].dataset.originalValue) return true;
+    }
+    return false;
+  }
+  function updateButtons() {
+    var changed = hasChanges();
+    saveBtn.disabled = !changed;
+    cancelBtn.disabled = !changed;
+  }
+  cancelBtn.addEventListener('click', function() {
+    for (var key in inputs) { inputs[key].value = inputs[key].dataset.originalValue; }
+    rpRetry.style.display = (rpSel.value === 'on-failure') ? 'inline-block' : 'none';
+    updateButtons();
+    status.textContent = '';
+  });
+  saveBtn.addEventListener('click', function() {
+    var body = {};
+    // Only send fields that actually changed — minimizes surface and audit noise
+    ['memory', 'memory_reservation', 'cpus'].forEach(function(k) {
+      var inp = inputs[k];
+      if (inp.value !== inp.dataset.originalValue) {
+        body[k] = inp.value.trim() || null;
+      }
+    });
+    ['cpu_shares', 'pids_limit'].forEach(function(k) {
+      var inp = inputs[k];
+      if (inp.value !== inp.dataset.originalValue) {
+        var num = inp.value.trim() === '' ? null : parseInt(inp.value, 10);
+        if (num !== null && isNaN(num)) {
+          status.style.color = 'var(--red, #f87171)';
+          status.textContent = k + ' must be a whole number';
+          throw new Error('invalid ' + k);
+        }
+        body[k] = num;
+      }
+    });
+    if (rpSel.value !== rpSel.dataset.originalValue ||
+        String(rpRetry.value) !== rpRetry.dataset.originalValue) {
+      var rp = { Name: rpSel.value };
+      if (rpSel.value === 'on-failure') {
+        var r = parseInt(rpRetry.value, 10);
+        if (!isNaN(r)) rp.MaximumRetryCount = r;
+      }
+      body.restart_policy = rp;
+    }
+    if (Object.keys(body).length === 0) { return; }
+    saveBtn.disabled = true; cancelBtn.disabled = true;
+    status.style.color = 'var(--muted)'; status.textContent = 'Saving\u2026';
+    apiFetch(API + '/containers/' + containerId + '/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function() {
+      status.style.color = 'var(--green, #22c55e)';
+      status.textContent = '\u2713 Saved';
+      // Re-render Inspect to pick up canonicalised values from the server
+      setTimeout(function() { showDetail(containerId, d.name, 'inspect'); }, 400);
+    }).catch(function(err) {
+      saveBtn.disabled = false; cancelBtn.disabled = false;
+      status.style.color = 'var(--red, #f87171)';
+      status.textContent = '\u2717 ' + (err.message || 'Update failed');
+    });
+  });
+
+  // Read-only (recreate-required) fields rendered below. These are part of the
+  // container's create-time config and cannot be live-updated; a future "Clone
+  // with changes" button (future) will expose the recreate path.
+  var roRow = document.createElement('div'); roRow.className = 'inspect-kv';
+  roRow.style.cssText = 'margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;';
+  var roK = document.createElement('div'); roK.className = 'k'; roK.textContent = 'Read-only rootfs';
+  var roV = document.createElement('div'); roV.className = 'v mono';
+  roV.textContent = hc.readonly_rootfs ? 'yes' : 'no';
+  roRow.append(roK, roV); sec.appendChild(roRow);
+  if (hc.security_opt && hc.security_opt.length) {
+    var soRow = document.createElement('div'); soRow.className = 'inspect-kv';
+    var soK = document.createElement('div'); soK.className = 'k'; soK.textContent = 'Security';
+    var soV = document.createElement('div'); soV.className = 'v mono';
+    soV.textContent = hc.security_opt.join(', ');
+    soRow.append(soK, soV); sec.appendChild(soRow);
+  }
+  if (hc.tmpfs && Object.keys(hc.tmpfs).length) {
+    Object.entries(hc.tmpfs).forEach(function(e) {
+      var tmpRow = document.createElement('div'); tmpRow.className = 'inspect-kv';
+      var tmpK = document.createElement('div'); tmpK.className = 'k'; tmpK.textContent = 'tmpfs ' + e[0];
+      var tmpV = document.createElement('div'); tmpV.className = 'v mono';
+      tmpV.textContent = e[1] || '(default opts)';
+      tmpRow.append(tmpK, tmpV); sec.appendChild(tmpRow);
+    });
+  }
+  panel.appendChild(sec);
 }
 
 // ── Stats ──
@@ -780,7 +1313,7 @@ async function showStatsContent(id) {
       var grid = document.getElementById('stats-grid');
       if (!grid) return;
       grid.innerHTML = '';
-      [['CPU',s.cpu_percent+'%'],['Memory',s.memory_usage_mb+' MB'],['Mem Limit',s.memory_limit_mb+' MB'],['Mem %',s.memory_percent+'%'],['Net RX',s.net_rx_mb+' MB'],['Net TX',s.net_tx_mb+' MB'],['Disk Read',s.disk_read_mb+' MB'],['Disk Write',s.disk_write_mb+' MB']].forEach(function(item) {
+      [['CPU',s.cpu_percent+'%'],['Memory',s.mem_usage_mb+' MB'],['Mem Limit',s.mem_limit_mb+' MB'],['Mem %',s.mem_percent+'%'],['Net RX',s.net_rx_mb+' MB'],['Net TX',s.net_tx_mb+' MB'],['Disk Read',s.blk_read_mb+' MB'],['Disk Write',s.blk_write_mb+' MB']].forEach(function(item) {
         var card = document.createElement('div'); card.className = 'stat';
         var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
         var v = document.createElement('div'); v.className = 'value'; v.textContent = item[1];
@@ -977,14 +1510,28 @@ function buildHubSearch(onSelect) {
  * labels, restart policy, network, and read-only flag.
  * @param {string} [prefillImage] - Optional image name to pre-populate the image field
  */
-function showRunModal(prefillImage) {
+// showRunModal renders the "Run new container" modal. When `prefillSource` (an
+// inspect-response object) is supplied, the modal switches to "Clone" mode:
+// every editable field is pre-populated from the source and an inherit_from/
+// replace_id pair is sent on submit so the server can preserve env values
+// without exposing them to the client (zero-trust clone).
+function showRunModal(prefillImage, prefillSource) {
   if (typeof prefillImage !== 'string') prefillImage = '';
+  if (prefillSource && typeof prefillSource !== 'object') prefillSource = null;
   if (document.querySelector('.modal-bg')) return;
   clearInterval(refreshTimer);
   var modal = document.createElement('div'); modal.className = 'modal-bg';
   modal.onclick = function(e) { if (e.target === modal) { modal.remove(); loadContainers(); } };
   var box = document.createElement('div'); box.className = 'modal';
-  var h3 = document.createElement('h3'); h3.textContent = 'Run new container'; box.appendChild(h3);
+  var h3 = document.createElement('h3');
+  h3.textContent = prefillSource ? 'Clone container: ' + prefillSource.name : 'Run new container';
+  box.appendChild(h3);
+  if (prefillSource) {
+    var sub = document.createElement('p');
+    sub.style.cssText = 'font-size:12px;color:var(--muted);margin:-4px 0 12px';
+    sub.textContent = 'Fields pre-filled from ' + prefillSource.name + '. Edit any field, then launch. Env values are preserved server-side and never displayed.';
+    box.appendChild(sub);
+  }
 
   // Available images quick-pick
   var pickSection = document.createElement('div');
@@ -1013,6 +1560,7 @@ function showRunModal(prefillImage) {
 
   var imgInput = addField('Image','run-image', 'registry/image:tag');
   if (prefillImage) imgInput.value = prefillImage;
+  else if (prefillSource) imgInput.value = prefillSource.image || '';
   var dl = document.createElement('datalist'); dl.id = 'image-list'; box.appendChild(dl);
   imgInput.setAttribute('list','image-list');
 
@@ -1022,12 +1570,12 @@ function showRunModal(prefillImage) {
   imgHint.textContent = 'Loading registry configuration…';
   box.appendChild(imgHint);
 
-  addField('Name (optional)','run-name','my-container');
-  addField('Command (optional)','run-cmd','e.g. /bin/sh or sleep 3600');
-  addField('Ports (e.g. 8080:80)','run-ports','host-port:container-port');
-  addField('Environment variables (one per line)','run-env','KEY=VALUE','textarea');
-  addField('Volume mounts (one per line)','run-volumes','volume_name:/container/path','textarea');
-  addField('Labels (one per line, key=value)','run-labels','app=myapp','textarea');
+  var nameInp = addField('Name (optional)','run-name','my-container');
+  var cmdInp = addField('Command (optional)','run-cmd','e.g. /bin/sh or sleep 3600');
+  var portsInp = addField('Ports (e.g. 8080:80)','run-ports','host-port:container-port');
+  var envInp = addField('Environment variables (one per line)','run-env','KEY=VALUE','textarea');
+  var volInp = addField('Volume mounts (one per line)','run-volumes','volume_name:/container/path','textarea');
+  var labelsInp = addField('Labels (one per line, key=value)','run-labels','app=myapp','textarea');
   var lbl3 = document.createElement('label'); lbl3.textContent = 'Restart policy'; box.appendChild(lbl3);
   var selRestart = document.createElement('select'); selRestart.id = 'run-restart';
   ['no','on-failure','unless-stopped','always'].forEach(function(p) { var o = document.createElement('option'); o.value = p; o.textContent = p; selRestart.appendChild(o); });
@@ -1036,7 +1584,104 @@ function showRunModal(prefillImage) {
   var selNet = document.createElement('select'); selNet.id = 'run-network';
   var defOpt = document.createElement('option'); defOpt.value = ''; defOpt.textContent = '(default bridge)'; selNet.appendChild(defOpt);
   box.appendChild(selNet);
-  apiFetch(API+'/networks').then(function(nets) { nets.forEach(function(n) { var o = document.createElement('option'); o.value = n.name; o.textContent = n.name + ' (' + n.driver + ')'; selNet.appendChild(o); }); }).catch(function(){});
+  apiFetch(API+'/networks').then(function(nets) {
+    nets.forEach(function(n) { var o = document.createElement('option'); o.value = n.name; o.textContent = n.name + ' (' + n.driver + ')'; selNet.appendChild(o); });
+    // Select the source's first network after the options are loaded
+    if (prefillSource && prefillSource.network) {
+      var srcNet = Object.keys(prefillSource.network)[0];
+      if (srcNet && srcNet !== 'bridge') selNet.value = srcNet;
+    }
+  }).catch(function(){});
+
+  // Clone-mode prefills ────────────────────────────────────────────────────
+  // Immutable create-time fields are pre-populated from prefillSource so the
+  // user can tweak any of them in one place, rather than manually copying.
+  // Env is NOT populated with values — server does the merge via inherit_from
+  // so sensitive values never cross the UI.
+  if (prefillSource) {
+    nameInp.value = 'clone-' + prefillSource.name;
+    var srcCmd = (prefillSource.config && prefillSource.config.cmd) || [];
+    cmdInp.value = Array.isArray(srcCmd) ? srcCmd.join(' ') : String(srcCmd || '');
+    // Ports: port_bindings is {"80/tcp": [{"HostIp":"", "HostPort":"8080"}]}
+    // The run modal format is "HOST:CONTAINER[, HOST:CONTAINER]".
+    var pb = (prefillSource.host_config && prefillSource.host_config.port_bindings) || {};
+    var portEntries = [];
+    Object.keys(pb).forEach(function(cp) {
+      var bindings = pb[cp] || [];
+      var cpNum = cp.split('/')[0];
+      bindings.forEach(function(b) {
+        if (b && b.HostPort) portEntries.push(b.HostPort + ':' + cpNum);
+      });
+    });
+    portsInp.value = portEntries.join(', ');
+    // Env display: show preserved KEY names (values redacted by server inspect).
+    var srcEnv = (prefillSource.config && prefillSource.config.env) || [];
+    var preservedKeys = srcEnv.map(function(e) { return String(e).split('=')[0]; }).filter(Boolean);
+    if (preservedKeys.length) {
+      envInp.placeholder = 'Add overrides as KEY=VALUE\u2026\n(preserved from source: ' + preservedKeys.join(', ') + ')';
+    }
+    // Volumes: binds are "name:/path[:mode]" strings — match the modal format directly
+    volInp.value = ((prefillSource.host_config && prefillSource.host_config.binds) || []).join('\n');
+    // Labels: strip Docker-managed labels (com.docker.*) so the user doesn't
+    // accidentally re-apply compose metadata that would confuse stack listings.
+    var srcLabels = (prefillSource.config && prefillSource.config.labels) || {};
+    var userLabels = [];
+    Object.keys(srcLabels).forEach(function(k) {
+      if (!k.startsWith('com.docker.')) userLabels.push(k + '=' + srcLabels[k]);
+    });
+    labelsInp.value = userLabels.join('\n');
+    // Restart policy
+    var srcRp = (prefillSource.host_config && prefillSource.host_config.restart_policy) || {};
+    if (srcRp.Name && VALID_RESTART_POLICIES_CLIENT.indexOf(srcRp.Name) >= 0) {
+      selRestart.value = srcRp.Name;
+    }
+  }
+  // Read-only rootfs toggle. Default on: tmpfs is auto-mounted on /tmp, /run,
+  // /var/run, /var/cache so common images (nginx, redis, haproxy) boot cleanly.
+  // Users can uncheck for images that need an unrestricted writable rootfs.
+  // In clone mode: inherit the source's choice so we don't silently widen or
+  // narrow the original container's hardening posture.
+  var roWrap = document.createElement('div'); roWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:12px;';
+  var roCb = document.createElement('input'); roCb.type = 'checkbox'; roCb.id = 'run-readonly';
+  roCb.checked = prefillSource ?
+    !!(prefillSource.host_config && prefillSource.host_config.readonly_rootfs) :
+    true;
+  roCb.style.cssText = 'width:auto;margin:0;';
+  var roLbl = document.createElement('label'); roLbl.htmlFor = 'run-readonly';
+  roLbl.style.cssText = 'margin:0;font-size:13px;cursor:pointer;';
+  roLbl.textContent = 'Read-only root filesystem (recommended)';
+  roWrap.appendChild(roCb);
+  roWrap.appendChild(roLbl);
+  roWrap.appendChild(UI.helpIcon(
+    'Prevents the container from writing to its own root filesystem. '
+    + 'Common attack vector for malware. SKIFF auto-mounts tmpfs on '
+    + '/tmp, /run, /var/run, /var/cache so nginx/redis/most images still '
+    + 'work. Uncheck only for images that write to arbitrary rootfs paths '
+    + '(some databases, some build tools).'
+  ));
+  box.appendChild(roWrap);
+  var roHint = document.createElement('p');
+  roHint.style.cssText = 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;';
+  roHint.textContent = 'Auto-mounts tmpfs on /tmp, /run, /var/run, /var/cache so most images work. Uncheck for images that write elsewhere on rootfs.';
+  box.appendChild(roHint);
+  // Clone-only: "Replace original" checkbox. Off by default → both containers
+  // coexist (user chose a new name). On → server stops + removes the source
+  // after the new container starts. If the new container fails to create, the
+  // source is preserved — safety-by-ordering at the server.
+  var replaceCb = null;
+  if (prefillSource) {
+    var repWrap = document.createElement('div'); repWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
+    replaceCb = document.createElement('input'); replaceCb.type = 'checkbox'; replaceCb.id = 'run-replace';
+    replaceCb.style.cssText = 'width:auto;margin:0;';
+    var repLbl = document.createElement('label'); repLbl.htmlFor = 'run-replace';
+    repLbl.style.cssText = 'margin:0;font-size:13px;cursor:pointer;';
+    repLbl.textContent = 'Replace original (stop & remove ' + prefillSource.name + ' after this one starts)';
+    repWrap.appendChild(replaceCb); repWrap.appendChild(repLbl); box.appendChild(repWrap);
+    var repHint = document.createElement('p');
+    repHint.style.cssText = 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;';
+    repHint.textContent = 'If this container fails to start, the original is preserved.';
+    box.appendChild(repHint);
+  }
   var actions = document.createElement('div'); actions.className = 'actions';
   actions.append(makeBtn('Cancel', function() { modal.remove(); loadContainers(); }),
     makeActionBtn('Run', async function() {
@@ -1055,9 +1700,34 @@ function showRunModal(prefillImage) {
       var volumes = volRaw ? volRaw.trim().split('\n').filter(Boolean) : null;
       var labels = null;
       if (labelsRaw) { labels = {}; labelsRaw.trim().split('\n').filter(Boolean).forEach(function(l) { var eq = l.indexOf('='); if (eq > 0) labels[l.substring(0, eq)] = l.substring(eq + 1); }); }
+      var readOnly = document.getElementById('run-readonly').checked;
       var params = new URLSearchParams(); params.set('image', image); if (name) params.set('name', name);
-      await apiFetch(API+'/containers/run?'+params, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ports:ports, environment:environment, command:cmd, volumes:volumes, restart_policy:restart, network:networkVal, labels:labels}) });
-      if (document.body.contains(modal)) modal.remove(); toast('Container launched','success'); loadContainers();
+      var body = {
+        ports: ports,
+        environment: environment,
+        command: cmd,
+        volumes: volumes,
+        restart_policy: restart,
+        network: networkVal,
+        labels: labels,
+        read_only: readOnly,
+      };
+      // Clone-mode: attach inherit_from (env preservation) and optionally replace_id
+      if (prefillSource) {
+        body.inherit_from = prefillSource.id;
+        if (replaceCb && replaceCb.checked) body.replace_id = prefillSource.id;
+      }
+      var resp = await apiFetch(API+'/containers/run?'+params, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (document.body.contains(modal)) modal.remove();
+      var msg = prefillSource
+        ? (resp && resp.replaced_old ? 'Cloned and replaced ' + prefillSource.name : 'Cloned from ' + prefillSource.name)
+        : 'Container launched';
+      toast(msg, 'success');
+      loadContainers();
     }, 'btn primary', 'Launching\u2026'));
   box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
   imgInput.focus();
@@ -1101,784 +1771,9 @@ function showRunModal(prefillImage) {
   }).catch(function() {});
 }
 
-// ── Images ──
-/**
- * Load and render the images list page with search filtering and per-image action buttons
- * (inspect, tag, push, delete). Also triggers a stale-pull notification if an image
- * was recently pulled.
- */
-async function loadImages() {
-  var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">Loading images...</div>';
-  try {
-    var images = await apiFetch(API+'/images');
-    if (currentPage !== 'images') return;
-    main.innerHTML = '';
-    var header = document.createElement('div'); header.className = 'page-header';
-    var h2 = document.createElement('h2'); h2.textContent = 'Images (' + images.length + ')';
-    var ha = document.createElement('div'); ha.className = 'header-actions';
-    var imgSearch = document.createElement('input'); imgSearch.className = 'search-bar'; imgSearch.placeholder = 'Search images...';
-    ha.append(imgSearch, makeBtn('Pull image', showPullModal, 'btn primary'));
-    header.append(h2, ha);
-    main.appendChild(header);
-    var imgDesc = document.createElement('p'); imgDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; imgDesc.textContent = 'Images are stored on the remote Docker engine. Only images from approved registries can be pulled or run.';
-    main.appendChild(imgDesc);
-    var allImages = images;
-    function renderImageTable(filtered) {
-    var table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Repository / Tag</th><th>Image ID</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead>';
-    var tbody = document.createElement('tbody');
-    if (filtered.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px'; td.textContent = 'No images found'; tr.appendChild(td); tbody.appendChild(tr);
-    } else {
-      filtered.forEach(function(img) {
-        var imgTags = Array.isArray(img.tags) ? img.tags : (img.tag ? [img.tag] : []);
-        var displayTag = imgTags.length ? imgTags.join(', ') : '<none>';
-        var runTag = imgTags[0] || img.id;
-        var tr = document.createElement('tr');
-        var tdTag = document.createElement('td'); tdTag.style.cssText = 'font-size:13px;font-weight:500'; tdTag.textContent = displayTag;
-        var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = img.id;
-        var tdSize = document.createElement('td'); tdSize.textContent = img.size_mb + ' MB';
-        var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(img.created);
-        var tdAct = document.createElement('td');
-        var bg = document.createElement('div'); bg.className = 'btn-group';
-        bg.append(makeBtn('Inspect', function() { showImageInspect(img.id, displayTag); }), makeBtn('Run', function() { showPage('containers'); showRunModal(runTag); }, 'btn'), makeActionBtn('Delete', function() { if(!confirm('Delete image '+displayTag+'?'))throw new Error('Cancelled'); return guardedAction('del-img-' + img.id, function() { return apiFetch(API+'/images/'+encodeURIComponent(img.id)+'?force=true',{method:'DELETE'}).then(function(){toast('Image deleted','info');loadImages();}); }); }, 'btn danger', 'Deleting\u2026'));
-        tdAct.appendChild(bg);
-        tr.append(tdTag, tdId, tdSize, tdCreated, tdAct); tbody.appendChild(tr);
-      });
-    }
-    table.appendChild(tbody);
-    // Remove previous table if re-rendering
-    var prev = main.querySelector('table'); if (prev) prev.remove();
-    main.appendChild(table);
-    }
-    renderImageTable(allImages);
-    imgSearch.oninput = function() {
-      var q = imgSearch.value.toLowerCase();
-      var filtered = q ? allImages.filter(function(img) {
-        var imgTags = Array.isArray(img.tags) ? img.tags : (img.tag ? [img.tag] : []);
-        return imgTags.some(function(t) { return t.toLowerCase().includes(q); }) || img.id.includes(q);
-      }) : allImages;
-      renderImageTable(filtered);
-    };
-  } catch (e) { main.innerHTML = ''; var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: '+e.message; main.appendChild(p); }
-}
-
-/**
- * Fetch and display the image inspect modal with metadata (size, architecture, OS),
- * layer history, exposed ports, and tag/push UI for allowed registries.
- * @param {string} id - Image short ID
- * @param {string} tag - Image tag (used for display and push pre-population)
- */
-async function showImageInspect(id, tag) {
-  try {
-    var d = await apiFetch(API+'/images/'+encodeURIComponent(id)+'/inspect');
-    var modal = document.createElement('div'); modal.className = 'modal-bg';
-    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
-    var box = document.createElement('div'); box.className = 'modal';
-    var h3 = document.createElement('h3'); h3.textContent = 'Image: ' + tag; box.appendChild(h3);
-    var panel = document.createElement('div'); panel.className = 'inspect-panel';
-    // General info
-    var info = document.createElement('div'); info.className = 'inspect-section';
-    [['ID',d.id],['Tags',(d.tags||[]).join(', ')],['Size',d.size_mb+' MB'],['OS',d.os],['Arch',d.architecture],['Layers',d.layers],['Created',d.created]].forEach(function(entry) {
-      var row = document.createElement('div'); row.className = 'inspect-kv';
-      var k = document.createElement('div'); k.className = 'k'; k.textContent = entry[0];
-      var v = document.createElement('div'); v.className = 'v mono'; v.textContent = String(entry[1]);
-      row.append(k, v); info.appendChild(row);
-    });
-    panel.appendChild(info);
-    // Layer history
-    if (d.history && d.history.length) {
-      var sec = document.createElement('div'); sec.className = 'inspect-section';
-      var h4 = document.createElement('h4'); h4.textContent = 'Layer History'; sec.appendChild(h4);
-      d.history.forEach(function(l) {
-        var row = document.createElement('div'); row.className = 'inspect-kv';
-        var k = document.createElement('div'); k.className = 'k'; k.textContent = l.size_mb + ' MB';
-        var v = document.createElement('div'); v.className = 'v mono'; v.style.fontSize = '11px'; v.textContent = l.created_by || '';
-        row.append(k, v); sec.appendChild(row);
-      });
-      panel.appendChild(sec);
-    }
-    box.appendChild(panel);
-    // Tag form
-    var tagSec = document.createElement('div'); tagSec.style.cssText = 'margin-top:16px';
-    var tagLbl = document.createElement('label'); tagLbl.textContent = 'Tag image (new repository:tag)'; tagSec.appendChild(tagLbl);
-    var tagRow = document.createElement('div'); tagRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
-    var tagInp = document.createElement('input'); tagInp.placeholder = 'us-docker.pkg.dev/project/repo/image'; tagInp.style.cssText = 'flex:1;padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px';
-    var tagTagInp = document.createElement('input'); tagTagInp.placeholder = 'latest'; tagTagInp.value = 'latest'; tagTagInp.style.cssText = 'width:80px;padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px';
-    tagRow.append(tagInp, tagTagInp, makeActionBtn('Tag', function() {
-      var repo = tagInp.value; var tagVal = tagTagInp.value || 'latest';
-      return apiFetch(API+'/images/'+encodeURIComponent(id)+'/tag?repository='+encodeURIComponent(repo)+'&tag='+encodeURIComponent(tagVal),{method:'POST'}).then(function(){toast('Image tagged','success');modal.remove();loadImages();});
-    }, 'btn small primary'));
-    tagSec.appendChild(tagRow);
-    // Push button row
-    var pushRow = document.createElement('div'); pushRow.style.cssText = 'display:flex;gap:8px;margin-top:8px;align-items:center';
-    var pushLbl = document.createElement('span'); pushLbl.style.cssText = 'font-size:12px;color:var(--muted)'; pushLbl.textContent = 'Push to registry:';
-    pushRow.append(pushLbl);
-    (d.tags || []).forEach(function(t) {
-      pushRow.appendChild(makeActionBtn('Push ' + t.split('/').pop(), function() {
-        if (!confirm('Push "' + t + '" to registry?')) throw new Error('Cancelled');
-        return apiFetch(API+'/images/push?image='+encodeURIComponent(t),{method:'POST'}).then(function(){toast('Pushed '+t,'success');});
-      }, 'btn small primary', 'Pushing\u2026'));
-    });
-    tagSec.appendChild(pushRow);
-    box.appendChild(tagSec);
-    var actions = document.createElement('div'); actions.className = 'actions';
-    actions.appendChild(makeBtn('Close', function() { modal.remove(); }));
-    box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-/**
- * Open the image pull dialog. Validates that the selected registry is in the
- * server-enforced allowlist before submitting.
- * @param {string} [prefillImage] - Optional image name to pre-populate
- */
-function showPullModal(prefillImage) {
-  var modal = document.createElement('div'); modal.className = 'modal-bg';
-  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
-  var box = document.createElement('div'); box.className = 'modal';
-  var h3 = document.createElement('h3'); h3.textContent = 'Pull image'; box.appendChild(h3);
-
-  var lbl = document.createElement('label'); lbl.textContent = 'Image'; box.appendChild(lbl);
-  var inp = document.createElement('input'); inp.id = 'pull-image'; inp.placeholder = 'image:tag or registry/image:tag';
-  if (typeof prefillImage === 'string' && prefillImage) inp.value = prefillImage;
-  box.appendChild(inp);
-  var hint = document.createElement('p'); hint.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px;margin-bottom:16px'; hint.textContent = 'Loading registry configuration…'; box.appendChild(hint);
-  apiFetch(API+'/config').then(function(cfg) {
-    var regs = cfg.allowed_registries || [];
-    hint.textContent = regs.length ? 'Allowed: ' + regs.join(', ') : 'No registry restriction configured.';
-  }).catch(function() {});
-
-  var hubSearch = buildHubSearch(function(name) { inp.value = name; });
-  box.appendChild(hubSearch.section);
-
-  var actions = document.createElement('div'); actions.className = 'actions';
-  actions.append(makeBtn('Cancel', function() { modal.remove(); }), makeActionBtn('Pull', async function() {
-    var image = document.getElementById('pull-image').value.trim();
-    if (!image) { toast('Image name is required', 'error'); throw new Error('no image'); }
-    await apiFetch(API+'/images/pull?image='+encodeURIComponent(image), {method:'POST'});
-    if (document.body.contains(modal)) modal.remove(); toast('Image pulled: '+image, 'success'); loadImages();
-  }, 'btn primary', 'Pulling\u2026'));
-  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
-  inp.focus();
-}
-
-// ── Volumes ──
-/**
- * Load and render the volumes list page, showing each volume's name, driver,
- * mountpoint, and which containers are currently using it.
- */
-async function loadVolumes() {
-  var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">Loading volumes...</div>';
-  try {
-    var volumes = await apiFetch(API+'/volumes');
-    if (currentPage !== 'volumes') return;
-    main.innerHTML = '';
-    var header = document.createElement('div'); header.className = 'page-header';
-    var h2 = document.createElement('h2'); h2.textContent = 'Volumes (' + volumes.length + ')';
-    var ha = document.createElement('div'); ha.className = 'header-actions';
-    ha.append(makeBtn('Create volume', showCreateVolumeModal, 'btn primary'), makeActionBtn('Prune unused', function() { if(!confirm('Remove all unused volumes?'))throw new Error('Cancelled'); return guardedAction('prune-volumes', function() { return apiFetch(API+'/volumes/prune',{method:'POST'}).then(function(r){toast('Pruned '+(r.deleted||[]).length+' volumes, reclaimed '+r.space_reclaimed_mb+' MB','success');loadVolumes();}); }); }, 'btn danger', 'Pruning\u2026'));
-    header.append(h2, ha); main.appendChild(header);
-    var volDesc = document.createElement('p'); volDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; volDesc.textContent = 'Named volumes persist data across container restarts. Host-path mounts are not permitted. Volumes live on the remote Docker engine.';
-    main.appendChild(volDesc);
-    var table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Name</th><th>Driver</th><th>In Use</th><th>Created</th><th>Actions</th></tr></thead>';
-    var tbody = document.createElement('tbody');
-    if (volumes.length === 0) { var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=5; td.style.cssText='text-align:center;color:var(--muted);padding:40px'; td.textContent='No volumes found'; tr.appendChild(td); tbody.appendChild(tr); }
-    else { volumes.forEach(function(v) {
-      var tr = document.createElement('tr');
-      var tdN = document.createElement('td'); tdN.style.fontWeight='500'; tdN.textContent = v.name;
-      var tdD = document.createElement('td'); tdD.textContent = v.driver;
-      var tdU = document.createElement('td');
-      if (v.in_use) { var badge = document.createElement('span'); badge.className = 'status running'; badge.textContent = v.containers.join(', '); tdU.appendChild(badge); }
-      else { tdU.textContent = 'Unused'; tdU.style.color = 'var(--muted)'; }
-      var tdC = document.createElement('td'); tdC.className = 'created-time'; tdC.textContent = v.created ? new Date(v.created).toLocaleString() : '';
-      var tdA = document.createElement('td'); tdA.appendChild(makeActionBtn('Delete', function() { if(!confirm('Delete volume "'+v.name+'"?'))throw new Error('Cancelled'); return guardedAction('del-vol-' + v.name, function() { return apiFetch(API+'/volumes/'+encodeURIComponent(v.name),{method:'DELETE'}).then(function(){toast('Volume deleted','info');loadVolumes();}); }); }, 'btn danger'));
-      tr.append(tdN, tdD, tdU, tdC, tdA); tbody.appendChild(tr);
-    }); }
-    table.appendChild(tbody); main.appendChild(table);
-  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
-}
-
-/**
- * Open the create-volume dialog. Validates the name against Docker naming rules
- * before posting to the API.
- */
-function showCreateVolumeModal() {
-  var modal = document.createElement('div'); modal.className = 'modal-bg';
-  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
-  var box = document.createElement('div'); box.className = 'modal';
-  var h3 = document.createElement('h3'); h3.textContent = 'Create volume'; box.appendChild(h3);
-  var lbl = document.createElement('label'); lbl.textContent = 'Volume name'; box.appendChild(lbl);
-  var inp = document.createElement('input'); inp.id = 'vol-name'; inp.placeholder = 'my-volume'; box.appendChild(inp);
-  var actions = document.createElement('div'); actions.className = 'actions';
-  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
-    await guardedAction('create-volume', function() {
-      return apiFetch(API+'/volumes/create?name='+encodeURIComponent(inp.value),{method:'POST'});
-    });
-    modal.remove(); toast('Volume created','success'); loadVolumes();
-  },'btn primary'));
-  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
-}
-
-// ── Networks ──
-/**
- * Load and render the networks list page, including driver, scope, IPAM config,
- * and the containers currently attached to each network.
- */
-async function loadNetworks() {
-  var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">Loading networks...</div>';
-  try {
-    var networks = await apiFetch(API+'/networks');
-    if (currentPage !== 'networks') return;
-    main.innerHTML = '';
-    var header = document.createElement('div'); header.className = 'page-header';
-    var h2 = document.createElement('h2'); h2.textContent = 'Networks (' + networks.length + ')';
-    var ha = document.createElement('div'); ha.className = 'header-actions';
-    ha.append(makeBtn('Create network', showCreateNetworkModal, 'btn primary'), makeActionBtn('Prune unused', function() { if(!confirm('Remove unused custom networks?'))throw new Error('Cancelled'); return guardedAction('prune-networks', function() { return apiFetch(API+'/networks/prune',{method:'POST'}).then(function(r){ var n = (r.deleted||[]).length; toast(n > 0 ? 'Pruned '+n+' network'+(n===1?'':'s') : 'No unused custom networks to prune', n > 0 ? 'success' : 'info'); loadNetworks();}); }); }, 'btn danger', 'Pruning\u2026'));
-    header.append(h2, ha); main.appendChild(header);
-    var desc = document.createElement('p'); desc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; desc.textContent = 'Docker networks are internal to the container environment and used for container-to-container communication. They are not externally accessible.';
-    main.appendChild(desc);
-    var table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Name</th><th>ID</th><th>Driver</th><th>Scope</th><th>Containers</th><th>Subnet</th><th>Actions</th></tr></thead>';
-    var tbody = document.createElement('tbody');
-    if (networks.length === 0) { var tr=document.createElement('tr'); var td=document.createElement('td'); td.colSpan=7; td.style.cssText='text-align:center;color:var(--muted);padding:40px'; td.textContent='No networks found'; tr.appendChild(td); tbody.appendChild(tr); }
-    else { networks.forEach(function(n) {
-      var tr = document.createElement('tr');
-      var tdN = document.createElement('td'); tdN.style.fontWeight='500'; tdN.textContent = n.name;
-      if (['bridge','host','none'].indexOf(n.name) !== -1) { var def = document.createElement('span'); def.textContent = 'built-in'; def.style.cssText = 'margin-left:6px;font-size:10px;font-weight:500;color:var(--muted);background:#f0f0f0;padding:1px 5px;border-radius:4px'; tdN.appendChild(def); }
-      var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = n.id;
-      var tdD = document.createElement('td'); tdD.textContent = n.driver;
-      var tdS = document.createElement('td'); tdS.textContent = n.scope;
-      var tdC = document.createElement('td');
-      var containerNames = Object.values(n.containers || {});
-      tdC.textContent = containerNames.length > 0 ? containerNames.join(', ') : 'none';
-      tdC.style.color = containerNames.length > 0 ? 'var(--text)' : 'var(--muted)';
-      var tdSubnet = document.createElement('td'); tdSubnet.className = 'container-id';
-      tdSubnet.textContent = (n.ipam && n.ipam.length) ? n.ipam.map(function(c){return c.Subnet||'';}).filter(Boolean).join(', ') : '';
-      var tdAct = document.createElement('td');
-      var actGrp = document.createElement('div'); actGrp.className = 'btn-group';
-      if (['bridge','host','none'].indexOf(n.name) === -1) {
-        actGrp.appendChild(makeActionBtn('Connect...', function() { showNetworkConnectModal(n.id, n.name); }, 'btn small'));
-        // Disconnect buttons for each connected container
-        Object.entries(n.containers || {}).forEach(function(entry) {
-          actGrp.appendChild(makeActionBtn('Disconnect ' + entry[1], function() {
-            return apiFetch(API+'/networks/'+n.id+'/disconnect?container_id='+entry[0],{method:'POST'}).then(function(){toast('Disconnected '+entry[1],'info');loadNetworks();});
-          }, 'btn danger small'));
-        });
-        actGrp.appendChild(makeActionBtn('Delete', function() { if(!confirm('Delete network "'+n.name+'"?'))throw new Error('Cancelled'); return guardedAction('del-net-' + n.id, function() { return apiFetch(API+'/networks/'+n.id,{method:'DELETE'}).then(function(){toast('Network deleted','info');loadNetworks();}); }); }, 'btn danger small'));
-      }
-      tdAct.appendChild(actGrp);
-      tr.append(tdN, tdId, tdD, tdS, tdC, tdSubnet, tdAct); tbody.appendChild(tr);
-    }); }
-    table.appendChild(tbody); main.appendChild(table);
-  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
-}
-
-function showCreateNetworkModal() {
-  var modal = document.createElement('div'); modal.className = 'modal-bg';
-  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
-  var box = document.createElement('div'); box.className = 'modal';
-  var h3 = document.createElement('h3'); h3.textContent = 'Create network'; box.appendChild(h3);
-  var lbl = document.createElement('label'); lbl.textContent = 'Network name'; box.appendChild(lbl);
-  var inp = document.createElement('input'); inp.id = 'net-name'; inp.placeholder = 'my-network'; box.appendChild(inp);
-  var lbl2 = document.createElement('label'); lbl2.textContent = 'Driver'; box.appendChild(lbl2);
-  var sel = document.createElement('select'); sel.id = 'net-driver';
-  ['bridge','overlay','macvlan'].forEach(function(d) { var o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o); });
-  box.appendChild(sel);
-  var actions = document.createElement('div'); actions.className = 'actions';
-  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Create', async function() {
-    var name = document.getElementById('net-name').value;
-    var driver = document.getElementById('net-driver').value;
-    await guardedAction('create-network', function() {
-      return apiFetch(API+'/networks/create?name='+encodeURIComponent(name)+'&driver='+driver,{method:'POST'});
-    });
-    modal.remove(); toast('Network created','success'); loadNetworks();
-  },'btn primary'));
-  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
-}
-
-/**
- * Open the network connect dialog for attaching a running container to `networkId`.
- * Populates a dropdown with currently running containers and posts the connection.
- * @param {string} networkId - Network short ID
- * @param {string} networkName - Network display name (shown in the modal title)
- */
-function showNetworkConnectModal(networkId, networkName) {
-  var modal = document.createElement('div'); modal.className = 'modal-bg';
-  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
-  var box = document.createElement('div'); box.className = 'modal';
-  var h3 = document.createElement('h3'); h3.textContent = 'Connect container to ' + networkName; box.appendChild(h3);
-  var lbl = document.createElement('label'); lbl.textContent = 'Select container'; box.appendChild(lbl);
-  var sel = document.createElement('select'); sel.id = 'net-connect-container'; box.appendChild(sel);
-  var actions = document.createElement('div'); actions.className = 'actions';
-  actions.append(makeBtn('Cancel', function(){modal.remove();}), makeActionBtn('Connect', async function() {
-    var cid = sel.value;
-    if (!cid) throw new Error('Select a container');
-    await apiFetch(API+'/networks/'+networkId+'/connect?container_id='+cid,{method:'POST'});
-    modal.remove(); toast('Container connected','success'); loadNetworks();
-  },'btn primary'));
-  box.appendChild(actions); modal.appendChild(box); document.body.appendChild(modal);
-  // Load containers into select
-  apiFetch(API+'/containers').then(function(containers) {
-    containers.forEach(function(c) {
-      var o = document.createElement('option'); o.value = c.id; o.textContent = c.name + ' (' + c.state + ')'; sel.appendChild(o);
-    });
-  }).catch(function(){});
-}
-
-// ── Compose ──
-async function showCompose() {
-  var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">Loading...</div>';
-
-  // Load running stacks
-  var stacks = [];
-  try { stacks = await apiFetch(API+'/compose/stacks'); } catch(e) {}
-  if (currentPage !== 'compose') return;
-
-  main.innerHTML = '';
-  var header = document.createElement('div'); header.className = 'page-header';
-  var h2 = document.createElement('h2'); h2.textContent = 'Compose'; header.appendChild(h2); main.appendChild(header);
-  var compDesc = document.createElement('p'); compDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px'; compDesc.textContent = 'Compose files are validated before deployment. Privileged mode, host-path mounts, build instructions, and unapproved registries are blocked.';
-  main.appendChild(compDesc);
-
-  // Show running stacks
-  if (stacks.length > 0) {
-    var stackHeader = document.createElement('h3'); stackHeader.textContent = 'Running Stacks'; stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px'; main.appendChild(stackHeader);
-    stacks.forEach(function(stack) {
-      var card = document.createElement('div'); card.className = 'stack-card';
-      var h4 = document.createElement('h4');
-      var dot = document.createElement('span'); dot.className = 'dot ' + (stack.status === 'running' ? 'ok' : 'down');
-      h4.append(dot, document.createTextNode(stack.name));
-      card.appendChild(h4);
-      var svcs = document.createElement('div'); svcs.className = 'stack-services';
-      svcs.textContent = stack.services.map(function(s) { return s.name + ' (' + s.state + ')'; }).join(' | ');
-      card.appendChild(svcs);
-      var btnRow = document.createElement('div'); btnRow.style.cssText = 'margin-top:8px;display:flex;gap:6px';
-      btnRow.appendChild(makeActionBtn('Restart', function() {
-        return apiFetch(API+'/compose/down?project_name='+encodeURIComponent(stack.name),{method:'POST'}).then(function(){
-          toast(stack.name+' stopped, restarting...','info');
-          var form = new FormData();
-          return apiFetch(API+'/compose/up?project_name='+encodeURIComponent(stack.name),{method:'POST', body:form});
-        }).then(function(){toast(stack.name+' restarted','success');showCompose();});
-      }, 'btn small', 'Restarting\u2026'));
-      btnRow.appendChild(makeActionBtn('Tear down', function() { return apiFetch(API+'/compose/down?project_name='+encodeURIComponent(stack.name),{method:'POST'}).then(function(){toast(stack.name+' stopped','info');showCompose();}); }, 'btn danger small', 'Tearing down\u2026'));
-      card.appendChild(btnRow);
-      main.appendChild(card);
-    });
-    main.appendChild(document.createElement('hr'));
-  }
-
-  // Deploy new
-  var deployHeader = document.createElement('h3'); deployHeader.textContent = 'Deploy Stack'; deployHeader.style.cssText = 'font-size:16px;margin:16px 0 12px'; main.appendChild(deployHeader);
-  var dz = document.createElement('div'); dz.className = 'drop-zone';
-  var fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.yml,.yaml'; fi.style.display = 'none';
-  fi.onchange = function() { if (fi.files[0]) uploadCompose(fi.files[0]); };
-  dz.onclick = function() { fi.click(); };
-  var p1 = document.createElement('p'); p1.style.cssText = 'font-weight:500;font-size:14px;color:var(--text)'; p1.textContent = 'Upload compose file (docker-compose.yml)';
-  var p2 = document.createElement('p'); p2.style.cssText = 'font-size:12px;margin-top:8px;color:var(--muted)'; p2.textContent = 'Click or drag and drop';
-  dz.append(fi, p1, p2);
-  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; });
-  dz.addEventListener('dragleave', function() { dz.style.borderColor = 'var(--border)'; });
-  dz.addEventListener('drop', function(e) { e.preventDefault(); dz.style.borderColor = 'var(--border)'; if (e.dataTransfer.files[0]) uploadCompose(e.dataTransfer.files[0]); });
-  main.appendChild(dz);
-
-  var controls = document.createElement('div'); controls.className = 'mt-16';
-  var lbl = document.createElement('label'); lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted)'; lbl.textContent = 'Project Name';
-  var inp = document.createElement('input'); inp.id = 'compose-project'; inp.value = 'dev';
-  inp.style.cssText = 'padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:200px;margin-top:6px';
-  controls.append(lbl, document.createElement('br'), inp); main.appendChild(controls);
-  var output = document.createElement('div'); output.id = 'compose-output'; output.className = 'mt-16'; main.appendChild(output);
-}
-
-async function uploadCompose(file) {
-  var project = document.getElementById('compose-project').value;
-  var form = new FormData(); form.append('file', file);
-  var out = document.getElementById('compose-output');
-  out.innerHTML = '<div class="log-viewer">Deploying stack...</div>';
-  try {
-    var data = await apiFetch(API+'/compose/up?project_name='+encodeURIComponent(project), {method:'POST', body:form});
-    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#3fb950';
-    lv.textContent = data.output || 'Stack deployed successfully.';
-    out.innerHTML = ''; out.appendChild(lv);
-    toast('Stack "'+project+'" deployed', 'success');
-  } catch (e) {
-    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#f85149';
-    lv.textContent = e.message; out.innerHTML = ''; out.appendChild(lv);
-  }
-}
-
-// ── System ──
-async function loadSystem() {
-  var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">Loading system info...</div>';
-  try {
-    var results = await Promise.all([apiFetch(API+'/system/info'), apiFetch(API+'/system/df')]);
-    if (currentPage !== 'system') return;
-    var info = results[0]; var df = results[1];
-    main.innerHTML = '';
-    var header = document.createElement('div'); header.className = 'page-header';
-    var h2 = document.createElement('h2'); h2.textContent = 'System';
-    var ha = document.createElement('div'); ha.className = 'header-actions';
-    ha.appendChild(makeActionBtn('Prune system', function() { if(!confirm('Remove stopped containers, dangling images, and unused networks?'))throw new Error('Cancelled'); return guardedAction('prune-system', function() { return apiFetch(API+'/system/prune',{method:'POST'}).then(function(r){ var parts = []; if(r.containers_deleted) parts.push(r.containers_deleted+' container'+(r.containers_deleted===1?'':'s')); if(r.images_deleted) parts.push(r.images_deleted+' image'+(r.images_deleted===1?'':'s')); if(r.networks_deleted) parts.push(r.networks_deleted+' network'+(r.networks_deleted===1?'':'s')); var msg = parts.length ? 'Pruned '+parts.join(', ') : 'Nothing to prune'; if(r.space_reclaimed_mb > 0) msg += '. Reclaimed '+r.space_reclaimed_mb+' MB'; toast(msg, parts.length ? 'success' : 'info'); loadSystem();}); }); }, 'btn danger', 'Pruning\u2026'));
-    header.append(h2, ha); main.appendChild(header);
-
-    var grid = document.createElement('div'); grid.className = 'info-grid';
-    [['Engine',info.docker_version],['API',info.api_version],['OS',info.os],['Kernel',info.kernel],['Arch',info.architecture],['CPUs',info.cpus],['Memory',info.memory_gb+' GB'],['Storage',info.storage_driver],['Containers',info.containers+' ('+info.containers_running+' running, '+info.containers_paused+' paused, '+info.containers_stopped+' stopped)'],['Images',info.images],['Logging',info.logging_driver],['Cgroup',info.cgroup_driver]].forEach(function(item) {
-      var card = document.createElement('div'); card.className = 'info-card';
-      var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
-      var v = document.createElement('div'); v.className = 'value'; v.textContent = String(item[1]);
-      card.append(l, v); grid.appendChild(card);
-    });
-    main.appendChild(grid);
-
-    var dfH = document.createElement('h3'); dfH.textContent = 'Disk Usage'; dfH.style.cssText = 'margin-top:28px;margin-bottom:16px;font-size:18px'; main.appendChild(dfH);
-    var dfGrid = document.createElement('div'); dfGrid.className = 'info-grid';
-    [['Images',df.images_mb+' MB',df.images_count+' images, '+df.images_reclaimable_mb+' MB reclaimable',null],
-     ['Containers',df.containers_mb+' MB',df.containers_count+' containers',null],
-     ['Volumes',df.volumes_mb+' MB',df.volumes_count+' volumes, '+df.volumes_reclaimable_mb+' MB reclaimable',null],
-     ['Build Cache',df.build_cache_mb+' MB',df.build_cache_reclaimable_mb+' MB reclaimable','build_cache'],
-     ['Total',df.total_mb+' MB','',null]].forEach(function(item) {
-      var card = document.createElement('div'); card.className = 'info-card';
-      var l = document.createElement('div'); l.className = 'label'; l.textContent = item[0];
-      var v = document.createElement('div'); v.className = 'value'; v.textContent = item[1];
-      card.append(l, v);
-      if (item[2]) { var sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = item[2]; card.appendChild(sub); }
-      if (item[3] === 'build_cache' && df.build_cache_reclaimable_mb > 0) {
-        card.appendChild(makeActionBtn('Prune', function() { if(!confirm('Prune build cache?'))throw new Error('Cancelled'); return guardedAction('prune-build-cache', function() { return apiFetch(API+'/system/prune-build-cache',{method:'POST'}).then(function(r){toast('Reclaimed '+r.space_reclaimed_mb+' MB','success');loadSystem();}); }); }, 'btn danger small', 'Pruning\u2026'));
-      }
-      dfGrid.appendChild(card);
-    });
-    main.appendChild(dfGrid);
-
-    // Security options
-    if (info.security_options && info.security_options.length) {
-      var secH = document.createElement('h3'); secH.textContent = 'Security'; secH.style.cssText = 'margin-top:28px;margin-bottom:12px;font-size:18px'; main.appendChild(secH);
-      var secList = document.createElement('div'); secList.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px';
-      info.security_options.forEach(function(opt) {
-        var p = document.createElement('div'); p.className = 'mono'; p.style.cssText = 'font-size:12px;padding:2px 0'; p.textContent = opt; secList.appendChild(p);
-      });
-      main.appendChild(secList);
-    }
-
-    // Audit log
-    var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; auditH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px'; main.appendChild(auditH);
-    var auditDesc = document.createElement('p'); auditDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px'; auditDesc.textContent = 'Recent API requests made to this app.'; main.appendChild(auditDesc);
-    var auditToolbar = document.createElement('div'); auditToolbar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
-    var auditRefreshBtn = makeBtn('Refresh', function() { loadAuditLog(auditBody); }, 'btn small');
-    var auditDlBtn = makeBtn('Download .jsonl', function() {
-      var a = document.createElement('a'); a.href = API+'/system/audit-log/download';
-      a.setAttribute('download','audit.jsonl'); a.click();
-    }, 'btn small');
-    auditToolbar.append(auditRefreshBtn, auditDlBtn);
-    main.appendChild(auditToolbar);
-    var auditTable = document.createElement('table');
-    auditTable.innerHTML = '<thead><tr><th>Time</th><th>Event</th><th>Method</th><th>Path</th><th>Status</th><th>Remote</th></tr></thead>';
-    var auditBody = document.createElement('tbody');
-    auditTable.appendChild(auditBody);
-    main.appendChild(auditTable);
-    loadAuditLog(auditBody);
-
-  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
-}
-
-function loadAuditLog(tbody) {
-  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
-  apiFetch(API+'/system/audit-log?tail=200').then(function(rows) {
-    tbody.innerHTML = '';
-    if (!rows || rows.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=6; td.style.cssText='text-align:center;color:var(--muted);padding:20px'; td.textContent='No audit entries yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
-    }
-    rows.slice().reverse().forEach(function(row) {
-      var tr = document.createElement('tr');
-      var ts = row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '';
-      var evt = row.event || row.raw || '';
-      var statusCode = typeof row.status === 'number' ? row.status : 0;
-      var statusColor = statusCode >= 400 ? 'var(--red)' : statusCode >= 200 ? 'var(--green,#22c55e)' : '';
-      function _auditCell(text, extraStyle) {
-        var td = document.createElement('td');
-        td.style.cssText = 'font-size:12px;' + (extraStyle || '');
-        td.textContent = text;
-        return td;
-      }
-      var td0 = document.createElement('td');
-      td0.style.cssText = 'font-size:11px;color:var(--muted);white-space:nowrap';
-      td0.textContent = ts;
-      var td4 = _auditCell(String(row.status || ''));
-      if (statusColor) td4.style.color = statusColor;
-      var td3 = document.createElement('td');
-      td3.style.cssText = 'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-      td3.title = row.path || '';
-      td3.textContent = row.path || '';
-      tr.appendChild(td0);
-      tr.appendChild(_auditCell(evt));
-      tr.appendChild(_auditCell(row.method || ''));
-      tr.appendChild(td3);
-      tr.appendChild(td4);
-      tr.appendChild(_auditCell(row.remote || '', 'color:var(--muted)'));
-      tbody.appendChild(tr);
-    });
-  }).catch(function(e) {
-    var tr = document.createElement('tr');
-    var td = document.createElement('td');
-    td.colSpan = 6;
-    td.style.cssText = 'color:var(--red);padding:12px';
-    td.textContent = 'Failed: ' + e.message;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  });
-}
-
-// ── Keyboard shortcuts ──
-document.addEventListener('keydown', function(e) {
-  // Don't fire when typing in an input/textarea/select or inside a modal
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-  if (!getToken()) return;
-
-  // Esc — close any open modal
-  if (e.key === 'Escape') {
-    var modal = document.querySelector('.modal-overlay');
-    if (modal) { modal.remove(); return; }
-  }
-
-  // Don't fire if a modal is open (other keys)
-  if (document.querySelector('.modal-overlay')) return;
-
-  var key = e.key;
-  // 1-6 — sidebar navigation
-  var navMap = {'1':'containers','2':'images','3':'volumes','4':'networks','5':'compose','6':'system'};
-  if (navMap[key]) { showPage(navMap[key]); return; }
-
-  // r — Run new container
-  if (key === 'r' && currentPage === 'containers') { showRunModal(); return; }
-
-  // / — focus search bar
-  if (key === '/') {
-    e.preventDefault();
-    var searchInput = document.querySelector('#container-search, #image-search, input[placeholder*="Search"]');
-    if (searchInput) searchInput.focus();
-    return;
-  }
-
-  // ? — show shortcut help
-  if (key === '?') {
-    var overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000';
-    overlay.onclick = function(ev) { if (ev.target === overlay) overlay.remove(); };
-    var box = document.createElement('div'); box.style.cssText = 'background:var(--card);border-radius:12px;padding:28px 32px;min-width:320px;max-width:480px';
-    box.innerHTML = '<h3 style="margin-bottom:16px;font-size:16px">Keyboard shortcuts</h3>' +
-      '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-      '<tr><td style="padding:5px 0;color:var(--muted)"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">1</kbd>–<kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">6</kbd></td><td style="padding:5px 0 5px 12px">Navigate sections</td></tr>' +
-      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">r</kbd></td><td style="padding:5px 0 5px 12px">Run new container</td></tr>' +
-      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">/</kbd></td><td style="padding:5px 0 5px 12px">Focus search</td></tr>' +
-      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">Esc</kbd></td><td style="padding:5px 0 5px 12px">Close modal</td></tr>' +
-      '<tr><td style="padding:5px 0"><kbd style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px">?</kbd></td><td style="padding:5px 0 5px 12px">Show this help</td></tr>' +
-      '</table>' +
-      '<button class="btn" style="margin-top:20px;width:100%" onclick="this.closest(\'.modal-overlay\').remove()">Close</button>';
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    return;
-  }
-});
-
-// ── Setup Wizard ──────────────────────────────────────────────────────────
-async function checkSetupState() {
-    try {
-        const r = await fetch('/api/setup-state');
-        const state = await r.json();
-        if (!state.configured && !state.from_env) {
-            showSetupWizard(state);
-            return true;
-        }
-    } catch (e) {}
-    return false;
-}
-
-function showSetupWizard(state) {
-    document.body.innerHTML = '';
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;';
-    // Use safe string values; server-supplied data assigned via textContent/value only
-    const defaultSocket = String((state && state.tunnel_socket) || '/tmp/skiff-docker.sock');
-    const tunnelActive = !!(state && state.tunnel_active);
-
-    // Build the card using a static HTML template — no server data interpolated
-    // Note: no inline onclick handlers — CSP script-src 'self' blocks them.
-    // Event listeners are attached via addEventListener after appending to DOM.
-    wrap.innerHTML =
-      '<div style="background:#1e293b;border-radius:12px;padding:40px;width:520px;max-width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">' +
-        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
-          '<svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>' +
-          '<span style="color:#f1f5f9;font-size:18px;font-weight:600;">SKIFF Container Manager</span>' +
-        '</div>' +
-        '<p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>' +
-        '<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">' +
-          '<button id="sw-tab-tunnel" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>' +
-          '<button id="sw-tab-local" style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>' +
-        '</div>' +
-        '<div id="sw-panel-tunnel">' +
-          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host</span></label>' +
-          '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
-            '<input id="sw-ssh-target" type="text" style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;outline:none;" placeholder="dev@my-docker-vm"/>' +
-            '<button id="sw-tunnel-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>' +
-          '</div>' +
-          '<div id="sw-tunnel-status" style="font-size:12px;margin-bottom:16px;min-height:18px;"></div>' +
-        '</div>' +
-        '<div id="sw-panel-local" style="display:none;">' +
-          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">DOCKER HOST</label>' +
-          '<input id="sw-host-custom" type="text" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:6px;outline:none;" placeholder="unix:///var/run/docker.sock"/>' +
-          '<p style="color:#64748b;font-size:12px;margin:0 0 16px;">Local Docker Engine, Docker Desktop, Podman, Colima, or a pre-existing SSH tunnel socket.</p>' +
-        '</div>' +
-        '<input id="sw-host" type="hidden"/>' +
-        '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">API TOKEN</label>' +
-        '<div style="display:flex;gap:8px;margin-bottom:16px;">' +
-          '<input id="sw-token" type="password" readonly style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:13px;font-family:monospace;outline:none;" placeholder="Click Generate \u2192"/>' +
-          '<button id="sw-gen-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Generate</button>' +
-          '<button id="sw-copy-btn" style="background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:10px 14px;cursor:pointer;font-size:13px;white-space:nowrap;">Copy</button>' +
-        '</div>' +
-        '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">ALLOWED REGISTRIES <span style="color:#64748b;font-weight:400;">(comma-separated, empty = allow all)</span></label>' +
-        '<input id="sw-regs" type="text" value="" style="width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;margin-bottom:24px;outline:none;" placeholder="docker.io,ghcr.io,us-docker.pkg.dev/my-project/"/>' +
-        '<div id="sw-error" style="display:none;color:#f87171;font-size:13px;margin-bottom:16px;"></div>' +
-        '<div style="display:flex;gap:12px;">' +
-          '<button id="sw-btn-save" style="flex:1;background:#0d9488;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Save .env &amp; Continue</button>' +
-          '<button id="sw-btn-session" style="flex:1;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af;border-radius:6px;padding:12px;cursor:pointer;font-size:14px;font-weight:500;">Continue (session only)</button>' +
-        '</div>' +
-        '<p style="color:#475569;font-size:11px;text-align:center;margin:16px 0 0;">"Session only" keeps config in server memory. "Save .env" downloads a config file for next time.</p>' +
-      '</div>';
-    document.body.appendChild(wrap);
-
-    // Attach event listeners (CSP blocks inline onclick handlers)
-    document.getElementById('sw-tab-tunnel').addEventListener('click', function() { swSetMode('tunnel'); });
-    document.getElementById('sw-tab-local').addEventListener('click', function() { swSetMode('local'); });
-    document.getElementById('sw-tunnel-btn').addEventListener('click', swConnectTunnel);
-    document.getElementById('sw-gen-btn').addEventListener('click', function() {
-        document.getElementById('sw-token').value = Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-    });
-    document.getElementById('sw-copy-btn').addEventListener('click', function() {
-        var val = document.getElementById('sw-token').value;
-        if (!val) { return; }
-        navigator.clipboard.writeText(val).then(function() {
-            var btn = document.getElementById('sw-copy-btn');
-            btn.textContent = 'Copied!';
-            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
-        });
-    });
-    document.getElementById('sw-btn-save').addEventListener('click', function() { swSubmit(true); });
-    document.getElementById('sw-btn-session').addEventListener('click', function() { swSubmit(false); });
-
-    // Set server-supplied values safely via DOM properties (never via innerHTML interpolation)
-    const hostInput = document.getElementById('sw-host');
-    const statusEl = document.getElementById('sw-tunnel-status');
-    if (tunnelActive) {
-        hostInput.value = 'unix://' + defaultSocket;
-        statusEl.style.color = '#4ade80';
-        statusEl.textContent = '\u2713 Tunnel active \u2014 ' + defaultSocket;
-    } else {
-        hostInput.value = 'unix:///var/run/docker.sock';
-        statusEl.style.color = '#64748b';
-        statusEl.textContent = 'Requires key-based SSH auth (no passphrase).';
-    }
-    document.getElementById('sw-host-custom').value = 'unix:///var/run/docker.sock';
-}
-
-function swSetMode(mode) {
-    const isTunnel = mode === 'tunnel';
-    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? 'block' : 'none';
-    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : 'block';
-    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : 'transparent';
-    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#94a3b8';
-    document.getElementById('sw-tab-local').style.background = isTunnel ? 'transparent' : '#0d9488';
-    document.getElementById('sw-tab-local').style.color = isTunnel ? '#94a3b8' : 'white';
-    if (!isTunnel) {
-        document.getElementById('sw-host').value = document.getElementById('sw-host-custom').value.trim() || 'unix:///var/run/docker.sock';
-    }
-}
-
-async function swConnectTunnel() {
-    const target = document.getElementById('sw-ssh-target').value.trim();
-    const statusEl = document.getElementById('sw-tunnel-status');
-    const btn = document.getElementById('sw-tunnel-btn');
-    if (!target) { statusEl.style.color = '#f87171'; statusEl.textContent = 'Enter user@host first.'; return; }
-    statusEl.style.color = '#94a3b8';
-    statusEl.textContent = 'Connecting\u2026';
-    btn.disabled = true;
-    try {
-        const r = await fetch('/api/setup/tunnel', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'ContainerManager'},
-            body: JSON.stringify({ssh_target: target}),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) {
-            statusEl.style.color = '#f87171';
-            statusEl.textContent = '\u2717 ' + (d.detail || 'Connection failed');
-        } else {
-            statusEl.style.color = '#4ade80';
-            statusEl.textContent = '\u2713 Tunnel active \u2014 ' + d.socket_path;
-            document.getElementById('sw-host').value = d.docker_host;
-            // Clear tunnel credentials — they have served their purpose
-            sessionStorage.removeItem('tunnelUser');
-            sessionStorage.removeItem('tunnelHost');
-        }
-    } catch (e) {
-        statusEl.style.color = '#f87171';
-        statusEl.textContent = '\u2717 Could not reach server';
-    }
-    btn.disabled = false;
-}
-
-async function swSubmit(saveEnv) {
-    const isTunnel = document.getElementById('sw-panel-tunnel').style.display !== 'none';
-    let host = document.getElementById('sw-host').value.trim();
-    if (!isTunnel) {
-        host = document.getElementById('sw-host-custom').value.trim() || host;
-    }
-    const token = document.getElementById('sw-token').value.trim();
-    const regs = document.getElementById('sw-regs').value.trim();
-    const errEl = document.getElementById('sw-error');
-    errEl.style.display = 'none';
-    if (!host) { errEl.textContent = 'Docker host is required.'; errEl.style.display = 'block'; return; }
-    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (minimum 16 characters).'; errEl.style.display = 'block'; return; }
-
-    if (saveEnv) {
-        const lines = [
-            'API_TOKEN=' + token,
-            'DOCKER_HOST=' + host,
-            regs ? 'ALLOWED_REGISTRIES=' + regs : '# ALLOWED_REGISTRIES=docker.io,ghcr.io',
-            '# ALLOWED_ORIGINS=http://127.0.0.1:8080',
-            '# AUDIT_LOG=./audit.jsonl',
-        ].join('\n');
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([lines], {type: 'text/plain'}));
-        a.download = '.env';
-        a.click();
-    }
-
-    try {
-        const r = await fetch('/api/setup', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'ContainerManager'},
-            body: JSON.stringify({docker_host: host, api_token: token, allowed_registries: regs}),
-        });
-        if (!r.ok) {
-            const d = await r.json().catch(() => ({}));
-            errEl.textContent = d.detail || 'Setup failed.';
-            errEl.style.display = 'block';
-            return;
-        }
-    } catch (e) {
-        errEl.textContent = 'Could not reach server.';
-        errEl.style.display = 'block';
-        return;
-    }
-
-    sessionStorage.setItem('api_token', token);
-    location.reload();
-}
+// Per-page modules (images, volumes, networks, compose, system,
+// wizard) load as separate <script> tags in index.html after app.js —
+// see skiff/static/pages/*.js.
 
 // ── Sidebar nav wiring (CSP-safe: no inline onclick) ──
 document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
@@ -1890,7 +1785,7 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
   var logoutBtn = document.getElementById('sidebar-logout');
   if (!logoutBtn) return;
   function syncLogout() {
-    logoutBtn.style.display = getToken() ? 'block' : 'none';
+    logoutBtn.classList.toggle('visible', !!getToken());
   }
   logoutBtn.addEventListener('click', function() {
     sessionStorage.clear();
@@ -1913,13 +1808,33 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
   } catch(e) { /* server down, try loading anyway */ }
   // Show logout button now that we know auth is needed
   var logoutBtn = document.getElementById('sidebar-logout');
-  if (logoutBtn && getToken()) logoutBtn.style.display = 'block';
+  if (logoutBtn && getToken()) logoutBtn.classList.add('visible');
   // Fetch app config (docker_vm_host, docker_host, etc.) for context-aware UI
   var _appConfig = null;
   try {
     var appCfg = await apiFetch(API+'/config');
     _appConfig = appCfg;
     if (appCfg.docker_vm_host) _dockerVmHost = appCfg.docker_vm_host;
+    if (appCfg.docker_host) _appDockerHost = appCfg.docker_host;
+    _applySessionTimeoutsFromConfig(appCfg);
+    // Insecure-mode banner. Server-side flag, so the client can surface
+    // it but can't silence it. Triggers when bind != localhost AND
+    // api_token is empty (anyone on the network reaches Docker).
+    if (appCfg.insecure_mode) _renderInsecureBanner(appCfg.bind_host || '0.0.0.0');
   } catch(e) { /* ignore, defaults apply */ }
   showPage('containers');
 })();
+
+// Insecure-mode banner. Sticky red bar above the app when the
+// server is bound to a non-loopback interface with no API_TOKEN set.
+function _renderInsecureBanner(bind) {
+  // Idempotent — only render once
+  if (document.getElementById('insecure-mode-banner')) return;
+  var banner = document.createElement('div');
+  banner.id = 'insecure-mode-banner';
+  banner.className = 'insecure-banner';
+  var msg = document.createElement('span');
+  msg.textContent = 'INSECURE MODE — server bound to ' + bind + ' with no API_TOKEN. Anyone on the network can control Docker. Set API_TOKEN and restart.';
+  banner.appendChild(msg);
+  document.body.insertBefore(banner, document.body.firstChild);
+}

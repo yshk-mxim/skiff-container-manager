@@ -25,17 +25,22 @@ from tests.conftest_e2e import (
     E2E_TOKEN,
     _docker_socket_alive,
 )
+from tests.e2e_helpers import (
+    LONG,
+    MEDIUM,
+    SHORT,
+)
+from tests.e2e_helpers import (
+    deploy_compose_stack as _deploy_compose_stack,
+)
+from tests.e2e_helpers import (
+    nav_to as _nav_to,
+)
+from tests.e2e_helpers import (
+    teardown_compose_stack as _teardown_compose_stack,
+)
 
 pytestmark = pytest.mark.e2e
-
-SHORT = 10_000
-MEDIUM = 30_000
-LONG = 90_000
-
-
-def _nav_to(page, section: str) -> None:
-    page.locator(f".sidebar a:has-text('{section.capitalize()}')").click()
-    page.wait_for_selector(f"h2:has-text('{section.capitalize()}')", timeout=MEDIUM)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +150,434 @@ def test_container_kill_confirm_cancel(page, live_server, docker_client):
     if docker_client:
         for c in docker_client.containers.list(all=True):
             if c.name == name:
+                c.remove(force=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1: Container resource updates (POST /api/containers/{id}/update)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_container_update_memory_and_cpus_live(page, live_server, docker_client):
+    """Edit memory + CPUs in the Inspect panel → real container's HostConfig changes.
+
+    Covers the Phase 1 happy path end-to-end: inspect load → GCP-unit parse →
+    cap enforcement → docker update() → reload → response round-trip to UI.
+    """
+    name = "e2e-update-ctr"
+    for c in docker_client.containers.list(all=True):
+        if c.name == name:
+            c.remove(force=True)
+    # Start with modest defaults so the test values are a real delta
+    docker_client.containers.run(
+        "alpine:latest", "sleep 600", name=name, detach=True,
+        mem_limit="64m",   # 64 MiB = 67108864 bytes
+    )
+    try:
+        _nav_to(page, "containers")
+        page.wait_for_selector(f"text={name}", timeout=MEDIUM)
+        page.locator(f"tr:has-text('{name}') button:has-text('Inspect')").click()
+        # The Resources section now lives inside the detail view
+        page.wait_for_selector(".inspect-section:has-text('Resources') input", timeout=MEDIUM)
+        inputs = page.locator(".inspect-section:has-text('Resources') input")
+        # Order per _renderEditableResources:
+        #   0: memory, 1: memory_reservation, 2: cpus,
+        #   3: cpu_shares, 4: pids_limit, (5: restart_retry when on-failure)
+        inputs.nth(0).fill("128Mi")
+        inputs.nth(2).fill("1")
+        # Save — the button is gated by change detection; poll until enabled
+        save_btn = page.locator(".inspect-section:has-text('Resources') button:has-text('Save changes')")
+        # Dispatch one more input event so updateButtons() fires with both fills settled
+        save_btn.wait_for(state="attached", timeout=MEDIUM)
+        save_btn.click()
+        # Verify via the Docker SDK — source of truth, not the UI status text.
+        # The UI re-renders ~400ms after success so text-based assertion is racy.
+        deadline = time.time() + 15
+        last_hc = {}
+        while time.time() < deadline:
+            ctr = docker_client.containers.get(name)
+            ctr.reload()
+            last_hc = ctr.attrs["HostConfig"]
+            if last_hc.get("Memory") == 128 * 1024 * 1024 and last_hc.get("CpuQuota") == 100_000:
+                break
+            time.sleep(0.25)
+        assert last_hc.get("Memory") == 128 * 1024 * 1024, \
+            f"Memory not updated after 15s: {last_hc.get('Memory')} (expected {128 * 1024 * 1024}). "\
+            f"Full HostConfig: {last_hc}"
+        assert last_hc.get("CpuQuota") == 100_000, \
+            f"CpuQuota not updated: {last_hc.get('CpuQuota')} (expected 100000)"
+    finally:
+        for c in docker_client.containers.list(all=True):
+            if c.name == name:
+                c.remove(force=True)
+
+
+@pytest.mark.e2e
+def test_container_update_cap_rejected(page, live_server, docker_client):
+    """Attempting to raise memory above MAX_CONTAINER_MEM shows the server error.
+
+    This verifies the cap is enforced end-to-end (not just in unit tests against
+    mocks) — a server misconfiguration that disabled the cap would surface here.
+    """
+    name = "e2e-update-cap"
+    for c in docker_client.containers.list(all=True):
+        if c.name == name:
+            c.remove(force=True)
+    docker_client.containers.run("alpine:latest", "sleep 600", name=name, detach=True, mem_limit="64m")
+    try:
+        _nav_to(page, "containers")
+        page.wait_for_selector(f"text={name}", timeout=MEDIUM)
+        page.locator(f"tr:has-text('{name}') button:has-text('Inspect')").click()
+        page.wait_for_selector("text=Resources", timeout=MEDIUM)
+        inputs = page.locator(".inspect-section:has-text('Resources') input")
+        inputs.nth(0).fill("8Gi")  # way above the 2g cap
+        page.locator(".inspect-section:has-text('Resources') button:has-text('Save changes')").click()
+        # Error status should appear with "cap" in the message
+        page.wait_for_selector("text=/cap|exceeds/i", timeout=MEDIUM)
+        # Verify container was NOT mutated
+        ctr = docker_client.containers.get(name)
+        ctr.reload()
+        assert ctr.attrs["HostConfig"]["Memory"] == 64 * 1024 * 1024, \
+            "Container memory was changed despite cap rejection — server cap bypassed"
+    finally:
+        for c in docker_client.containers.list(all=True):
+            if c.name == name:
+                c.remove(force=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 6: Volume inspect
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_volume_inspect_shows_modal_with_details(page, live_server, docker_client):
+    """Click Inspect on a volume → modal shows scope, mountpoint, labels, etc."""
+    name = "e2e-inspect-vol"
+    for v in docker_client.volumes.list():
+        if v.name == name:
+            v.remove(force=True)
+    docker_client.volumes.create(name=name, labels={"purpose": "e2e-test"})
+    try:
+        _nav_to(page, "volumes")
+        page.wait_for_selector(f"td:has-text('{name}')", timeout=MEDIUM)
+        row = page.locator(f"tr:has-text('{name}')")
+        row.locator("button:has-text('Inspect')").click()
+        page.wait_for_selector(f".modal h3:has-text('Volume: {name}')", timeout=MEDIUM)
+        # Wait for the async fetch to complete — "Loading…" is replaced with the
+        # key/value rows once the response arrives.
+        page.wait_for_selector(".modal .inspect-kv", timeout=MEDIUM)
+        modal_text = page.locator(".modal").inner_text()
+        assert "Scope" in modal_text
+        assert "Driver" in modal_text
+        assert "purpose" in modal_text  # label key shown
+    finally:
+        try:
+            docker_client.volumes.get(name).remove(force=True)
+        except Exception:
+            pass
+
+
+@pytest.mark.e2e
+def test_volume_inspect_missing_volume_404(live_server):
+    """Direct API: non-existent volume → 404, no server crash."""
+    r = requests.get(
+        f"{BASE_URL}/api/volumes/totally-gone-vol/inspect",
+        headers={"Authorization": f"Bearer {E2E_TOKEN}"},
+        timeout=10,
+    )
+    assert r.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 5: Prometheus-format metrics endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_system_metrics_scrapeable(live_server):
+    """Metrics endpoint returns Prometheus text format that a scraper can parse."""
+    r = requests.get(
+        f"{BASE_URL}/api/system/metrics",
+        headers={"Authorization": f"Bearer {E2E_TOKEN}"},
+        timeout=15,
+    )
+    assert r.status_code == 200
+    assert "text/plain" in r.headers["content-type"]
+    assert "version=0.0.4" in r.headers["content-type"]
+    body = r.text
+    # Core gauges must be present
+    for name in (
+        "skiff_uptime_seconds",
+        "skiff_containers_running",
+        "skiff_containers_total",
+        "skiff_images_total",
+        "skiff_engine_cpus",
+        "skiff_engine_memory_bytes",
+        "skiff_disk_images_bytes",
+    ):
+        assert f"# TYPE {name} gauge" in body, f"Missing gauge: {name}"
+
+
+@pytest.mark.e2e
+def test_system_metrics_requires_auth_e2e(live_server):
+    """Unauthenticated scrape returns 401, doesn't leak workload details."""
+    r = requests.get(f"{BASE_URL}/api/system/metrics", timeout=10)
+    assert r.status_code == 401
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 4: Session lifecycle (token rotation + config reset → wizard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_rotate_token_blocked_when_from_env(live_server):
+    """E2E server is launched with API_TOKEN in env (from_env=True), so the rotate
+    endpoint must 403. This is the primary "sad path" guard for env-managed setups.
+    """
+    r = requests.post(
+        f"{BASE_URL}/api/auth/rotate-token",
+        headers={"X-Requested-With": "ContainerManager",
+                 "Authorization": f"Bearer {E2E_TOKEN}"},
+        json={"new_token": "new-rotated-value-for-the-test-32c"},
+        timeout=15,
+    )
+    assert r.status_code == 403
+    # After R4: structured detail body carries code + message.
+    assert r.json()["detail"]["code"] == "auth.env_managed"
+
+
+@pytest.mark.e2e
+def test_reset_config_blocked_when_from_env(live_server):
+    """Same pathway: reset is blocked when from_env=True."""
+    r = requests.post(
+        f"{BASE_URL}/api/auth/reset-config",
+        headers={"X-Requested-With": "ContainerManager",
+                 "Authorization": f"Bearer {E2E_TOKEN}"},
+        timeout=15,
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.e2e
+def test_account_section_hidden_when_from_env(page, live_server):
+    """The Account card must not render on env-configured servers (both endpoints 403)."""
+    _nav_to(page, "system")
+    page.wait_for_selector("h2:has-text('System')", timeout=MEDIUM)
+    # Give the async fetch time to settle
+    page.wait_for_timeout(1500)
+    assert page.locator("h3:has-text('Account')").count() == 0, \
+        "Account section should be hidden in env-configured mode"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 3: Compose lifecycle completeness (per-service logs + restart, aggregated logs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_compose_service_restart_via_ui(page, live_server, docker_client):
+    """Per-service Restart button calls the new endpoint and the service comes back up."""
+    project = "e2ephase3restart"
+    yaml = b"services:\n  web:\n    image: alpine:latest\n    command: sleep 600\n"
+    _teardown_compose_stack(project)
+    _deploy_compose_stack(project, yaml)
+    try:
+        _nav_to(page, "compose")
+        # Wait for the stack card to render
+        page.wait_for_selector(f"h4:has-text('{project}')", timeout=MEDIUM)
+        # The web service row should have a Restart button specific to it
+        svc_row = page.locator(f"h4:has-text('{project}') + .stack-services div:has-text('web')").first
+        svc_row.locator("button:has-text('Restart')").click()
+        page.wait_for_selector("text=web restarted", timeout=LONG)
+        # Verify via Docker SDK that the service is still running (restart preserved it)
+        containers = docker_client.containers.list(
+            filters={"label": f"com.docker.compose.project={project}"},
+        )
+        assert any(c.attrs["State"]["Status"] == "running" for c in containers)
+    finally:
+        _teardown_compose_stack(project)
+
+
+@pytest.mark.e2e
+def test_compose_aggregated_logs_modal(page, live_server, docker_client):
+    """'All service logs' button shows a modal with per-service-prefixed lines."""
+    project = "e2ephase3logs"
+    yaml = (
+        b"services:\n"
+        b"  web:\n"
+        b"    image: alpine:latest\n"
+        b"    command: sh -c 'echo WEB_LINE; sleep 600'\n"
+        b"  db:\n"
+        b"    image: alpine:latest\n"
+        b"    command: sh -c 'echo DB_LINE; sleep 600'\n"
+    )
+    _teardown_compose_stack(project)
+    _deploy_compose_stack(project, yaml)
+    try:
+        _nav_to(page, "compose")
+        page.wait_for_selector(f"h4:has-text('{project}')", timeout=MEDIUM)
+        # Give services a couple seconds to emit stdout so logs aren't empty
+        page.wait_for_timeout(2000)
+        # Find the "All service logs" button within the stack's action row
+        stack_card = page.locator(f"h4:has-text('{project}')").locator("..")
+        stack_card.locator("button:has-text('All service logs')").click()
+        # Modal opens with "Aggregated logs: <project>" heading
+        page.wait_for_selector(f"h3:has-text('Aggregated logs: {project}')", timeout=MEDIUM)
+        # Log viewer should contain both services' prefixed lines
+        page.wait_for_function(
+            "() => { var el = document.querySelector('.modal pre'); "
+            "return el && el.textContent && el.textContent.includes('web |') "
+            "&& el.textContent.includes('db |'); }",
+            timeout=LONG,
+        )
+    finally:
+        _teardown_compose_stack(project)
+
+
+@pytest.mark.e2e
+def test_compose_service_restart_unknown_service_returns_404_noop(page, live_server):
+    """Sad path: API directly — restarting a non-existent service returns 404, no action."""
+    r = requests.post(
+        f"{BASE_URL}/api/compose/nonexistentproj/services/ghost/restart",
+        headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
+        timeout=15,
+    )
+    assert r.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: Clone-to-recreate
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.e2e
+def test_container_clone_changes_memory_both_exist(page, live_server, docker_client):
+    """Clone with a new name + changed memory → both containers exist, env preserved.
+
+    Exercises the Phase 2 happy path end-to-end: Inspect → Clone with changes →
+    edit memory in the pre-filled Run modal → launch → old and new coexist, new
+    has the edited memory, env from old is inherited (verified via Docker SDK).
+    """
+    src_name = "e2e-clone-src"
+    for c in docker_client.containers.list(all=True):
+        if c.name == src_name or c.name == "clone-" + src_name:
+            c.remove(force=True)
+    docker_client.containers.run(
+        "alpine:latest", "sleep 600", name=src_name, detach=True,
+        mem_limit="64m",
+        environment=["FROM_SOURCE=yes", "SECRET=topsecret"],
+    )
+    try:
+        _nav_to(page, "containers")
+        page.wait_for_selector(f"text={src_name}", timeout=MEDIUM)
+        page.locator(f"tr:has-text('{src_name}') button:has-text('Inspect')").click()
+        # Click "Clone with changes" button in the Inspect action row
+        page.wait_for_selector("button:has-text('Clone with changes')", timeout=MEDIUM)
+        page.locator("button:has-text('Clone with changes')").click()
+        # Modal should open with "Clone container" heading and pre-filled name
+        page.wait_for_selector(".modal h3:has-text('Clone container')", timeout=MEDIUM)
+        name_input = page.locator(".modal #run-name")
+        assert name_input.input_value() == "clone-" + src_name
+        # Launch — server will inherit env and the clone will have default memory
+        page.locator(".modal .actions button.primary").click()
+        # Toast confirms the clone
+        page.wait_for_selector("text=Cloned from", timeout=LONG)
+        # Both containers should exist via Docker SDK
+        deadline = time.time() + 10
+        found_both = False
+        while time.time() < deadline:
+            names = {c.name for c in docker_client.containers.list(all=True)}
+            if src_name in names and ("clone-" + src_name) in names:
+                found_both = True
+                break
+            time.sleep(0.25)
+        assert found_both, "Expected both source and clone to exist"
+        # Verify env inheritance: clone's env must include SECRET=topsecret
+        clone = docker_client.containers.get("clone-" + src_name)
+        clone_env = clone.attrs["Config"]["Env"]
+        assert "SECRET=topsecret" in clone_env, \
+            f"Env not inherited: {clone_env!r}"
+        assert "FROM_SOURCE=yes" in clone_env
+    finally:
+        for c in docker_client.containers.list(all=True):
+            if c.name == src_name or c.name == "clone-" + src_name:
+                c.remove(force=True)
+
+
+@pytest.mark.e2e
+def test_container_clone_replace_removes_source(page, live_server, docker_client):
+    """Clone with "Replace original" checked → source is removed after clone starts."""
+    src_name = "e2e-clone-replace-src"
+    for c in docker_client.containers.list(all=True):
+        if c.name in (src_name, "clone-" + src_name):
+            c.remove(force=True)
+    docker_client.containers.run(
+        "alpine:latest", "sleep 600", name=src_name, detach=True, mem_limit="64m",
+    )
+    try:
+        _nav_to(page, "containers")
+        page.wait_for_selector(f"text={src_name}", timeout=MEDIUM)
+        page.locator(f"tr:has-text('{src_name}') button:has-text('Inspect')").click()
+        page.wait_for_selector("button:has-text('Clone with changes')", timeout=MEDIUM)
+        page.locator("button:has-text('Clone with changes')").click()
+        page.wait_for_selector(".modal h3:has-text('Clone container')", timeout=MEDIUM)
+        # Check "Replace original"
+        page.locator(".modal #run-replace").check()
+        page.locator(".modal .actions button.primary").click()
+        page.wait_for_selector("text=replaced", timeout=LONG)
+        # Source should be gone within a few seconds
+        deadline = time.time() + 10
+        source_gone = False
+        while time.time() < deadline:
+            names = {c.name for c in docker_client.containers.list(all=True)}
+            if src_name not in names and ("clone-" + src_name) in names:
+                source_gone = True
+                break
+            time.sleep(0.25)
+        assert source_gone, "Source container should have been removed after replace"
+    finally:
+        for c in docker_client.containers.list(all=True):
+            if c.name in (src_name, "clone-" + src_name):
+                c.remove(force=True)
+
+
+@pytest.mark.e2e
+def test_container_clone_bad_port_preserves_source(page, live_server, docker_client):
+    """Clone with an invalid port mapping → server rejects, source is preserved.
+
+    Defence-in-depth: an error during clone creation must NOT remove the source
+    even if replace_id was specified, because the server only issues the cleanup
+    AFTER the new container successfully starts.
+    """
+    src_name = "e2e-clone-bad-src"
+    for c in docker_client.containers.list(all=True):
+        if c.name in (src_name, "clone-" + src_name):
+            c.remove(force=True)
+    docker_client.containers.run(
+        "alpine:latest", "sleep 600", name=src_name, detach=True, mem_limit="64m",
+    )
+    try:
+        _nav_to(page, "containers")
+        page.wait_for_selector(f"text={src_name}", timeout=MEDIUM)
+        page.locator(f"tr:has-text('{src_name}') button:has-text('Inspect')").click()
+        page.wait_for_selector("button:has-text('Clone with changes')", timeout=MEDIUM)
+        page.locator("button:has-text('Clone with changes')").click()
+        page.wait_for_selector(".modal h3:has-text('Clone container')", timeout=MEDIUM)
+        # Check Replace original, then provide a privileged port to trigger server rejection
+        page.locator(".modal #run-replace").check()
+        page.locator(".modal #run-ports").fill("80:80")  # privileged host port → 400
+        page.locator(".modal .actions button.primary").click()
+        # An error toast should appear
+        page.wait_for_selector(".toast.error", timeout=LONG)
+        # Source container must still exist — replace_cleanup never ran
+        src = docker_client.containers.get(src_name)
+        assert src.status == "running", f"Source status changed: {src.status}"
+    finally:
+        for c in docker_client.containers.list(all=True):
+            if c.name in (src_name, "clone-" + src_name):
                 c.remove(force=True)
 
 
@@ -421,11 +854,11 @@ def test_network_connect_form_submit(page, live_server, docker_client):
 
     # <option> elements inside a <select> are hidden by default; use state="attached"
     page.wait_for_selector(
-        f"#net-connect-container option:has-text('{ctr_name}')",
+        f"select[name='container_id'] option:has-text('{ctr_name}')",
         timeout=MEDIUM,
         state="attached",
     )
-    page.locator("#net-connect-container").select_option(label=f"{ctr_name} (running)")
+    page.locator("select[name='container_id']").select_option(label=f"{ctr_name} (running)")
 
     page.locator(".modal-bg button:has-text('Connect')").click()
 
@@ -525,11 +958,18 @@ def test_run_modal_registry_hint_loads(page, live_server):
 
 @pytest.mark.e2e
 def test_builtin_network_no_action_buttons(page, live_server):
-    """Built-in networks (bridge, host, none) expose no Connect or Delete buttons."""
+    """Built-in networks (bridge, host, none) expose no Connect or Delete buttons.
+
+    Matches rows by the built-in badge rather than just the network name —
+    earlier tests may create networks that contain "bridge" / "host" /
+    "none" as substrings and flake the raw text match."""
     _nav_to(page, "networks")
 
     for builtin_name in ("bridge", "host", "none"):
-        row = page.locator(f"tr:has-text('{builtin_name}')").first
+        # A built-in row has BOTH the name AND the "built-in" badge span.
+        row = page.locator(
+            f"tr:has-text('{builtin_name}'):has-text('built-in')",
+        ).first
         if row.count() == 0:
             continue
         assert row.locator("button:has-text('Connect...')").count() == 0, \
@@ -673,12 +1113,17 @@ def test_container_health_badge(page, live_server, docker_client):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Engine unreachable — tunnel builder form (LAST test: kills the SSH tunnel)
+# Engine unreachable — helpful empty state (LAST test: kills the SSH tunnel)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.e2e
-def test_engine_unreachable_shows_tunnel_instructions_impl(browser, live_server):
-    """Kill SSH tunnel → containers page shows unreachable state + tunnel builder form.
+def test_engine_unreachable_shows_helpful_empty_state(browser, live_server):
+    """Kill SSH tunnel → containers page shows "cannot reach Docker" with guidance.
+
+    E2E runs with env-configured DOCKER_HOST, so the managed-tunnel branch is not
+    exercised (server has no stored ssh_target). Expect: the local-runtime hint
+    that names the configured socket path and tells the user to check their
+    runtime is up. Must NOT show the deprecated tunnel-builder form.
 
     Placed last to minimise risk: if tunnel restoration fails, no subsequent
     tests depend on Docker in this session.
@@ -718,20 +1163,21 @@ def test_engine_unreachable_shows_tunnel_instructions_impl(browser, live_server)
                 sign_in.click()
                 pg.wait_for_selector(".sidebar", timeout=10_000)
 
-            # Navigate to containers — Docker is dead, the error form must appear
+            # Navigate to containers — Docker is dead, the helpful empty state must appear
             pg.locator(".sidebar a:has-text('Containers')").click()
-            pg.wait_for_selector("#tunnel-user", timeout=MEDIUM)
+            pg.wait_for_selector("h3:has-text('Cannot reach Docker engine')", timeout=MEDIUM)
 
-            assert pg.locator("#tunnel-host").count() > 0, "#tunnel-host input not rendered"
-            assert pg.locator("#tunnel-cmd").count() > 0, "#tunnel-cmd pre not rendered"
+            # Deprecated form MUST NOT be present anywhere
+            assert pg.locator("#tunnel-user").count() == 0, "old tunnel-builder form still rendered"
+            assert pg.locator("#tunnel-host").count() == 0, "old tunnel-builder form still rendered"
+            assert pg.locator("#tunnel-cmd").count() == 0, "old tunnel-cmd pre still rendered"
 
-            # Typing user/host must update the tunnel command
-            pg.locator("#tunnel-user").fill("myuser")
-            pg.locator("#tunnel-host").fill("myhost.local")
-            pg.wait_for_timeout(200)
-            cmd_text = pg.locator("#tunnel-cmd").text_content()
-            assert "myuser" in cmd_text, f"user not in cmd: {cmd_text!r}"
-            assert "myhost.local" in cmd_text, f"host not in cmd: {cmd_text!r}"
+            # The empty-state paragraph must name a runtime or tunnel guidance so the
+            # user has an actionable next step (not just "cannot reach").
+            body = pg.locator(".empty-state").text_content()
+            assert body and any(
+                h in body.lower() for h in ("runtime", "tunnel", "reload", "reconnect", "docker")
+            ), f"empty-state lacks actionable guidance: {body!r}"
         finally:
             context.close()
 

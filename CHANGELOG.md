@@ -9,125 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
----
+_No changes queued._
 
-## [1.1.0] — 2026-04-16
+## [1.0.0] — 2026-04-17
 
-### Added
+First public release of SKIFF — a lightweight web UI and JSON API for
+Docker Engine, usable locally or over an SSH tunnel.
 
-**Security hardening**
-- Setup endpoint per-IP brute-force lockout: 3 failed validation attempts → 429 for 300 s, mirroring WebSocket auth lockout; `audit.setup_failed` emitted on every failure for SIEM detection
-- `ipc: shareable` blocked in compose sandbox (was: only `ipc: host` blocked); containers can no longer share IPC namespaces via compose
-- Setup wizard token input changed to `type="password"` with Copy-to-clipboard button — prevents token appearing in browser clipboard history and screenshots
-- Tunnel credentials (`tunnelUser`, `tunnelHost`) cleared from sessionStorage immediately after successful tunnel connection
-- WebSocket close code 4003 (session expired) now triggers "Session expired" toast and suppresses reconnect — previously may have retried with stale token
-- `setup-state` endpoint returns minimal payload (`configured`, `from_env` only) when server is already configured — no tunnel socket path leaked to unauthenticated callers
-- DOCKER_HOST HTTP guard: startup logs `security.docker_host_unencrypted` warning if `DOCKER_HOST` is a non-localhost `http://` URL
-- Startup audit log entry `app.dependency_versions` records installed versions of all direct dependencies for post-incident forensics
+### Features
+- **Container lifecycle** — list, inspect, run, start/stop/restart/remove,
+  logs (live WebSocket), exec (interactive shell over WebSocket), stats.
+- **Image management** — list, pull (with registry allowlist), inspect,
+  history, remove; Docker Hub repo + tag validation.
+- **Volume & network management** — list, create (validated name shapes),
+  inspect, remove, prune.
+- **Compose** — upload, validate (sandboxed YAML load + per-service checks),
+  `up` / `down`, per-project directory derivation.
+- **First-run setup wizard** — token generation, SSH tunnel connect, local
+  socket probe (Docker Desktop, Colima, OrbStack, Rancher Desktop, Linux
+  Engine), per-IP lockout.
+- **Audit log** — structured JSONL, rotating file, redacted env values,
+  classification per endpoint (`container.run`, `image.pulled`, etc.),
+  download endpoint.
+- **Undo queue** — tokenised reversal of destructive ops within a short
+  TTL window.
+- **System page** — info, df, metrics, connect-snippets (copy-paste
+  integration hints for Prometheus, Loki, Grafana, Splunk, …).
 
-**Code architecture**
-- Monolith split: `skiff/app.py` (≈2 500 lines) split into focused modules — `skiff/{config,auth,docker_client,logging_setup,validators}.py` and `skiff/routers/{containers,images,volumes,networks,compose,system}.py`; external API and root `app.py` shim unchanged
+### Security
+- **Single-bearer-token auth** with optional oauth2-proxy front-ending for SSO.
+- **CSRF header enforced** on all mutations (`X-Requested-With`).
+- **Rate limiting** on every `/api/*` via SlowAPI.
+- **Zero-trust browser model** — `sessionStorage` only; idle + absolute
+  session timeouts; tab-close clears state.
+- **WebSocket hardening** — Origin allowlist, per-IP brute-force lockout
+  on AUTH handshake, 4003 close code on session expiry.
+- **Path-injection defences** — `resolve() + is_relative_to()` on every
+  filesystem boundary; CodeQL-clean.
+- **Registry allowlist** — default `docker.io,ghcr.io`; compose and run
+  paths both enforce it.
+- **Constant-time token compare** via `hmac.compare_digest`.
+- **Setup window** auto-closes 5 min after startup.
+- **Startup warnings** for weak token, non-localhost bind without TLS.
 
-**CI / supply chain**
-- `.github/workflows/security.yml` — `anthropics/claude-code-security-review` runs on every PR
-- `.github/dependabot.yml` — weekly automated dependency update PRs (pip + github-actions)
-- `.github/CODEOWNERS` — `.github/`, `pyproject.toml`, `requirements.txt` require maintainer review
-- `.pre-commit-config.yaml` — ruff + pip-audit hooks
-- `requirements.txt` regenerated with `pip-compile --generate-hashes` (708 SHA-256 hashes covering all platform wheels; cross-platform for pip and uv)
-- `make deps` target added to regenerate hash-pinned requirements
-- `pip-audit` added to CI and `[dev]` extras; `make security` coverage extended to all `skiff/` modules
+### Supply chain
+- Hash-pinned `requirements.txt` via `pip-compile --generate-hashes`.
+- SBOM (CycloneDX) generated per release.
+- Dependabot configured for pip + GitHub Actions.
+- GitHub Actions SHA-pinned; `GITHUB_TOKEN` restricted to `contents: read`.
+- `CODEOWNERS` gate on `.github/`, `pyproject.toml`, `requirements.txt`.
+- `pre-commit` hook runs `ruff` + `pip-audit` before every commit.
 
-**Documentation**
-- `docs/production-hardening.md` — new 13-section operator hardening guide (TLS, network isolation, token lifecycle, registry scoping, SSO, audit/SIEM, session timeout, SSH hygiene, dependency scanning, supply chain, incident response, least-privilege account)
-- `docs/code-quality-guide.md` — new "Documented Security Controls" table (11 non-obvious decisions with rationale) and "Zero-trust design limitations" reference
-- `SECURITY.md` — new "Zero-trust gaps and known design limitations" table (mutable allowlist, single token, audit log integrity, compose allowlist timing)
-- `README.md` — "Zero trust and cloud workstation environments" subsection in Why SKIFF?; local-first framing; Docker Desktop comparison column; platform socket path table; zero-config dev-mode quickstart; remote deployment clearly labelled section
-- `docs/api-reference.md` — WebSocket handshake protocol spec, close codes table, corrected stats field names (`mem_usage_mb`, `blk_read_mb`, etc.)
-- `docs/troubleshooting.md` — three new entries: setup window expired, WS 4003 session expired, WS auth lockout
+### CI & code quality
+- Custom AST linter (`tools/lint_antipatterns.py`) enforces 14 project
+  anti-patterns (AP001–AP014): nested `try`, bulky imports, literal policy
+  kwargs, hardcoded paths, inline identifier regex outside
+  `skiff/validators.py`, archaeological comment markers, hardcoded
+  policy literals in comments, etc.
+- Ruff with `S` (bandit), `DTZ`, `FURB`, `PTH`, `PYI` rule families.
+- `pip-audit --strict` on every PR.
+- Markdown cross-link checker (`tools/check_md_links.py`) — no broken
+  internal links or anchors.
+- Auto-generated reference catalogues (errors, audit events, config knobs,
+  per-router feature docs) with CI drift check.
+- JS linter enforcing no `innerHTML` interpolation outside `ui.js`.
+- `claude-code-security-review` GitHub Action scans each PR diff.
+- SARIF upload step in `security.yml` integrates with GitHub's CodeQL
+  default-setup (enable via repo Settings → Code security → Code scanning).
 
-### Changed
+### Documentation
+- Adopter docs under `docs/hardening/` (production, integrations,
+  security-scans), `docs/runbooks/` (step-by-step recovery).
+- Maintainer docs under `docs/dev/` (feature-development, code-quality-guide,
+  storyboards, personas, zero-trust-review template).
+- Reference: `docs/api-reference.md`, auto-generated `errors.md`,
+  `audit-events.md`, `config-knobs.md`, `features/*.generated.md`.
+- `SECURITY.md` scoped to policy; operator guide lives in
+  `docs/hardening/production.md`.
 
-- **Default `ALLOWED_REGISTRIES`**: `us-docker.pkg.dev/` → `docker.io,ghcr.io` — the previous default silently blocked all Docker Hub pulls for local users
-- Registry allowlist comparison is now case-insensitive (`DOCKER.IO` matches `docker.io`)
-- Container filesystem diff endpoint: kind values capitalised (`Added`/`Modified`/`Deleted`) — was lowercase, breaking badge CSS colour logic in the UI
-- `SECURITY.md` trimmed to a concise policy document; operational hardening content moved to `docs/production-hardening.md`
-- `docs/production-hardening.md` §6 SIEM/logging: Grafana Alloy replaces Promtail (EOL 2026-03-02); OpenSearch recommendation corrected to Fluent Bit (Filebeat 7.13+ incompatible with OpenSearch); concrete Splunk SPL and Sentinel KQL alert queries added including the key co-occurrence pattern (`rate_limit.exceeded` + `auth.denied` from same IP)
-- CI workflow `ci.yml`: Python 3.11 matrix entry removed (project requires 3.12+); `permissions: contents: read` added; step name corrected from "bandit" to "ruff"
+### Known gaps
+- No Dockerfile builds, no Kubernetes, no plugin system — all deliberate,
+  documented in `SECURITY.md` scope statement.
+- **Partial i18n infrastructure.** UI strings are English-only today,
+  but the pre-i18n shape is in place: a central `strings.en.js` bundle,
+  a `t(key, vars?)` lookup helper in `ui.js`, the volumes page fully
+  migrated as the reference exemplar, and a contract test that missing
+  keys fail CI. Other pages still have inline English literals — a
+  future contributor migrates them incrementally. Runtime language
+  switching, pluralisation, and RTL support land with the first
+  concrete language request (see `docs/dev/i18n.md` for the full
+  posture).
 
-### Fixed
-
-- Images page search filter silently failed when `/api/images` returned `tags` (array) — `img.tag` was `undefined`, causing a `TypeError` in the `oninput` handler that left all images unfiltered; filter and render now correctly use `img.tags`
-- WebSocket input size check used character count (`len(data)`) instead of byte count (`len(data.encode())`); a 65 536-character string of 4-byte UTF-8 sequences = 256 KB actual data
-- Tunnel path containment used string `startswith` which fails on macOS where `/tmp` is a symlink to `/private/tmp`; replaced with `Path.is_relative_to()` on resolved paths
-- `images.py` pull/push used `lambda: client.images.pull(image)` in `run_in_executor`; replaced with direct callable `(client.images.pull, image)` — lambdas capture by reference and are unnecessarily indirect
-
----
-
-## [1.0.0] — 2026-04-15
-
-Initial public release of SKIFF Container Manager.
-
-### Added
-
-**Core backend**
-- FastAPI backend connecting to a remote Docker Engine VM via SSH tunnel
-- Container lifecycle: list, run, start, stop, restart, pause, unpause, kill, rename, remove
-- Log tail, download (plain text + JSONL), and real-time WebSocket streaming
-- Interactive shell via WebSocket exec
-- Image management: list, allowed, pull, push, tag, remove, inspect
-- Volume management: list, create, remove, prune (named volumes only)
-- Network management: list, create, remove, connect, disconnect, prune
-- Docker Compose support: deploy and tear down stacks with sandbox validation
-- System info, disk usage, prune, and build-cache prune endpoints
-- Registry search and tag proxy endpoints (`/api/registry/search`, `/api/registry/tags`)
-- Config endpoint (`/api/config`) returning allowed registries and Docker VM host to UI
-- Audit log query and download endpoints (`/api/system/audit-log`, `/api/system/audit-log/download`)
-
-**Security**
-- Bearer token authentication with constant-time comparison (`hmac.compare_digest`)
-- CSRF protection via `X-Requested-With: ContainerManager` header
-- Registry allowlist enforcement — every pull/push/run validated against `ALLOWED_REGISTRIES`
-- Compose file sandbox: blocks `privileged`, host path mounts, `cap_add`, `devices`, `build`, `secrets`, unapproved registries
-- Volume sandbox: named volumes only, host paths rejected
-- WebSocket auth via first message (avoids query-param token leakage)
-- Rate limiting via slowapi with `RATE_LIMIT_SCALE` multiplier for CI/testing
-- Security headers middleware: CSP, X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy
-- Audit logging middleware (SOC 2 CC7.1) with structured JSONL output
-- `ALLOWED_ORIGINS` wildcard guard: startup raises `ValueError` if `*` is configured
-- SPDX license headers on all source files
-
-**Packaging**
-- `skiff` PyPI package — `pip install skiff` + `skiff` CLI entry point
-- Proper package structure (`skiff/app.py`, `skiff/static/`) so static assets are bundled in the wheel
-- `[dev]` optional dep group: pytest, httpx, hypothesis (no browser required)
-- `[e2e]` optional dep group: playwright, pytest-playwright (requires `playwright install chromium`)
-- `setuptools.build_meta` build backend
-
-**UI**
-- Single-page web UI (`static/index.html`) — no build step, vanilla JS
-- Keyboard shortcuts, container search/filter, Hub image search with tag picker
-- Real-time log streaming and interactive terminal in the browser
-
-**Ops**
-- `run.sh` startup script for Cloud Workstation / Linux
-- systemd unit file (`docs/skiff.service`)
-- `RATE_LIMIT_SCALE` env var for CI and load-test environments
-
-**Documentation**
-- `README.md` with quick start, platform setup, configuration reference, and API overview
-- `docs/api-reference.md` — full REST and WebSocket endpoint reference
-- `docs/deployment.md` — GCP Cloud Workstation deployment guide
-- `docs/local-docker.md` — local Docker Engine setup
-- `docs/gcp-testing.md` — day-to-day GCP operations guide
-- `docs/troubleshooting.md` — common issues and fixes
-- `docs/code-quality-guide.md` — code standards and PR checklist
-- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`
-
-**Tests**
-- 142 unit tests (no Docker daemon required)
-- 26 Playwright e2e tests covering 100% of UI flows
-- Hypothesis property-based tests for input validation
-
-### Security fixes at release
-- `python-multipart` `>=0.0.22` — CVE-2026-24486
-- `fastapi` `>=0.116` + `starlette` `>=0.49.1` — CVE-2025-54121, CVE-2025-62727
+[Unreleased]: https://github.com/yshk-mxim/skiff-container-manager/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/yshk-mxim/skiff-container-manager/releases/tag/v1.0.0

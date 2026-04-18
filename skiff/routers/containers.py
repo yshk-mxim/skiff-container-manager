@@ -1,359 +1,573 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Yakov Shkolnikov and contributors
-"""Container lifecycle routes and WebSocket log streaming / exec shell."""
+"""Container HTTP lifecycle routes (create / start / stop / inspect / stats / …).
+
+WebSocket handlers — log streaming and the interactive exec shell —
+live in `skiff.routers.containers_ws`. The two halves share only the
+validators + auth modules; keeping them separate makes each file fit
+in one read.
+"""
 from __future__ import annotations
 
 import asyncio
-import collections
+import copy
 import re
-import threading
-import time
+from typing import Any
 
+import docker.errors
 import structlog
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from starlette.websockets import WebSocket
 
-from skiff.auth import (
-    AUTH,
-    _validate_ws_origin,
-    _validate_ws_token_from_message,
-    verify_csrf,
-    ws_keepalive,
+from skiff import config, validators
+from skiff.auth import AUTH  # decorator arg — direct import for readability
+from skiff.contract.errors import http_error
+from skiff.contract.requests import RunContainerRequest
+from skiff.contract.responses import (
+    ContainerInspectResponse,
+    ContainerSummary,
+    OkResponse,
+    UndoableResponse,
+    _ContainerConfigSection,
+    _ContainerHealthSection,
+    _ContainerHostConfigSection,
+    _ContainerMountEntry,
+    _ContainerNetworkEntry,
 )
-from skiff.config import (
-    CONTAINER_RESTART_TIMEOUT,
-    CONTAINER_STATS_TIMEOUT,
-    CONTAINER_STOP_TIMEOUT,
-    MAX_CONTAINER_CPU,
-    MAX_CONTAINER_MEM,
-    MAX_CONTAINERS,
-    MAX_LOG_TAIL,
-    MAX_PORT_MAPPINGS,
-    MAX_RESTART_RETRIES,
-    MAX_VOLUME_NAME_LENGTH,
-    PRIVILEGED_PORT_THRESHOLD,
-    RL_DEFAULT,
-    RL_FAST,
-    RL_SLOW,
-    WS_EXEC_IDLE_TIMEOUT,
-    WS_EXEC_RECV_TIMEOUT,
-    WS_LOG_IDLE_TIMEOUT,
-    WS_LOG_TAIL,
-    WS_MAX_PER_IP,
-    _limit,
-    limiter,
-)
-from skiff.docker_client import docker_client_dep, get_client
-from skiff.validators import (
-    CONTAINER_ID_RE,
-    NETWORK_NAME_RE,
-    _get_container,
-    _redact_env,
-    _validate_mount_target,
-    safe_docker_call,
-    validate_container_name,
-    validate_image_registry,
-)
+from skiff.docker_client import docker_client_dep
+from skiff.rate import RATE
+from skiff.secure import secure_route
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
-
-# ── Per-IP WebSocket connection rate limiting ──────────────
-_ws_connections: dict[str, int] = collections.defaultdict(int)
-_ws_lock = threading.Lock()
-
-
-def _ws_acquire(ip: str) -> None:
-    with _ws_lock:
-        if _ws_connections[ip] >= WS_MAX_PER_IP:
-            raise HTTPException(429, "Too many WebSocket connections from this IP")
-        _ws_connections[ip] += 1
-
-
-def _ws_release(ip: str) -> None:
-    with _ws_lock:
-        _ws_connections[ip] = max(0, _ws_connections[ip] - 1)
 
 
 # ── Container routes ───────────────────────────────────────
 
 @router.get("/api/containers", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_FAST))
-def list_containers(request: Request, client=Depends(docker_client_dep)) -> list[dict]:
+@secure_route.read(RATE.READ)
+def list_containers(request: Request, client=Depends(docker_client_dep)) -> list[ContainerSummary]:
     """Return all containers (running and stopped)."""
-    containers = safe_docker_call(client.containers.list, all=True)
-    result = []
-    for c in containers:
-        try:
-            image_name = c.image.tags[0] if c.image.tags else c.image.short_id
-        except Exception:
-            image_name = "unknown"
-        result.append({
-            "id": c.short_id,
-            "name": c.name,
-            "image": image_name,
-            "status": c.status,
-            "state": c.attrs.get("State", {}).get("Status", "unknown"),
-            "health": c.attrs.get("State", {}).get("Health", {}).get("Status", "none")
-            if isinstance(c.attrs.get("State", {}).get("Health"), dict) else "none",
-            "ports": c.ports,
-            "created": c.attrs.get("Created", ""),
-        })
-    return result
+    containers = validators.safe_docker_call(client.containers.list, all=True)
+    return [ContainerSummary.from_docker(c) for c in containers]
+
+
+# ── run_container builder + helpers ──────────────────────────────────────────
+# Each helper validates or builds one facet of the run-container payload.
+# `run_container` is a linear composition of named steps, not a 170-line
+# procedural wall of nested ifs. This also gives the McCabe complexity
+# scanner a handler of ~5 branches instead of 20+ — and each helper is
+# independently unit-testable.
+
+# _PORT_RE / _ENV_KV_RE are handler-specific — they validate a single
+# field shape on the run_container body, not an identifier shared with
+# other resources. They stay inline here per the AP011 exemption for
+# "used once, not a shared identifier".
+_PORT_RE = re.compile(r"^\d{1,5}(/tcp|/udp)?$")
+_ENV_KV_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*=")
+# Label-key regex matches Docker's identifier shape — shared with
+# container names (same ≤128-char alphanumeric+._- rule). Alias rather
+# than redeclare.
+_LABEL_KEY_RE = validators.LABEL_KEY_RE
+
+# Static restart-policy → Docker-SDK shape. Unknown keys get rejected by
+# `_build_restart_policy` (see `validation.bad_restart_policy`).
+_RESTART_POLICY_SHAPES: dict[str, dict[str, Any]] = {
+    "no": {},
+    "on-failure": {"Name": "on-failure", "MaximumRetryCount": config.MAX_RESTART_RETRIES},
+    "unless-stopped": {"Name": "unless-stopped"},
+    "always": {"Name": "always"},
+}
+
+
+def _ensure_container_ref(value: str | None, field: str) -> None:
+    """Raise 400 if `value` is set but not a valid container-ID hex string."""
+    if value is not None and not validators.CONTAINER_ID_RE.fullmatch(value):
+        raise http_error("validation.bad_input", message=f"Invalid {field} container ID")
+
+
+def _extract_host_port(hport: Any) -> int | None:
+    """Return the numeric host port from Docker SDK's port-mapping value.
+
+    Docker SDK accepts: `int | str | (ip, port) tuple | None (publish all)`.
+    Returns None when there's no numeric host port — nothing to check
+    against the privileged-port threshold.
+    """
+    if isinstance(hport, (list, tuple)) and len(hport) == 2:
+        hport = hport[1]
+    if hport is None:
+        return None
+    try:
+        return int(str(hport).split(":")[-1])
+    except (ValueError, TypeError) as exc:
+        raise http_error(
+            "container.port_format",
+            message=f"Invalid host port: {str(hport)[:20]}",
+        ) from exc
+
+
+def _reject_bad_container_port(cport: str) -> None:
+    if not _PORT_RE.match(str(cport)):
+        raise http_error(
+            "container.port_format",
+            message=f"Invalid container port format: {str(cport)[:20]}",
+        )
+
+
+def _reject_privileged_host_port(hport: Any) -> None:
+    hp = _extract_host_port(hport)
+    if hp is not None and hp < config.PRIVILEGED_PORT_THRESHOLD:
+        raise http_error(
+            "container.port_host_privileged",
+            port=hp, threshold=config.PRIVILEGED_PORT_THRESHOLD,
+        )
+
+
+def _validate_ports(ports: dict[str, str] | None) -> None:
+    """Reject oversize maps, bad container-port format, privileged host ports."""
+    if not ports:
+        return
+    if len(ports) > config.MAX_PORT_MAPPINGS:
+        raise http_error("container.port_count_exceeds_cap", limit=config.MAX_PORT_MAPPINGS)
+    for cport, hport in ports.items():
+        _reject_bad_container_port(cport)
+        _reject_privileged_host_port(hport)
+
+
+def _validate_env_entries(environment: list[str] | None) -> None:
+    """Reject entries that aren't in KEY=VALUE shape."""
+    for entry in environment or ():
+        if "=" not in entry or not _ENV_KV_RE.match(entry):
+            raise http_error(
+                "validation.bad_env",
+                message=f"Invalid environment variable format: {entry[:50]}. Use KEY=VALUE.",
+            )
+
+
+def _inherit_env(
+    client, inherit_from: str | None, overrides: list[str] | None,
+) -> list[str] | None:
+    """Merge env from a source container with caller overrides (override wins).
+
+    Zero-trust clone: source values are read off the container's
+    Config.Env and forwarded to the new container without crossing the
+    UI. Returns `overrides` unchanged when no inherit is requested.
+    """
+    if not inherit_from:
+        return overrides
+    source = validators._get_container(client, inherit_from)
+    inherited = source.attrs.get("Config", {}).get("Env", []) or []
+    if not overrides:
+        return list(inherited)
+    override_keys = {e.split("=", 1)[0] for e in overrides}
+    return [e for e in inherited if e.split("=", 1)[0] not in override_keys] + list(overrides)
+
+
+def _parse_volume_spec(spec: str) -> tuple[str, dict[str, str]]:
+    """Return `(name, {bind, mode})` for one `name:/path[:ro|rw]` entry.
+
+    Raises on: missing colon, host-path escape attempts, disallowed mount
+    targets, malformed volume name. `mode` defaults to `rw` when absent
+    or unrecognised.
+    """
+    if ":" not in spec:
+        raise http_error(
+            "container.volume_format",
+            message=f"Invalid volume format: {spec[:50]}. Use name:/path.",
+        )
+    parts = spec.split(":", 2)
+    vol_name, mount_path = parts[0], parts[1]
+    validators._validate_mount_target(mount_path)
+    if vol_name.startswith(("/", "~", "..", "$")):
+        raise http_error("container.volume_host_path_blocked")
+    name_re = rf"^[a-zA-Z0-9][a-zA-Z0-9_.-]{{0,{config.MAX_VOLUME_NAME_LENGTH}}}$"
+    if not re.match(name_re, vol_name):
+        raise http_error(
+            "container.volume_format",
+            message=f"Invalid volume name: {vol_name[:50]}",
+        )
+    mode = parts[2] if len(parts) > 2 and parts[2] in ("ro", "rw") else "rw"
+    return vol_name, {"bind": mount_path, "mode": mode}
+
+
+def _build_volume_binds(volumes: list[str] | None) -> dict[str, dict[str, str]]:
+    """Turn a list of volume spec strings into a Docker SDK binds dict."""
+    return dict(_parse_volume_spec(v) for v in (volumes or ()))
+
+
+def _build_restart_policy(name: str | None) -> dict[str, Any]:
+    """Map a restart-policy name to a Docker SDK restart_policy dict."""
+    key = name or "no"
+    if key not in _RESTART_POLICY_SHAPES:
+        raise http_error("validation.bad_restart_policy")
+    return _RESTART_POLICY_SHAPES[key]
+
+
+_LABEL_VALUE_MAX = 4096
+_LABEL_COUNT_MAX = 50
+
+
+def _reject_bad_label(lk: str, lv: str) -> None:
+    if not _LABEL_KEY_RE.match(lk):
+        raise http_error("container.label_bad", message=f"Invalid label key: {lk[:50]}")
+    if len(str(lv)) > _LABEL_VALUE_MAX:
+        raise http_error(
+            "container.label_bad",
+            message=f"Label value too long for key: {lk[:50]} (max {_LABEL_VALUE_MAX} chars)",
+        )
+
+
+def _validate_labels(labels: dict[str, str] | None) -> None:
+    """Reject oversize maps (>50), bad keys, or values > 4096 chars."""
+    if not labels:
+        return
+    if len(labels) > _LABEL_COUNT_MAX:
+        raise http_error("container.label_count_exceeds_cap", limit=_LABEL_COUNT_MAX)
+    for lk, lv in labels.items():
+        _reject_bad_label(lk, lv)
+
+
+def _resolve_tmpfs(tmpfs: dict[str, str] | None, read_only: bool) -> dict[str, str]:
+    """Pick the effective tmpfs map.
+
+      - `tmpfs=None` + `read_only=True`  → default runtime dirs from TOML
+        (so stock nginx / redis / haproxy / postgres initdb images boot).
+      - `tmpfs=None` + `read_only=False` → no tmpfs mounts.
+      - Explicit dict (even `{}`)        → caller knows best; validate shape.
+    """
+    if tmpfs is None:
+        return dict(config.DEFAULT_TMPFS) if read_only else {}
+    validators._validate_tmpfs(tmpfs, config.MAX_TMPFS_MOUNTS, config.MAX_TMPFS_SIZE_MB)
+    return tmpfs
+
+
+class _RunKwargsBuilder:
+    """Accumulate Docker SDK `containers.run` kwargs as a sequence of steps.
+
+    Each `with_X` method validates its facet, stores the canonical form,
+    and returns `self` so the caller chains the pipeline top-to-bottom.
+    `build()` flattens the accumulated state into the final kwargs dict.
+
+    Isolating each facet as a method lets:
+      - unit tests exercise one concern at a time
+      - McCabe treat the handler as ~5 straight-line calls, not 20 nested ifs
+      - a reader follow the algorithm by reading method names, not by
+        tracing indentation
+    """
+
+    def __init__(self, body: RunContainerRequest, name: str | None) -> None:
+        self.body = body
+        self.name = name
+        self._kwargs: dict[str, Any] = {
+            "name": name,
+            "ports": body.ports,
+            "detach": True,
+            "mem_limit": config.MAX_CONTAINER_MEM,
+            "nano_cpus": int(config.MAX_CONTAINER_CPU * 1e9),
+            "security_opt": ["no-new-privileges:true"],
+            "read_only": body.read_only,
+        }
+
+    def with_environment(self, client) -> _RunKwargsBuilder:
+        self._kwargs["environment"] = _inherit_env(client, self.body.inherit_from, self.body.environment)
+        return self
+
+    def with_tmpfs(self) -> _RunKwargsBuilder:
+        effective = _resolve_tmpfs(self.body.tmpfs, self.body.read_only)
+        if effective:
+            self._kwargs["tmpfs"] = effective
+        return self
+
+    def with_command(self) -> _RunKwargsBuilder:
+        cmd = self.body.command
+        if not cmd:
+            return self
+        if len(cmd) > 4096:
+            raise http_error("container.command_too_long", limit=4096)
+        self._kwargs["command"] = cmd
+        return self
+
+    def with_volumes(self) -> _RunKwargsBuilder:
+        binds = _build_volume_binds(self.body.volumes)
+        if binds:
+            self._kwargs["volumes"] = binds
+        return self
+
+    def with_restart_policy(self) -> _RunKwargsBuilder:
+        rp = _build_restart_policy(self.body.restart_policy)
+        if self.body.restart_policy and self.body.restart_policy != "no":
+            self._kwargs["restart_policy"] = rp
+        return self
+
+    def with_network(self) -> _RunKwargsBuilder:
+        if self.body.network:
+            self._kwargs["network"] = self.body.network
+        return self
+
+    def with_labels(self) -> _RunKwargsBuilder:
+        if self.body.labels:
+            self._kwargs["labels"] = self.body.labels
+        return self
+
+    def build(self) -> dict[str, Any]:
+        return self._kwargs
+
+
+def _maybe_replace(client, replace_id: str | None, new_container) -> bool:
+    """Stop+remove the container referenced by `replace_id`. Safe on failure.
+
+    Called AFTER the new container is running. Cleanup errors log a
+    warning but don't 5xx — the caller has a live container and can
+    retry the cleanup manually. Refuses to remove the new container
+    if `replace_id` happens to match (belt-and-braces).
+    """
+    if not replace_id:
+        return False
+    try:
+        old = validators._get_container(client, replace_id)
+    except (HTTPException, docker.errors.DockerException) as exc:
+        log.warning(
+            "container.replace_cleanup_failed",
+            new_id=new_container.short_id, old_id=replace_id, error=str(exc),
+        )
+        return False
+    if old.id == new_container.id:
+        log.warning(
+            "container.replace_noop", id=new_container.short_id,
+            reason="replace_id matches new container",
+        )
+        return False
+    try:
+        validators.safe_docker_call(old.remove, force=True)
+    except (HTTPException, docker.errors.DockerException) as exc:
+        log.warning(
+            "container.replace_cleanup_failed",
+            new_id=new_container.short_id, old_id=replace_id, error=str(exc),
+        )
+        return False
+    log.info("container.replaced", new_id=new_container.short_id, old_id=replace_id)
+    return True
 
 
 @router.post("/api/containers/run", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_SLOW))
+@secure_route.mutate(
+    RATE.WRITE, audit="container.run",
+    audit_fields=lambda request, image, name=None, **kw: {"image": image, "name": name or ""},  # noqa: ARG005
+)
 def run_container(
     request: Request,
     image: str,
     name: str | None = None,
-    ports: dict[str, str] | None = Body(default=None),
-    environment: list[str] | None = Body(default=None),
-    command: str | None = Body(default=None),
-    volumes: list[str] | None = Body(default=None),
-    restart_policy: str | None = Body(default=None),
-    network: str | None = Body(default=None),
-    labels: dict[str, str] | None = Body(default=None),
-    read_only: bool = Body(default=True),
+    body: RunContainerRequest = Body(default_factory=RunContainerRequest),
     client=Depends(docker_client_dep),
 ) -> dict:
-    """Create and start a new container from a validated registry image."""
-    verify_csrf(request)
-    validate_image_registry(image)
-    validate_container_name(name)
+    """Create and start a new container.
 
-    if ports:
-        if len(ports) > MAX_PORT_MAPPINGS:
-            from fastapi import HTTPException
-            raise HTTPException(400, f"Too many port mappings (max {MAX_PORT_MAPPINGS})")
-        for cport, hport in ports.items():
-            if not re.match(r"^\d{1,5}(/tcp|/udp)?$", str(cport)):
-                from fastapi import HTTPException
-                raise HTTPException(400, f"Invalid container port format: {str(cport)[:20]}")
-            raw_hp = hport
-            if isinstance(raw_hp, (list, tuple)) and len(raw_hp) == 2:
-                raw_hp = raw_hp[1]
-            if raw_hp is not None:
-                from fastapi import HTTPException
-                try:
-                    hp = int(str(raw_hp).split(":")[-1])
-                except (ValueError, TypeError):
-                    raise HTTPException(400, f"Invalid host port: {str(hport)[:20]}") from None
-                if hp < PRIVILEGED_PORT_THRESHOLD:
-                    raise HTTPException(400, f"Host port {hp} is privileged (<{PRIVILEGED_PORT_THRESHOLD})")
+    Linear pipeline: validate → enforce global cap → build kwargs → create
+    → optionally replace. Each validator / builder is a named helper above;
+    the handler itself fits on one screen.
 
-    from fastapi import HTTPException
-    if environment:
-        for env in environment:
-            if "=" not in env or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*=", env):
-                raise HTTPException(400, f"Invalid environment variable format: {env[:50]}. Use KEY=VALUE.")
+    Phase 2 clone-to-recreate:
+      - `body.inherit_from` → zero-trust env merge from a source container
+        (values stay server-side — never round-trip through the UI).
+      - `body.replace_id`   → stop+remove the old container AFTER the new
+        one is successfully running. Create failure preserves the old.
+    """
+    # Input validation (each helper raises http_error on bad input).
+    validators.validate_image_registry(image)
+    validators.validate_container_name(name)
+    _ensure_container_ref(body.inherit_from, "inherit_from")
+    _ensure_container_ref(body.replace_id, "replace_id")
+    _validate_ports(body.ports)
+    _validate_env_entries(body.environment)
+    _validate_labels(body.labels)
+    if body.network and not validators.NETWORK_NAME_RE.fullmatch(body.network):
+        raise http_error("network.bad_name")
 
-    volume_binds = {}
-    if volumes:
-        for vol in volumes:
-            if ":" not in vol:
-                raise HTTPException(400, f"Invalid volume format: {vol[:50]}. Use name:/path.")
-            parts = vol.split(":", 2)
-            vol_name, mount_path = parts[0], parts[1]
-            _validate_mount_target(mount_path)
-            if vol_name.startswith(("/", "~", "..", "$")):
-                raise HTTPException(400, "Host path mounts are not allowed — use named volumes only.")
-            if not re.match(rf"^[a-zA-Z0-9][a-zA-Z0-9_.-]{{0,{MAX_VOLUME_NAME_LENGTH}}}$", vol_name):
-                raise HTTPException(400, f"Invalid volume name: {vol_name[:50]}")
-            mode = parts[2] if len(parts) > 2 and parts[2] in ("ro", "rw") else "rw"
-            volume_binds[vol_name] = {"bind": mount_path, "mode": mode}
+    # Global container-count cap — read live from the engine.
+    if len(client.containers.list(all=True)) >= config.MAX_CONTAINERS:
+        raise http_error("container.limit_reached", limit=config.MAX_CONTAINERS)
 
-    valid_restart = {
-        "no": {},
-        "on-failure": {"Name": "on-failure", "MaximumRetryCount": MAX_RESTART_RETRIES},
-        "unless-stopped": {"Name": "unless-stopped"},
-        "always": {"Name": "always"},
-    }
-    rp = valid_restart.get(restart_policy or "no")
-    if rp is None:
-        raise HTTPException(400, "Invalid restart policy")
-
-    if network and not NETWORK_NAME_RE.match(network):
-        raise HTTPException(400, "Invalid network name")
-
-    if labels:
-        if len(labels) > 50:
-            raise HTTPException(400, "Too many labels (max 50)")
-        for lk, lv in labels.items():
-            if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$", lk):
-                raise HTTPException(400, f"Invalid label key: {lk[:50]}")
-            if len(str(lv)) > 4096:
-                raise HTTPException(400, f"Label value too long for key: {lk[:50]} (max 4096 chars)")
-
-    existing = len(client.containers.list(all=True))
-    if existing >= MAX_CONTAINERS:
-        raise HTTPException(400, f"Container limit ({MAX_CONTAINERS}) reached")
-
-    run_kwargs = dict(
-        name=name,
-        ports=ports,
-        environment=environment,
-        detach=True,
-        mem_limit=MAX_CONTAINER_MEM,
-        nano_cpus=int(MAX_CONTAINER_CPU * 1e9),
-        security_opt=["no-new-privileges:true"],
-        read_only=read_only,
+    run_kwargs = (
+        _RunKwargsBuilder(body, name)
+        .with_environment(client)
+        .with_tmpfs()
+        .with_command()
+        .with_volumes()
+        .with_restart_policy()
+        .with_network()
+        .with_labels()
+        .build()
     )
-    if command:
-        if len(command) > 4096:
-            raise HTTPException(400, "Command too long (max 4096 chars)")
-        run_kwargs["command"] = command
-    if volume_binds:
-        run_kwargs["volumes"] = volume_binds
-    if restart_policy and restart_policy != "no":
-        run_kwargs["restart_policy"] = rp
-    if network:
-        run_kwargs["network"] = network
-    if labels:
-        run_kwargs["labels"] = labels
 
-    container = safe_docker_call(client.containers.run, image, **run_kwargs)
-    log.info("container.created", id=container.short_id, name=container.name, image=image)
-    return {"id": container.short_id, "name": container.name, "status": container.status}
+    container = validators.safe_docker_call(client.containers.run, image, **run_kwargs)
+    log.info(
+        "container.created",
+        id=container.short_id, name=container.name, image=image,
+        inherit_from=body.inherit_from or None,
+    )
+
+    # Phase 2 replace: AFTER the new container is running. Create failure
+    # preserves the old; cleanup failure logs a warning but doesn't 5xx.
+    replaced = _maybe_replace(client, body.replace_id, container)
+
+    return {
+        "id": container.short_id,
+        "name": container.name,
+        "status": container.status,
+        "replaced_old": replaced,
+    }
 
 
 @router.post("/api/containers/{container_id}/start", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def start_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.started")
+def start_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Start a stopped container."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.start)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.start)
     log.info("container.started", id=container_id)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/stop", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def stop_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.stopped")
+def stop_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Stop a running container gracefully (SIGTERM, then SIGKILL after timeout)."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.stop, timeout=CONTAINER_STOP_TIMEOUT)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.stop, timeout=config.CONTAINER_STOP_TIMEOUT)
     log.info("container.stopped", id=container_id)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/restart", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def restart_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.restarted")
+def restart_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Restart a container."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.restart, timeout=CONTAINER_RESTART_TIMEOUT)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.restart, timeout=config.CONTAINER_RESTART_TIMEOUT)
     log.info("container.restarted", id=container_id)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/pause", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def pause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.paused")
+def pause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Pause (freeze) all processes in a running container."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.pause)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.pause)
     log.info("container.paused", id=container_id)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/unpause", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def unpause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.unpaused")
+def unpause_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Resume a paused container."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.unpause)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.unpause)
     log.info("container.unpaused", id=container_id)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/kill", dependencies=AUTH, tags=["containers"])
-@limiter.limit("20/minute")
+@secure_route.mutate(RATE.WRITE, audit="container.killed")
 def kill_container(
     request: Request, container_id: str, signal: str = "SIGKILL", client=Depends(docker_client_dep)
-) -> dict:
+) -> OkResponse:
     """Send a signal to a container (default SIGKILL)."""
-    from fastapi import HTTPException
-    verify_csrf(request)
     if signal not in ("SIGKILL", "SIGTERM", "SIGINT", "SIGHUP"):
-        raise HTTPException(400, "Invalid signal")
-    container = _get_container(client, container_id)
-    safe_docker_call(container.kill, signal=signal)
+        raise http_error("container.signal_bad")
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.kill, signal=signal)
     log.info("container.killed", id=container_id, signal=signal)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.post("/api/containers/{container_id}/rename", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_SLOW))
-def rename_container(request: Request, container_id: str, name: str, client=Depends(docker_client_dep)) -> dict:
+@secure_route.mutate(RATE.WRITE, audit="container.renamed")
+def rename_container(request: Request, container_id: str, name: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Rename a container."""
-    verify_csrf(request)
-    validate_container_name(name)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.rename, name)
+    validators.validate_container_name(name)
+    container = validators._get_container(client, container_id)
+    validators.safe_docker_call(container.rename, name)
     log.info("container.renamed", id=container_id, new_name=name)
-    return {"ok": True}
+    return OkResponse()
 
 
 @router.delete("/api/containers/{container_id}", dependencies=AUTH, tags=["containers"])
-@limiter.limit("20/minute")
+@secure_route.mutate(RATE.WRITE, audit="container.removed")
 def delete_container(
-    request: Request, container_id: str, force: bool = False, client=Depends(docker_client_dep)
-) -> dict:
-    """Remove a container permanently."""
-    verify_csrf(request)
-    container = _get_container(client, container_id)
-    safe_docker_call(container.remove, force=force)
+    request: Request, container_id: str, force: bool = False,
+    undo: bool = False, client=Depends(docker_client_dep),
+) -> Any:
+    """Remove a container. If `undo=true`, the removal is delayed by 5 seconds
+    and the response includes an `undo_token` that can be POSTed to
+    /api/undo/{token} to cancel. After the window elapses the removal runs
+    unconditionally. If the undo queue is full, we fall back to synchronous
+    removal so the caller never gets a silent no-op.
+    """
+    container = validators._get_container(client, container_id)
+    if undo:
+        from skiff.undo import get_queue
+        token = get_queue().enqueue(
+            "container", container.short_id,
+            validators.safe_docker_call, container.remove, force=force,
+        )
+        if token is not None:
+            log.info("container.delete_queued", id=container_id, force=force,
+                     token_suffix=token[-6:])
+            return UndoableResponse(undo_token=token, expires_in=config.UNDO_DELAY_SECS)
+        # Queue full → fall through to synchronous removal
+    validators.safe_docker_call(container.remove, force=force)
     log.info("container.deleted", id=container_id, force=force)
-    return {"ok": True}
+    return OkResponse()
+
+
+def _log_window_kwargs(tail: int, since: str, until: str) -> dict[str, Any]:
+    """Compose Docker SDK `container.logs(**kwargs)` for the three log endpoints.
+
+    The empty-string defaults on the Query params mean "no filter", so we
+    drop them from the kwargs instead of letting Docker interpret an
+    empty since/until. Keeps each log handler at CC=1 instead of
+    conditional-dict-assign chains in three places.
+    """
+    kwargs: dict[str, Any] = {"tail": tail, "timestamps": True}
+    if since:
+        kwargs["since"] = since
+    if until:
+        kwargs["until"] = until
+    return kwargs
 
 
 @router.get("/api/containers/{container_id}/logs", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 def container_logs(
     request: Request,
     container_id: str,
-    tail: int = Query(default=200, le=MAX_LOG_TAIL, ge=1),
+    tail: int = Query(default=200, le=config.MAX_LOG_TAIL, ge=1),
     since: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     until: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     client=Depends(docker_client_dep),
 ) -> dict:
     """Fetch container log lines with optional time-range filtering."""
-    container = _get_container(client, container_id)
-    kwargs: dict = {"tail": tail, "timestamps": True}
-    if since:
-        kwargs["since"] = since
-    if until:
-        kwargs["until"] = until
-    logs = safe_docker_call(container.logs, **kwargs)
+    container = validators._get_container(client, container_id)
+    logs = validators.safe_docker_call(container.logs, **_log_window_kwargs(tail, since, until))
     return {"logs": logs.decode(errors="replace")}
 
 
 @router.get("/api/containers/{container_id}/logs/download", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_SLOW))
+@secure_route.read(RATE.AUTH_SENSITIVE)  # large response — low limit
 def download_container_logs(
     request: Request,
     container_id: str,
-    tail: int = Query(default=5000, le=MAX_LOG_TAIL, ge=1),
+    tail: int = Query(default=5000, le=config.MAX_LOG_TAIL, ge=1),
     since: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     until: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     client=Depends(docker_client_dep),
 ):
     """Download container logs as plain text. Auth via Authorization header."""
-    container = _get_container(client, container_id)
-    kwargs: dict = {"tail": tail, "timestamps": True}
-    if since:
-        kwargs["since"] = since
-    if until:
-        kwargs["until"] = until
-    logs = safe_docker_call(container.logs, **kwargs)
+    container = validators._get_container(client, container_id)
+    logs = validators.safe_docker_call(container.logs, **_log_window_kwargs(tail, since, until))
     safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', container.name)
     return PlainTextResponse(
         content=logs.decode(errors="replace"),
@@ -362,24 +576,19 @@ def download_container_logs(
 
 
 @router.get("/api/containers/{container_id}/logs/download.jsonl", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_SLOW))
+@secure_route.read(RATE.AUTH_SENSITIVE)  # large response — low limit
 def download_container_logs_jsonl(
     request: Request,
     container_id: str,
-    tail: int = Query(default=5000, le=MAX_LOG_TAIL, ge=1),
+    tail: int = Query(default=5000, le=config.MAX_LOG_TAIL, ge=1),
     since: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     until: str = Query(default="", description="ISO 8601 datetime or Unix timestamp"),
     client=Depends(docker_client_dep),
 ):
     """Download container logs as JSONL (one JSON object per line with timestamp + message)."""
     import json
-    container = _get_container(client, container_id)
-    kwargs: dict = {"tail": tail, "timestamps": True}
-    if since:
-        kwargs["since"] = since
-    if until:
-        kwargs["until"] = until
-    logs = safe_docker_call(container.logs, **kwargs)
+    container = validators._get_container(client, container_id)
+    logs = validators.safe_docker_call(container.logs, **_log_window_kwargs(tail, since, until))
     safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', container.name)
     lines = []
     for line in logs.decode(errors="replace").splitlines():
@@ -395,74 +604,344 @@ def download_container_logs_jsonl(
     )
 
 
-@router.get("/api/containers/{container_id}/inspect", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
-def inspect_container(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
-    """Return detailed container metadata (config, state, mounts, network, health)."""
-    container = _get_container(client, container_id)
-    attrs = container.attrs
+# ── inspect_container builders ───────────────────────────────────────────────
+# Each builder takes the raw Docker SDK attrs dict and returns a Pydantic
+# submodel from skiff.contract.responses. The server assembles the full
+# validated payload so the UI doesn't JOIN engine-level fields client-side.
+
+
+def _build_config_section(cfg: dict) -> _ContainerConfigSection:
+    return _ContainerConfigSection(
+        env=validators._redact_env(cfg.get("Env", [])),
+        cmd=cfg.get("Cmd"),
+        entrypoint=cfg.get("Entrypoint"),
+        labels=cfg.get("Labels") or {},
+        exposed_ports=list((cfg.get("ExposedPorts") or {}).keys()),
+        working_dir=cfg.get("WorkingDir") or "",
+        user=cfg.get("User") or "",
+        hostname=cfg.get("Hostname") or "",
+        tty=cfg.get("Tty", False),
+    )
+
+
+# HostConfig flattening map: model-field → (Docker attr key, default).
+# Declaring the map once makes `_build_host_config_section` a dict comp.
+_HOST_CONFIG_FIELDS: tuple[tuple[str, str, Any], ...] = (
+    ("port_bindings",             "PortBindings",        {}),
+    ("restart_policy",             "RestartPolicy",       {}),
+    ("binds",                      "Binds",               []),
+    ("memory_bytes",               "Memory",              0),
+    ("memory_reservation_bytes",   "MemoryReservation",   0),
+    ("cpu_shares",                 "CpuShares",           0),
+    ("cpu_quota",                  "CpuQuota",            0),
+    ("cpu_period",                 "CpuPeriod",           0),
+    ("nano_cpus",                  "NanoCpus",            0),
+    ("pids_limit",                 "PidsLimit",           0),
+    ("security_opt",               "SecurityOpt",         []),
+    ("tmpfs",                      "Tmpfs",               {}),
+)
+
+
+def _build_host_config_section(hc: dict) -> _ContainerHostConfigSection:
+    fields = {key: hc.get(docker_key) or default for key, docker_key, default in _HOST_CONFIG_FIELDS}
+    fields["readonly_rootfs"] = bool(hc.get("ReadonlyRootfs", False))
+    return _ContainerHostConfigSection(**fields)
+
+
+def _build_health_section(cfg: dict, health_raw: dict) -> _ContainerHealthSection:
+    if not (health_raw or cfg.get("Healthcheck")):
+        return _ContainerHealthSection()
+    return _ContainerHealthSection(
+        status=health_raw.get("Status", "none"),
+        failing_streak=health_raw.get("FailingStreak", 0),
+        test=(cfg.get("Healthcheck") or {}).get("Test"),
+        log=(health_raw.get("Log") or [])[-3:],
+    )
+
+
+def _build_network_section(attrs: dict) -> dict[str, _ContainerNetworkEntry]:
+    networks = (attrs.get("NetworkSettings") or {}).get("Networks", {})
     return {
-        "id": attrs["Id"][:12],
-        "name": attrs["Name"].lstrip("/"),
-        "image": attrs["Config"]["Image"],
-        "created": attrs["Created"],
-        "state": attrs["State"],
-        "restart_count": attrs.get("RestartCount", 0),
-        "platform": attrs.get("Platform", ""),
-        "config": {
-            "env": _redact_env(attrs["Config"].get("Env", [])),
-            "cmd": attrs["Config"].get("Cmd"),
-            "entrypoint": attrs["Config"].get("Entrypoint"),
-            "labels": attrs["Config"].get("Labels", {}),
-            "exposed_ports": list(attrs["Config"].get("ExposedPorts", {}).keys()),
-            "working_dir": attrs["Config"].get("WorkingDir", ""),
-            "user": attrs["Config"].get("User", ""),
-        },
-        "host_config": {
-            "port_bindings": attrs.get("HostConfig", {}).get("PortBindings", {}),
-            "restart_policy": attrs.get("HostConfig", {}).get("RestartPolicy", {}),
-            "binds": attrs.get("HostConfig", {}).get("Binds", []),
-            "memory": attrs.get("HostConfig", {}).get("Memory", 0),
-            "cpu_quota": attrs.get("HostConfig", {}).get("CpuQuota", 0),
-        },
-        "network": {
-            net: {
-                "ip_address": info.get("IPAddress", ""),
-                "gateway": info.get("Gateway", ""),
-                "mac_address": info.get("MacAddress", ""),
-            }
-            for net, info in attrs.get("NetworkSettings", {}).get("Networks", {}).items()
-        },
-        "mounts": [
-            {
-                "type": m.get("Type", ""),
-                "name": m.get("Name", ""),
-                "source": m.get("Source", ""),
-                "destination": m.get("Destination", ""),
-                "mode": m.get("Mode", ""),
-                "rw": m.get("RW", True),
-            }
-            for m in attrs.get("Mounts", [])
-        ],
+        net: _ContainerNetworkEntry(
+            ip_address=info.get("IPAddress") or "",
+            gateway=info.get("Gateway") or "",
+            mac_address=info.get("MacAddress") or "",
+        )
+        for net, info in networks.items()
+    }
+
+
+def _build_mounts_section(attrs: dict) -> list[_ContainerMountEntry]:
+    return [
+        _ContainerMountEntry(
+            type=m.get("Type") or "",
+            name=m.get("Name") or "",
+            source=m.get("Source") or "",
+            destination=m.get("Destination") or "",
+            mode=m.get("Mode") or "",
+            rw=m.get("RW", True),
+        )
+        for m in attrs.get("Mounts", []) or ()
+    ]
+
+
+@router.get("/api/containers/{container_id}/inspect", dependencies=AUTH, tags=["containers"])
+@secure_route.read(RATE.READ)
+def inspect_container(
+    request: Request, container_id: str, client=Depends(docker_client_dep),
+) -> ContainerInspectResponse:
+    """Return detailed container metadata (config, state, mounts, network, health)."""
+    container = validators._get_container(client, container_id)
+    attrs = container.attrs
+    hc = attrs.get("HostConfig", {}) or {}
+    cfg = attrs.get("Config", {}) or {}
+    state = attrs.get("State", {}) or {}
+    return ContainerInspectResponse(
+        id=attrs["Id"][:12],
+        name=attrs["Name"].lstrip("/"),
+        image=cfg.get("Image") or "",
+        created=attrs["Created"],
+        state=state,
+        restart_count=attrs.get("RestartCount", 0),
+        platform=attrs.get("Platform") or "",
+        config=_build_config_section(cfg),
+        host_config=_build_host_config_section(hc),
+        health_check=_build_health_section(cfg, state.get("Health", {}) or {}),
+        network=_build_network_section(attrs),
+        mounts=_build_mounts_section(attrs),
+    )
+
+
+# Live-updatable container resources. Mirrors Docker Engine API /containers/{id}/update
+# but filters to a safe subset and accepts GCP/Kubernetes-style unit strings.
+# Cap enforcement: values cannot exceed the global MAX_CONTAINER_* thresholds even
+# if the container was originally created with a higher limit out-of-band.
+# _MAX_MEM_BYTES is computed once at import so every request uses the same ceiling.
+_MAX_MEM_BYTES = validators.parse_memory_quantity(config.MAX_CONTAINER_MEM)
+
+
+# ── update_container helpers ─────────────────────────────────────────────────
+# Each accessor on `_UpdateFieldValidator` handles one tunable resource
+# (memory / cpus / cpu_shares / pids_limit / restart_policy). `apply(...)`
+# runs through every validator that has a non-None value and mutates the
+# shared `update_kwargs` dict passed at construction. This mirrors the
+# builder pattern used by `_RunKwargsBuilder` for `run_container` — the
+# handler body ends up as a linear sequence of named steps.
+
+# Map of "kwarg key we set on the Docker SDK call" → "HostConfig key Docker
+# returns in attrs". The update handler's audit diff uses this table to
+# emit before/after pairs for only the fields the caller actually touched.
+_UPDATE_KWARG_TO_HOSTCONFIG = {
+    "mem_limit": "Memory",
+    "mem_reservation": "MemoryReservation",
+    "cpu_shares": "CpuShares",
+    "cpu_quota": "CpuQuota",
+    "cpu_period": "CpuPeriod",
+    "pids_limit": "PidsLimit",
+}
+
+
+class _UpdateFieldValidator:
+    """Apply `/containers/{id}/update` fields into a kwargs dict, one at a time.
+
+    Each `_apply_X` method validates one resource and mutates the shared
+    dict. Public `apply(**values)` dispatches to the right method for
+    every non-None value. Splitting the 130-line handler this way lets
+    each tunable be unit-tested in isolation (pass a dict and a value,
+    observe what lands in the dict or what error_code raises).
+    """
+
+    def __init__(self, update_kwargs: dict) -> None:
+        self.k = update_kwargs  # shared mutable dict
+
+    def apply(self, **values) -> None:
+        dispatch = {
+            "memory": self._apply_memory,
+            "memory_reservation": self._apply_memory_reservation,
+            "cpus": self._apply_cpus,
+            "cpu_shares": self._apply_cpu_shares,
+            "pids_limit": self._apply_pids_limit,
+            "restart_policy": self._apply_restart_policy,
+        }
+        for name, value in values.items():
+            if value is None:
+                continue
+            dispatch[name](value)
+
+    def _apply_memory(self, memory: str | int) -> None:
+        mem = validators.parse_memory_quantity(memory)
+        if mem and mem < config.DOCKER_MIN_MEM_BYTES:
+            raise http_error("container.memory_below_minimum", minimum=config.DOCKER_MIN_MEM_BYTES)
+        if mem > _MAX_MEM_BYTES:
+            raise http_error(
+                "container.memory_above_cap",
+                cap=f"{config.MAX_CONTAINER_MEM} ({_MAX_MEM_BYTES} bytes)",
+            )
+        self.k["mem_limit"] = mem
+
+    def _apply_memory_reservation(self, memory_reservation: str | int) -> None:
+        res = validators.parse_memory_quantity(memory_reservation)
+        if res > _MAX_MEM_BYTES:
+            raise http_error(
+                "container.memory_above_cap",
+                cap=config.MAX_CONTAINER_MEM,
+                message=f"memory_reservation exceeds cap of {config.MAX_CONTAINER_MEM}",
+            )
+        self.k["mem_reservation"] = res
+
+    def _apply_cpus(self, cpus: str | float) -> None:
+        parsed = validators.parse_cpu_quantity(cpus)
+        if parsed <= 0:
+            raise http_error("validation.bad_cpu", message="cpus must be > 0")
+        if parsed > config.MAX_CONTAINER_CPU:
+            raise http_error("container.cpu_above_cap", cap=config.MAX_CONTAINER_CPU)
+        # Docker SDK update() takes cpu_period / cpu_quota. Default 100_000 us
+        # period means quota = cpus * period microseconds.
+        self.k["cpu_period"] = 100_000
+        self.k["cpu_quota"] = int(parsed * 100_000)
+
+    def _apply_cpu_shares(self, cpu_shares: int) -> None:
+        if not isinstance(cpu_shares, int) or not (2 <= cpu_shares <= 1024):
+            raise http_error("container.cpu_shares_bad")
+        self.k["cpu_shares"] = cpu_shares
+
+    def _apply_pids_limit(self, pids_limit: int) -> None:
+        if not isinstance(pids_limit, int) or not (1 <= pids_limit <= config.MAX_PIDS_LIMIT):
+            raise http_error("container.pids_limit_bad", cap=config.MAX_PIDS_LIMIT)
+        self.k["pids_limit"] = pids_limit
+
+    def _apply_restart_policy(self, restart_policy: dict) -> None:
+        if not isinstance(restart_policy, dict):
+            raise http_error("container.restart_policy_shape")
+        name = restart_policy.get("Name", "")
+        if name not in config.VALID_RESTART_POLICIES:
+            raise http_error(
+                "validation.bad_restart_policy",
+                message=f"restart_policy.Name must be one of {sorted(config.VALID_RESTART_POLICIES)}",
+            )
+        rp: dict[str, Any] = {"Name": name}
+        if name == "on-failure":
+            retries = restart_policy.get("MaximumRetryCount", config.MAX_RESTART_RETRIES)
+            if not isinstance(retries, int) or not (0 <= retries <= config.MAX_RESTART_RETRIES):
+                raise http_error("container.restart_retry_bad", cap=config.MAX_RESTART_RETRIES)
+            rp["MaximumRetryCount"] = retries
+        self.k["restart_policy"] = rp
+
+
+def _diff_update_fields(
+    update_kwargs: dict, before_hc: dict, after_hc: dict,
+) -> dict[str, dict[str, Any]]:
+    """Return `{HostConfigKey: {before, after}}` for every kwarg the caller set."""
+    changes: dict[str, dict[str, Any]] = {
+        hc_key: {"before": before_hc.get(hc_key), "after": after_hc.get(hc_key)}
+        for kwarg_key, hc_key in _UPDATE_KWARG_TO_HOSTCONFIG.items()
+        if kwarg_key in update_kwargs
+    }
+    if "restart_policy" in update_kwargs:
+        changes["RestartPolicy"] = {
+            "before": before_hc.get("RestartPolicy"),
+            "after": after_hc.get("RestartPolicy"),
+        }
+    return changes
+
+
+# Fields returned in the /update response's host_config block. Subset of
+# `_ContainerHostConfigSection` — only the live-updatable surface, because
+# the caller just mutated those specific fields.
+_UPDATE_RESPONSE_HOST_CONFIG_FIELDS: frozenset[str] = frozenset({
+    "memory_bytes", "memory_reservation_bytes",
+    "cpu_shares", "cpu_quota", "cpu_period",
+    "pids_limit", "restart_policy",
+})
+
+
+def _flatten_host_config(host_config: dict) -> dict[str, Any]:
+    """Return the live-updatable subset of HostConfig for the /update response.
+
+    Delegates the attrs-dict unpacking to the shared Pydantic builder
+    (`_build_host_config_section`) so /update and /inspect share a single
+    normalization path. Filters to the mutable subset so the response
+    reflects only what /update can actually change.
+    """
+    section = _build_host_config_section(host_config)
+    return section.model_dump(include=_UPDATE_RESPONSE_HOST_CONFIG_FIELDS)
+
+
+@router.post("/api/containers/{container_id}/update", dependencies=AUTH, tags=["containers"])
+@secure_route.mutate(RATE.WRITE, audit="container.updated")
+def update_container(
+    request: Request,
+    container_id: str,
+    memory: str | int | None = Body(default=None),
+    memory_reservation: str | int | None = Body(default=None),
+    cpus: str | float | None = Body(default=None),
+    cpu_shares: int | None = Body(default=None),
+    pids_limit: int | None = Body(default=None),
+    restart_policy: dict | None = Body(default=None),
+    client=Depends(docker_client_dep),
+) -> dict:
+    """Update a running or stopped container's live-mutable resource constraints.
+
+    Payload mirrors the Docker Engine API /containers/{id}/update (v1.47) shape but
+    accepts GCP/Kubernetes-style quantity strings:
+      - `memory`, `memory_reservation`: int (bytes), or str like "256Mi", "1Gi", "500M"
+      - `cpus`: number, or str like "0.5", "500m", "2"
+      - `cpu_shares`: raw int (2-1024; Docker weight, not fractional CPU)
+      - `pids_limit`: int (1..4096)
+      - `restart_policy`: {"Name": "on-failure"|"unless-stopped"|"always"|"no",
+                          "MaximumRetryCount": int}
+
+    Caps: memory ≤ config.MAX_CONTAINER_MEM, cpus ≤ config.MAX_CONTAINER_CPU, pids ≤ 4096,
+    retry count ≤ config.MAX_RESTART_RETRIES. Immutable params (ports, volumes, env,
+    network, command, read_only, tmpfs) cannot be changed here — use Clone & Run.
+    """
+    container = validators._get_container(client, container_id)
+    # Snapshot the current host-config so the audit entry can carry before→after.
+    # Deep copy: attrs["HostConfig"] is a live reference the SDK may rewrite
+    # in place on container.reload(), which would make "before" silently track
+    # the "after" state.
+    before_hc = copy.deepcopy(container.attrs.get("HostConfig", {}) or {})
+
+    update_kwargs: dict = {}
+    _UpdateFieldValidator(update_kwargs).apply(
+        memory=memory,
+        memory_reservation=memory_reservation,
+        cpus=cpus,
+        cpu_shares=cpu_shares,
+        pids_limit=pids_limit,
+        restart_policy=restart_policy,
+    )
+    if not update_kwargs:
+        raise http_error("container.update_no_fields")
+
+    validators.safe_docker_call(container.update, **update_kwargs)
+    # Re-fetch to capture the actual post-update state (Docker may round period/quota).
+    container.reload()
+    after_hc = container.attrs.get("HostConfig", {}) or {}
+    changes = _diff_update_fields(update_kwargs, before_hc, after_hc)
+    log.info("container.updated", id=container.short_id, name=container.name, changes=changes)
+    return {
+        "id": container.short_id,
+        "name": container.name,
+        "updated": sorted(changes.keys()),
+        "host_config": _flatten_host_config(after_hc),
     }
 
 
 @router.get("/api/containers/{container_id}/stats", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 async def container_stats(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
     """Return real-time CPU, memory, network, and disk I/O stats."""
-    import asyncio
 
-    from fastapi import HTTPException
-    container = _get_container(client, container_id)
+    container = validators._get_container(client, container_id)
     try:
         loop = asyncio.get_running_loop()
         raw = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: container.stats(stream=False)),
-            timeout=CONTAINER_STATS_TIMEOUT,
+            timeout=config.CONTAINER_STATS_TIMEOUT,
         )
     except TimeoutError as exc:
-        raise HTTPException(504, "Stats call timed out") from exc
+        raise http_error("container.stats_timeout") from exc
     # CPU delta calculation
     cpu_delta = raw["cpu_stats"]["cpu_usage"]["total_usage"] - raw["precpu_stats"]["cpu_usage"]["total_usage"]
     sys_delta = raw["cpu_stats"].get("system_cpu_usage", 0) - raw["precpu_stats"].get("system_cpu_usage", 0)
@@ -495,159 +974,20 @@ async def container_stats(request: Request, container_id: str, client=Depends(do
 
 
 @router.get("/api/containers/{container_id}/top", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 def container_top(request: Request, container_id: str, client=Depends(docker_client_dep)) -> dict:
     """List processes running inside a container (like docker top)."""
-    container = _get_container(client, container_id)
-    result = safe_docker_call(container.top)
+    container = validators._get_container(client, container_id)
+    result = validators.safe_docker_call(container.top)
     return {"titles": result.get("Titles", []), "processes": result.get("Processes", [])}
 
 
 @router.get("/api/containers/{container_id}/diff", dependencies=AUTH, tags=["containers"])
-@limiter.limit(_limit(RL_DEFAULT))
+@secure_route.read(RATE.READ)
 def container_diff(request: Request, container_id: str, client=Depends(docker_client_dep)) -> list[dict]:
     """Show filesystem changes in a container's writable layer since it was created."""
-    container = _get_container(client, container_id)
-    changes = safe_docker_call(container.diff) or []
+    container = validators._get_container(client, container_id)
+    changes = validators.safe_docker_call(container.diff) or []
     kind_map = {0: "Modified", 1: "Added", 2: "Deleted"}
     return [{"path": c.get("Path", ""), "kind": kind_map.get(c.get("Kind", 0), "unknown")} for c in changes]
 
-
-# ── WebSocket: log streaming ───────────────────────────────
-
-@router.websocket("/ws/logs/{container_id}")
-async def stream_logs(websocket: WebSocket, container_id: str):
-    """Stream container logs in real time over WebSocket."""
-    if not _validate_ws_origin(websocket):
-        await websocket.close(code=4003)
-        return
-    if not CONTAINER_ID_RE.match(container_id):
-        await websocket.close(code=4000)
-        return
-    await websocket.accept()
-    if not await _validate_ws_token_from_message(websocket):
-        await websocket.close(code=4003)
-        return
-    ip = websocket.client.host if websocket.client else "unknown"
-    _ws_acquire(ip)
-    log.info("audit.ws_logs", container=container_id, remote=ip)
-    try:
-        loop = asyncio.get_running_loop()
-        client = await loop.run_in_executor(None, get_client)
-        container = await loop.run_in_executor(None, client.containers.get, container_id)
-        gen = container.logs(stream=True, follow=True, tail=WS_LOG_TAIL, timestamps=True)
-
-        async def read_logs():
-            while True:
-                try:
-                    line = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: next(gen, None)),
-                        timeout=WS_LOG_IDLE_TIMEOUT,
-                    )
-                    if line is None:
-                        break
-                    await websocket.send_text(line.decode(errors="replace"))
-                except TimeoutError:
-                    await websocket.send_text("\n[Idle timeout — no new logs for 5 minutes]\n")
-                    break
-
-        read_task = asyncio.create_task(read_logs())
-        keepalive_task = asyncio.create_task(ws_keepalive(websocket))
-        try:
-            while True:
-                await websocket.receive_text()
-        except Exception:
-            pass
-        finally:
-            read_task.cancel()
-            keepalive_task.cancel()
-            try:
-                gen.close()
-            except Exception:
-                pass
-    except Exception as exc:
-        log.warning("ws.logs_error", container=container_id, error=str(exc))
-    finally:
-        _ws_release(ip)
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-
-
-# ── WebSocket: interactive exec shell ─────────────────────
-
-@router.websocket("/ws/exec/{container_id}")
-async def exec_shell(websocket: WebSocket, container_id: str):
-    """Open an interactive shell in a container over WebSocket."""
-    if not _validate_ws_origin(websocket):
-        await websocket.close(code=4003)
-        return
-    if not CONTAINER_ID_RE.match(container_id):
-        await websocket.close(code=4000)
-        return
-    await websocket.accept()
-    if not await _validate_ws_token_from_message(websocket):
-        await websocket.close(code=4003)
-        return
-    ip = websocket.client.host if websocket.client else "unknown"
-    _ws_acquire(ip)
-    log.info("audit.ws_exec", container=container_id, remote=ip)
-    try:
-        loop = asyncio.get_running_loop()
-        client = await loop.run_in_executor(None, get_client)
-        container = await loop.run_in_executor(None, client.containers.get, container_id)
-        shell = "/bin/sh"
-        try:
-            exit_code, _ = container.exec_run("which /bin/bash", demux=True)
-            if exit_code == 0:
-                shell = "/bin/bash"
-        except Exception:
-            pass
-        exec_id = client.api.exec_create(container.id, shell, stdin=True, tty=True, stdout=True, stderr=True)
-        sock = client.api.exec_start(exec_id, socket=True, tty=True)
-        sock._sock.setblocking(True)
-        sock._sock.settimeout(WS_EXEC_RECV_TIMEOUT)
-
-        async def read_output():
-            idle_since = time.monotonic()
-            while True:
-                try:
-                    data = await loop.run_in_executor(None, sock._sock.recv, 4096)
-                    if not data:
-                        break
-                    idle_since = time.monotonic()
-                    await websocket.send_text(data.decode(errors="replace"))
-                except TimeoutError:
-                    if time.monotonic() - idle_since > WS_EXEC_IDLE_TIMEOUT:
-                        await websocket.send_text("\r\n[Session idle timeout — 10 minutes]\r\n")
-                        break
-                    continue
-                except Exception:
-                    break
-
-        read_task = asyncio.create_task(read_output())
-        keepalive_task = asyncio.create_task(ws_keepalive(websocket))
-        try:
-            while True:
-                data = await websocket.receive_text()
-                if len(data.encode()) > 65536:
-                    await websocket.close(code=4008)
-                    break
-                log.info("audit.ws_exec_input", container=container_id, remote=ip, cmd_preview=data[:120])
-                await loop.run_in_executor(None, sock._sock.sendall, data.encode())
-        except Exception:
-            pass
-        finally:
-            read_task.cancel()
-            keepalive_task.cancel()
-            sock.close()
-            log.info("audit.ws_exec_disconnect", container=container_id, remote=ip)
-    except Exception as exc:
-        log.warning("ws.exec_error", container=container_id, error=str(exc))
-    finally:
-        _ws_release(ip)
-        try:
-            await websocket.close()
-        except Exception:
-            pass

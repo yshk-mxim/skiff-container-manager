@@ -9,10 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  # Claude-Code security review runs only on PRs opened from branches in
+  # this repo (where CLAUDE_API_KEY is available). Forked PRs skip this
+  # job — they cannot read repo secrets — so the check is "neutral/skipped"
+  # rather than a confusing red X the contributor can't fix.
   security:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
@@ -21,3 +26,58 @@ jobs:
         with:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          # Checklist lives in-repo so reviewers can update it without
+          # touching this workflow. Keep the path stable.
+          review-instructions-file: docs/dev/review-checklist.md
+
+  # Run ruff + pip-audit again here — keeps the "security" signal
+  # surfaced on every PR independent of ci.yml matrix flakiness.
+  static-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Python + dev deps
+        uses: ./.github/actions/setup-skiff-python
+
+      - name: Ruff security ruleset
+        run: make security
+
+      - name: pip-audit
+        run: pip-audit --strict -r requirements.txt
+
+  # SBOM + vulnerability scan via Anchore (Syft + Grype).
+  # Both actions are pinned to commit SHA (not @v<major>); Dependabot
+  # automates bumps and CODEOWNERS protects .github/ so SHA changes go
+  # through maintainer review.
+  sbom-and-vuln-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: true
+          upload-artifact-retention: 30
+
+      - name: Vulnerability scan (Grype)
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        id: grype
+        with:
+          sbom: sbom.cdx.json
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+
+      - name: Upload Grype SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd  # v3.29.1
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}

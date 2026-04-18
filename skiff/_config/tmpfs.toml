@@ -1,0 +1,36 @@
+# Default tmpfs mounts applied when read_only=True and the caller
+# didn't specify tmpfs.
+#
+# Covers runtime directories the standard image set needs to write to
+# when the root FS is read-only (nginx PID files, redis local socket,
+# haproxy stats, postgres initdb). Without these, a read-only container
+# would fail on first start for common workloads — we'd end up with a
+# footgun where the safe default (read-only rootfs) is also the broken
+# one for 80% of images.
+#
+# The container-internal paths are HARDCODED — user-supplied paths are
+# validated separately against _TMPFS_BLOCKED (no /etc, /proc, /sys,
+# /dev, /boot, /lib, /lib64, /usr, /bin, /sbin). See skiff.validators.
+#
+# Zero-trust defaults:
+#  - size=64m tmp, 16m run — tight budget so a runaway tmpfs fill
+#    can't eat host RAM.
+#  - mode=1777 on /tmp matches FHS sticky-bit convention; no other
+#    path needs relaxed perms.
+
+["/tmp"]
+opts = "rw,size=64m,mode=1777"  # noqa — container-internal path, not host /tmp
+
+["/run"]
+opts = "rw,size=16m"
+
+["/var/run"]
+opts = "rw,size=16m"
+
+# nginx-worker, apache-httpd, and other non-root process-per-request
+# daemons write to /var/cache/<vendor>/ subdirs as the unprivileged uid.
+# mode=1777 (same as /tmp) lets any uid create its subdir without a
+# chown helper script, so the read-only-root + tmpfs default works for
+# nginx:alpine and apache:alpine out of the box.
+["/var/cache"]
+opts = "rw,size=64m,mode=1777"

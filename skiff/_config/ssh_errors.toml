@@ -1,0 +1,63 @@
+# SSH error classification table — maps stderr substrings from `ssh` to
+# a stable error code and a user-facing help string.
+#
+# This is data, not code. A security-reviewer or operator can tune the
+# help strings for their environment (e.g. pointing at an internal
+# runbook URL instead of the generic "run ssh-copy-id") without
+# touching Python. The loader in skiff/docker_client.py walks this
+# table in order; the first entry whose `needles` all appear in the
+# lowercased stderr wins.
+#
+# Zero-trust note: stderr from the SSH client is raw subprocess output.
+# We never echo it unredacted — the entry here replaces it with a
+# vetted help string. Only the first 200 chars of raw stderr appear in
+# the final "other" fallback.
+
+# "Permission denied" is matched separately inside the classifier because
+# it needs an OR on two sub-strings (publickey or password). It isn't in
+# this table.
+
+[[pattern]]
+needles = ["host key verification failed"]
+code    = "host_key_mismatch"
+help    = "Host key changed or mismatched. Run `ssh <target>` once in your terminal to verify the fingerprint, then retry."
+
+[[pattern]]
+needles = ["remote host identification has changed"]
+code    = "host_key_mismatch"
+help    = "Host key changed or mismatched. Run `ssh <target>` once in your terminal to verify the fingerprint, then retry."
+
+[[pattern]]
+needles = ["could not resolve hostname"]
+code    = "unknown_host"
+help    = "Could not resolve the hostname. Check spelling or DNS."
+
+[[pattern]]
+needles = ["name or service not known"]
+code    = "unknown_host"
+help    = "Could not resolve the hostname. Check spelling or DNS."
+
+[[pattern]]
+needles = ["nodename nor servname"]
+code    = "unknown_host"
+help    = "Could not resolve the hostname. Check spelling or DNS."
+
+[[pattern]]
+needles = ["connection refused"]
+code    = "connection_refused"
+help    = "SSH port not reachable. Check that sshd is running and the firewall allows port 22."
+
+[[pattern]]
+needles = ["timed out"]
+code    = "timeout"
+help    = "Connection timed out. Host may be unreachable or blocked by a firewall."
+
+[[pattern]]
+needles = ["no identities"]
+code    = "no_key"
+help    = "No SSH key found on this machine. Generate one with `ssh-keygen -t ed25519`, then run `ssh-copy-id <target>`."
+
+[[pattern]]
+needles = ["identity file", "no such file"]
+code    = "no_key"
+help    = "No SSH key found on this machine. Generate one with `ssh-keygen -t ed25519`, then run `ssh-copy-id <target>`."
