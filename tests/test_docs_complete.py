@@ -179,7 +179,6 @@ def test_every_sidebar_page_has_readme_pointer():
 # ── Gate 7: historical bugs have CHANGELOG entries ─────────────────────
 
 
-@pytest.mark.xfail(reason="CHANGELOG hb-* rows land with the iteration-loop fixes")
 def test_every_historical_bug_in_changelog():
     """CHANGELOG.md should enumerate every `hb-*` id with the fix commit
     short-hash so users can cross-reference a report to an upgrade."""

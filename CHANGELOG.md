@@ -9,6 +9,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — driver-seat persona audit (v1.0.2 pre-release)
+
+User-reported UX + backend bugs surfaced during iterative testing. Each
+`hb-*` ID is tracked in `tests/journeys/_history.py`; fix commits linked
+below so `git show <SHA>` or the tracker at
+`docs/dev/persona_audit_tracker.md` produces the full change trail.
+
+- `hb-undo-on-delete` (99647c8) — container delete bypassed the undo
+  queue via hard-coded `?force=true` in the UI.
+- `hb-tag-search-3.12-slim` (c1e5e47) — Docker Hub tag list capped at
+  the 100 most-recent; stable tags like `python:3.12-slim` fell
+  outside the window. Added server-side `name=` filter passthrough.
+- `hb-volumes-no-search` / `hb-networks-no-search` /
+  `hb-compose-no-search` (99647c8) — three list pages had no search
+  bar. Added consistent `.search-bar` pattern.
+- `hb-audit-silently-truncated` (99647c8) — audit log hard-coded
+  `tail=200` with no UI cue. Added tail selector + filter input.
+- `hb-logs-connecting-forever` (cb07a77) — log viewer "Connecting..."
+  text never cleared on WS open for silent containers.
+- `hb-terminal-dies-on-tab-switch` (cb07a77) — terminal + WS torn
+  down on detail-tab switch. Added per-container session cache.
+- `hb-files-tab-misleading` (cb07a77) — "No filesystem changes
+  detected" misread as a failure. Added explanation paragraph.
+- `hb-volume-create-skinny-form` (38f9ce4) — volume create modal only
+  accepted `name`. Added driver / labels / driver_opts.
+- `hb-network-create-skinny-form` (38f9ce4) — network create modal
+  only accepted `name + driver`. Added subnet / gateway / labels /
+  internal / attachable / ipv6.
+- `hb-image-prune-missing` (99647c8) — no dedicated Images Prune
+  button. Added `POST /api/images/prune`.
+- `hb-compose-no-pull-or-scale` (0683c08) — compose lacked pull /
+  scale / start / stop / download. Added the full verb set.
+- `hb-dashboard-missing` (a24b724) — no landing page.
+  `/api/system/overview` + `pages/dashboard.js`.
+- `hb-events-missing` (a24b724) — no Docker events stream viewer.
+  `/api/system/events` + live panel on System page.
+- `hb-no-bulk-actions` (cb07a77) — no multi-select on containers.
+  Per-row checkboxes + floating action bar.
+- `hb-no-context-menu` (cb07a77) — no right-click menu on rows.
+- `hb-no-notifications-history` (462b6f7) — toasts ephemeral. Bell
+  icon with 50-entry history panel.
+- `hb-no-first-run-tour` (462b6f7) — new users dropped onto raw
+  containers page. 4-step tour fires once after wizard.
+- `hb-cp-ui-missing` (cb07a77) — Files tab only showed `docker diff`.
+  Added Browse sub-view with `/ls` + `/upload` + download.
+- `hb-commit-missing` (cb07a77) — no way to save running container
+  as image. `POST /api/containers/{id}/commit` + ctx-menu entry.
+- `hb-templates-missing` (a24b724) — no one-click deploy catalogue.
+  `GET /api/templates` + `pages/templates.js`.
+- `hb-files-tab-path-memory` (cb07a77) — Files tab path forgotten
+  across tab switches.
+
+### Added — driver-seat persona audit harness
+
+- `tests/personas.py` — 7-persona catalogue (novice / developer /
+  sre_ops / security_reviewer / ui_ux_auditor / super_user / hobbyist).
+- `tests/audit_driver.py` — per-step screenshot / DOM / console /
+  network / stderr / audit-log capture + `Finding` emitter.
+- `tests/journeys/` — journey catalogue harness with `@journey(…)`
+  decorator; parametrises over persona tags.
+- `tests/journeys/_history.py` — 23-row historical bug registry.
+- `tests/test_zero_trust_invariants.py` — 9 security invariants
+  enforced against the live TestClient.
+- `tests/test_docs_complete.py` — 8 documentation-completeness gates.
+- `tests/test_history_coverage.py` — enforces every `hb-*` has a
+  regression test + fix commit + CHANGELOG entry.
+- `tests/test_crud_completeness.py` — per-resource CRUD matrix.
+- `tests/test_ui_bug_class_regressions.py` — dead-external-link
+  allowlist, interval-leak audit, countdown-label context check.
+- `tests/test_ui_list_affordances.py` — every list page has a search
+  bar; audit log discloses its cap; delete emits undo toast.
+- `tests/test_container_cp.py` — 33 tests: ls parser (unit+fuzz),
+  path-validator (fuzz), /ls + /upload + commit (integration).
+- `tests/test_e2e_file_browser.py` — 3 Playwright journeys: list /
+  navigate / upload / download round-trip; over-size rejection;
+  path memory.
+- `tests/test_new_endpoint_coverage.py` — coverage for every new
+  endpoint (overview / events / templates / images-prune / compose
+  verbs / commit).
+- `tests/test_backend_bug_class_fuzz.py` — Docker SDK exception
+  funnel + unicode/CRLF round-trip + NaN/Infinity numeric boundary +
+  auth-envelope contract.
+- `tests/test_container_journey_fuzz.py` — hypothesis state-machine
+  over container lifecycle against a FakeDaemon.
+- `tests/test_docker_null_tolerance.py` — hypothesis null-injection
+  across every Docker-backed numeric response.
+- `Makefile` — `make persona-audit`, `make persona-audit-report`,
+  `make tracker` targets.
+- `docs/dev/test-architecture.md` — per-layer test mapping.
+- `docs/dev/persona_audit_tracker.md` — living dashboard (findings
+  / parity / GUI elements / testing / open-work).
+
 ### Security
 - Reviewer persona gate: mutations 403 server-side, exec WS forcibly
   closed on entering reviewer mode (TOCTOU closed via `_ws_lock`
