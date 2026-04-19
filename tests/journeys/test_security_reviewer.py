@@ -312,3 +312,196 @@ def test_journey_no_route_surfaces_outside_openapi(audited_page, live_server, au
 def _token() -> str:
     from tests.conftest_e2e import E2E_TOKEN
     return E2E_TOKEN
+
+
+# ── Plan-named J-08 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("security_reviewer",),
+    category="security_reviewer",
+    severity="P0",
+    tags=("zero-trust",),
+)
+def test_journey_reviewer_mode_blocks_mutation(audited_page, live_server, audit_observer, persona):
+    """Plan J-08 item: enter reviewer → attempt mutation. POST
+    /api/profile/enter-reviewer, then attempt a mutation. The
+    mutation must be rejected server-side regardless of the bearer."""
+    with step("step_1_enter_reviewer"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/profile/enter-reviewer",
+            headers={
+                "Authorization": f"Bearer {_token()}",
+                "X-Requested-With": "ContainerManager",
+            },
+            timeout=10,
+        )
+        if r.status_code not in (200, 204):
+            pytest.skip(f"enter-reviewer not reachable: {r.status_code}")
+    try:
+        with step("step_2_mutation_blocked"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/volumes",
+                params={"name": "pa-reviewer-test"},
+                headers={
+                    "Authorization": f"Bearer {_token()}",
+                    "X-Requested-With": "ContainerManager",
+                    "Content-Type": "application/json",
+                },
+                json={"labels": {"skiff-audit-run": "1"}},
+                timeout=10,
+            )
+            if 200 <= r.status_code < 300:
+                audit_observer.emit(
+                    step="step_2_mutation_blocked",
+                    severity="P0",
+                    category="security",
+                    zero_trust=True,
+                    title="Mutation succeeded in reviewer mode",
+                    expected="403 Forbidden from reviewer gate",
+                    observed=f"{r.status_code} accepted",
+                )
+                pytest.fail("reviewer mode bypassed")
+    finally:
+        # Reset profile via the same endpoint (idempotent; entering
+        # 'dev' is safe).
+        try:
+            requests.post(
+                f"{live_server.rstrip('/')}/api/profile/enter-reviewer",
+                headers={
+                    "Authorization": f"Bearer {_token()}",
+                    "X-Requested-With": "ContainerManager",
+                },
+                json={"leave": True},
+                timeout=10,
+            )
+        except requests.exceptions.RequestException:
+            pass
+
+
+@journey(
+    persona=("security_reviewer",),
+    category="security_reviewer",
+    severity="medium",
+    tags=("zero-trust",),
+)
+def test_journey_token_rotation_stale_session(audited_page, live_server, audit_observer, persona):
+    """Plan J-08 item: rotate token → stale session. After a rotate-
+    token call, the OLD bearer must not retain access. Observation-
+    only: rotating would invalidate the harness's bearer, so this
+    journey probes the endpoint's auth contract without executing."""
+    with step("step_1_rotate_without_csrf_blocked"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/auth/rotate-token",
+            headers={"Authorization": f"Bearer {_token()}"},  # no X-Requested-With
+            timeout=10,
+        )
+        # CSRF gate must block a rotation without the header.
+        if 200 <= r.status_code < 300:
+            audit_observer.emit(
+                step="step_1_rotate_without_csrf_blocked",
+                severity="P0",
+                category="security",
+                zero_trust=True,
+                title="Token rotation accepted without CSRF header",
+                expected="403 / 400 — CSRF required",
+                observed=f"{r.status_code} accepted",
+            )
+            pytest.fail("rotate-token CSRF bypass")
+
+
+@journey(
+    persona=("security_reviewer",),
+    category="security_reviewer",
+    severity="high",
+    tags=("zero-trust", "ws"),
+)
+def test_journey_ws_auth_lockout(audited_page, live_server, audit_observer, persona):
+    """Plan J-08 item: WS auth lockout. Try to open a WebSocket with
+    a wrong bearer — the server must reject it at handshake, not let
+    the connection stay open with silent failure later."""
+    import uuid
+
+    try:
+        from websockets.sync.client import connect  # type: ignore
+    except ImportError:
+        pytest.skip("websockets client not installed")
+    with step("step_1_ws_handshake_with_bad_bearer"):
+        # The container WS endpoint is typically /ws/logs/{id}.
+        # A random id + bad bearer should fail at handshake.
+        url = (
+            live_server.rstrip("/").replace("http://", "ws://").replace("https://", "wss://")
+            + f"/ws/logs/{uuid.uuid4().hex}"
+            + "?token=not-a-real-token"
+        )
+        try:
+            ws = connect(url, open_timeout=3, additional_headers={
+                "Authorization": "Bearer not-a-real-token",
+            })
+            ws.close()
+            # If we got here, the handshake succeeded — that's a breach.
+            audit_observer.emit(
+                step="step_1_ws_handshake_with_bad_bearer",
+                severity="P0",
+                category="security",
+                zero_trust=True,
+                title="WS handshake succeeded with bad bearer",
+                expected="Handshake refused (101 blocked)",
+                observed="connection opened",
+            )
+            pytest.fail("WS auth lockout bypassed")
+        except Exception:  # noqa: BLE001
+            # Any connection failure is acceptable — that's the lockout.
+            return
+
+
+@journey(
+    persona=("security_reviewer", "ui_ux_auditor"),
+    category="security_reviewer",
+    severity="medium",
+    tags=("csp",),
+)
+def test_journey_csp_violation_reporting(audited_page, live_server, audit_observer, persona):
+    """Plan J-08 item: CSP violation report. The /api/csp-report
+    endpoint (or equivalent) must accept a structured CSP report
+    without 5xx — modern browsers POST these on violations."""
+    # Craft a minimal CSP-report payload.
+    report = {
+        "csp-report": {
+            "document-uri": "http://testserver/",
+            "violated-directive": "script-src 'self'",
+            "effective-directive": "script-src",
+            "blocked-uri": "https://evil.example/x.js",
+            "disposition": "enforce",
+            "status-code": 200,
+        }
+    }
+    with step("step_1_post_csp_report"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/csp-report",
+            json=report,
+            headers={"Content-Type": "application/csp-report"},
+            timeout=10,
+        )
+        # Acceptable: 200/204 (ingested), 404 (not surfaced yet).
+        # Not acceptable: 500 (report caused a crash).
+        if r.status_code == 404:
+            audit_observer.emit(
+                step="step_1_post_csp_report",
+                severity="medium",
+                category="parity",
+                title="No /api/csp-report endpoint surfaced",
+                expected="200/204 — CSP violations ingested + audited",
+                observed="404 Not Found",
+            )
+            return
+        if r.status_code >= 500:
+            audit_observer.emit(
+                step="step_1_post_csp_report",
+                severity="high",
+                category="contract",
+                title=f"CSP report raised {r.status_code}",
+                expected="200/204",
+                observed=f"{r.status_code}: {r.text[:200]!r}",
+            )
+            pytest.fail(f"csp-report 5xx: {r.status_code}")
