@@ -34,7 +34,10 @@ pytest.importorskip(
 pytestmark = pytest.mark.e2e
 
 
-def _seed(live_server: str, name_prefix: str) -> str:
+def _seed(live_server: str, name_prefix: str, read_only: bool = True) -> str:
+    """Seed a container. read_only defaults to True (matches the harness's
+    safer-by-default UX); pass read_only=False for journeys that exercise
+    upload/write paths on the container rootfs."""
     from tests.e2e_helpers import auth_headers
     name = f"{name_prefix}-{uuid.uuid4().hex[:6]}"
     r = requests.post(
@@ -44,6 +47,7 @@ def _seed(live_server: str, name_prefix: str) -> str:
         json={
             "command": "sleep 3600",
             "labels": {"skiff-audit-run": "1"},
+            "read_only": read_only,
         },
         timeout=120,
     )
@@ -187,7 +191,7 @@ def test_journey_files_empty_state_explains_what_is_missing(audited_page, live_s
             page.locator(f"tr:has-text('{name}') a, tr:has-text('{name}')").first.click()
             page.wait_for_timeout(500)
         with step("step_3_open_files_tab"):
-            files_tab = page.locator("button:has-text('Files'), a:has-text('Files')").first
+            files_tab = page.locator(".detail-tab:has-text('Files')").first
             if files_tab.count() == 0:
                 pytest.skip("Files tab not present for this state")
             files_tab.click()
@@ -236,7 +240,7 @@ def test_journey_files_path_remembered_across_tab_switch(audited_page, live_serv
             page.locator(f"tr:has-text('{name}') a, tr:has-text('{name}')").first.click()
             page.wait_for_timeout(500)
         with step("step_3_files_tab_browse_navigate"):
-            files_tab = page.locator("button:has-text('Files'), a:has-text('Files')").first
+            files_tab = page.locator(".detail-tab:has-text('Files')").first
             if files_tab.count() == 0:
                 pytest.skip("Files tab not present")
             files_tab.click()
@@ -249,7 +253,7 @@ def test_journey_files_path_remembered_across_tab_switch(audited_page, live_serv
                 page.keyboard.press("Enter")
                 page.wait_for_timeout(500)
         with step("step_4_switch_to_logs_and_back"):
-            logs_tab = page.locator("button:has-text('Logs'), a:has-text('Logs')").first
+            logs_tab = page.locator(".detail-tab:has-text('Logs')").first
             if logs_tab.count() > 0:
                 logs_tab.click()
                 page.wait_for_timeout(400)
@@ -343,7 +347,8 @@ def test_journey_files_upload_then_verify(audited_page, live_server, audit_obser
 
     from tests.e2e_helpers import auth_headers
 
-    name = _seed(live_server, "flup")
+    # Upload requires a writable rootfs.
+    name = _seed(live_server, "flup", read_only=False)
     marker = "pa-upload-marker.txt"
     content = b"hello from upload journey\n"
     try:

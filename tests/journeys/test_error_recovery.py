@@ -289,7 +289,7 @@ def test_journey_logs_viewer_clears_connecting_placeholder(audited_page, live_se
             page.locator(f"tr:has-text('{name}') a, tr:has-text('{name}')").first.click()
             page.wait_for_timeout(500)
         with step("step_3_open_logs_tab"):
-            logs_tab = page.locator("button:has-text('Logs'), a:has-text('Logs')").first
+            logs_tab = page.locator(".detail-tab:has-text('Logs')").first
             if logs_tab.count() == 0:
                 pytest.skip("Logs tab not present")
             logs_tab.click()

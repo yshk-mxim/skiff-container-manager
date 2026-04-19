@@ -384,7 +384,9 @@ def test_journey_compose_explicit_tear_down(audited_page, live_server, audit_obs
             )
             assert r.status_code == 200
             body = r.json()
-            names = {s.get("name") or s.get("project_name") for s in body.get("stacks", [])}
+            # /api/compose/stacks returns a list directly.
+            stacks = body if isinstance(body, list) else body.get("stacks", [])
+            names = {s.get("name") or s.get("project_name") for s in stacks}
             if project in names:
                 audit_observer.emit(
                     step="step_3_stack_absent_from_list",

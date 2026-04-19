@@ -294,9 +294,15 @@ def test_journey_rename_persists(audited_page, live_server, audit_observer, pers
         with step("step_3_observe_renamed_row"):
             nav_to(page, "containers")
             page.wait_for_selector(f"text={new_name}", timeout=MEDIUM)
-            # Old name should not appear any more.
-            page.wait_for_selector(f"text={name}",
-                                   state="detached", timeout=SHORT)
+            # Old name row should be gone. Use exact match (text="...")
+            # — substring match would also hit `<name>-renamed`.
+            # Also allow the scan to succeed via inner_text check.
+            body = page.locator("#main").inner_text()
+            original_lines = [ln for ln in body.splitlines()
+                              if name in ln and "renamed" not in ln]
+            assert not original_lines, (
+                f"original name still visible: {original_lines[:3]}"
+            )
     finally:
         _teardown_by_name(live_server, new_name)
         _teardown_by_name(live_server, name)
@@ -484,7 +490,7 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
             page.wait_for_timeout(500)
 
         with step("step_3_open_terminal_tab"):
-            term_tab = page.locator("button:has-text('Terminal'), a:has-text('Terminal')").first
+            term_tab = page.locator(".detail-tab:has-text('Terminal')").first
             if term_tab.count() == 0:
                 pytest.skip("Terminal tab not surfaced (feature may be off for this image)")
             term_tab.click()
@@ -492,7 +498,7 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
             page.wait_for_selector(".xterm, #term-output", timeout=MEDIUM)
 
         with step("step_4_switch_to_logs_and_back"):
-            logs_tab = page.locator("button:has-text('Logs'), a:has-text('Logs')").first
+            logs_tab = page.locator(".detail-tab:has-text('Logs')").first
             if logs_tab.count() > 0:
                 logs_tab.click()
                 page.wait_for_timeout(400)
