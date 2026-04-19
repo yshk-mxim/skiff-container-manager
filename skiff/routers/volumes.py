@@ -159,10 +159,16 @@ def create_volume(
     if driver not in _VOLUME_VALID_DRIVERS:
         raise http_error("volume.bad_driver", message=f"driver {driver!r} not in allowlist")
     parsed_labels = _parse_kv_list(
-        labels, _VOLUME_LABEL_KEY_RE, _VOLUME_LABEL_VAL_RE, "volume.bad_labels",
+        labels,
+        _VOLUME_LABEL_KEY_RE,
+        _VOLUME_LABEL_VAL_RE,
+        "volume.bad_labels",
     )
     parsed_opts = _parse_kv_list(
-        driver_opts, _VOLUME_LABEL_KEY_RE, _VOLUME_LABEL_VAL_RE, "volume.bad_driver_opts",
+        driver_opts,
+        _VOLUME_LABEL_KEY_RE,
+        _VOLUME_LABEL_VAL_RE,
+        "volume.bad_driver_opts",
     )
     kwargs: dict[str, Any] = {"name": name, "driver": driver}
     if parsed_labels:

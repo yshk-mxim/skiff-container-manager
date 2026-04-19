@@ -46,7 +46,10 @@ def test_file_browser_lists_navigates_downloads_uploads(page, live_server, docke
     name = "e2e-file-browser"
     teardown_container(docker_client, name)
     docker_client.containers.run(
-        "alpine:latest", command="sleep 600", name=name, detach=True,
+        "alpine:latest",
+        command="sleep 600",
+        name=name,
+        detach=True,
     )
     try:
         login(page, live_server)
@@ -78,9 +81,9 @@ def test_file_browser_lists_navigates_downloads_uploads(page, live_server, docke
         # /etc should contain `hosts` — a universally-present file.
         page.wait_for_selector("table tbody tr:has-text('hosts')", timeout=SHORT)
 
-        # Breadcrumb reflects the new path.
-        breadcrumb = page.locator(".detail-subtabs + div >> nth=0")
-        # (breadcrumb selector may be fragile; assert the /etc segment is visible)
+        # Breadcrumb reflects the new path. The breadcrumb element
+        # selector is fragile — assert the visible text rather than the
+        # element, which is stable across breadcrumb CSS refactors.
         assert page.locator("text=/etc").count() > 0, "breadcrumb missing /etc segment"
 
         # --- Upload path: type a file at /etc/skiff-e2e.txt via the
@@ -120,8 +123,7 @@ def test_file_browser_lists_navigates_downloads_uploads(page, live_server, docke
         exec_result = docker_client.containers.get(name).exec_run(["cat", "/etc/skiff-e2e.txt"])
         assert exec_result.exit_code == 0
         assert exec_result.output == upload_body, (
-            f"uploaded bytes diverged — UI uploaded {upload_body!r}, "
-            f"container sees {exec_result.output!r}"
+            f"uploaded bytes diverged — UI uploaded {upload_body!r}, container sees {exec_result.output!r}"
         )
 
         # --- Download path: the download button in the row fetches a
@@ -155,7 +157,10 @@ def test_file_browser_rejects_over_size_upload(page, live_server, docker_client)
     name = "e2e-upload-cap"
     teardown_container(docker_client, name)
     docker_client.containers.run(
-        "alpine:latest", command="sleep 300", name=name, detach=True,
+        "alpine:latest",
+        command="sleep 300",
+        name=name,
+        detach=True,
     )
     try:
         login(page, live_server)
@@ -177,9 +182,7 @@ def test_file_browser_rejects_over_size_upload(page, live_server, docker_client)
             # CONTAINER_CP_MAX_MB); the framework may reject even sooner.
             {"id": name, "size": 200 * 1024 * 1024},
         )
-        assert resp["status"] in (400, 413), (
-            f"oversize upload must be refused with 400 or 413, got {resp!r}"
-        )
+        assert resp["status"] in (400, 413), f"oversize upload must be refused with 400 or 413, got {resp!r}"
     finally:
         teardown_container(docker_client, name)
 
@@ -194,7 +197,10 @@ def test_file_browser_remembers_path_across_tab_switches(page, live_server, dock
     name = "e2e-file-path-memory"
     teardown_container(docker_client, name)
     docker_client.containers.run(
-        "alpine:latest", command="sleep 300", name=name, detach=True,
+        "alpine:latest",
+        command="sleep 300",
+        name=name,
+        detach=True,
     )
     try:
         login(page, live_server)

@@ -18,7 +18,7 @@ does NOT claim.
 
 | Framework | Doc | One-line summary |
 |---|---|---|
-| **OWASP ASVS v5.0** | [`../../SECURITY.md#owasp-asvs-v50-mapping`](../../SECURITY.md) | V1–V18 control mapping; 13 EVIDENCE / 1 PARTIAL / 1 OPERATOR / 4 N/A |
+| **OWASP ASVS v5.0** | [`../../SECURITY.md#owasp-asvs-v50-mapping`](../../SECURITY.md) | V1–V18 control mapping: 11 In-scope + 1 Minimal + 1 Partial + 1 Operator-responsible + 4 N/A |
 | **OWASP Top 10** | [`../hardening/security-scans.md`](../hardening/security-scans.md) | covered by semgrep `p/owasp-top-ten` ruleset on every PR |
 | **WCAG 2.1 Level AA** | [`wcag-2-1-aa.md`](wcag-2-1-aa.md) | self-assessment + automated axe-core pass |
 | **CIS Docker Benchmark** | [`cis-docker-benchmark.md`](cis-docker-benchmark.md) | how SKIFF's defaults align with operator-relevant items |

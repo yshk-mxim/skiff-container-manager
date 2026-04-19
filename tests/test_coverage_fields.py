@@ -19,8 +19,7 @@ pytestmark = pytest.mark.unit
 
 
 CSV_PATH = Path("docs/dev/coverage_fields.csv")
-REQUIRED_COLS = ("object", "field", "read_in_ui", "writable_in_ui",
-                 "roundtrip_tested")
+REQUIRED_COLS = ("object", "field", "read_in_ui", "writable_in_ui", "roundtrip_tested")
 
 
 def _load_rows() -> list[dict[str, str]]:
@@ -66,25 +65,22 @@ def test_no_blank_decision_cells() -> None:
     assert not bad, "\n".join(bad)
 
 
-def test_N_bang_rows_have_omission_reason() -> None:
+def test_N_bang_rows_have_omission_reason() -> None:  # noqa: N802 — N/Y tokens are semantic
     """N! means intentional security NO — must be accompanied by a
     non-empty omission_reason so a reader understands why."""
     rows = _load_rows()
     thin: list[str] = []
     for row in rows:
         has_bang = any(
-            row.get(col, "").strip().startswith("N!")
-            for col in ("read_in_ui", "writable_in_ui", "roundtrip_tested")
+            row.get(col, "").strip().startswith("N!") for col in ("read_in_ui", "writable_in_ui", "roundtrip_tested")
         )
         reason = row.get("omission_reason", "").strip()
         if has_bang and not reason:
             thin.append(f"{row['object']}.{row['field']}")
-    assert not thin, (
-        f"{len(thin)} N! rows with no omission_reason: {thin[:5]}..."
-    )
+    assert not thin, f"{len(thin)} N! rows with no omission_reason: {thin[:5]}..."
 
 
-def test_roundtrip_Y_rows_have_read_and_write() -> None:
+def test_roundtrip_Y_rows_have_read_and_write() -> None:  # noqa: N802 — Y is semantic
     """If a field is roundtrip-tested it must be both readable AND
     writable in the UI — otherwise the round-trip claim is wrong."""
     rows = _load_rows()
@@ -94,14 +90,10 @@ def test_roundtrip_Y_rows_have_read_and_write() -> None:
         if not rt.startswith("Y"):
             continue
         read = row.get("read_in_ui", "").strip()
-        write = row.get("writable_in_ui", "").strip()
         # Read must be Y. Write may be Y/Y*/N (immutable daemon field)
         # — a writable=N + roundtrip=Y means we verified the READ path
         # round-trips (e.g., Image.Size: derived, read-only, but we
         # confirm the value we see matches docker inspect).
         if not read.startswith("Y"):
-            mismatches.append(
-                f"{row['object']}.{row['field']}: roundtrip=Y but "
-                f"read_in_ui={read!r}"
-            )
+            mismatches.append(f"{row['object']}.{row['field']}: roundtrip=Y but read_in_ui={read!r}")
     assert not mismatches, "\n".join(mismatches)

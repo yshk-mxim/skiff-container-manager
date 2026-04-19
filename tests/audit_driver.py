@@ -46,8 +46,7 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Bearer [A-Za-z0-9_.\-]{16,}"), "Bearer <redacted>"),
     # Generic api_token / token / password query params (shared with
     # skiff/logging_setup.py::_TOKEN_QS_RE).
-    (re.compile(r"((?:api_token|token|password|bearer)=)[^\s&\"'<>]+", re.IGNORECASE),
-     r"\1<redacted>"),
+    (re.compile(r"((?:api_token|token|password|bearer)=)[^\s&\"'<>]+", re.IGNORECASE), r"\1<redacted>"),
     # Anthropic-style sk- tokens (in case a test user pastes one).
     (re.compile(r"sk-[A-Za-z0-9_\-]{20,}"), "sk-<redacted>"),
     # IPv4 outside loopback/private/link-local. Replace only anything
@@ -57,9 +56,14 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 # Things a redactor must NEVER touch. Keep short — the point is to
 # anchor legitimate tokens that look redact-able but aren't.
-_REDACTION_KEEP = frozenset({
-    "127.0.0.1", "0.0.0.0", "255.255.255.255", "::1",
-})
+_REDACTION_KEEP = frozenset(
+    {
+        "127.0.0.1",
+        "0.0.0.0",  # noqa: S104 — sentinel, not a bind address
+        "255.255.255.255",
+        "::1",
+    }
+)
 
 
 def redact_artifact(text: str) -> str:
@@ -100,8 +104,8 @@ class Finding:
     journey: str
     persona: str
     step: str
-    severity: str                           # P0 | high | medium | low
-    category: str                           # copy|contract|security|perf|a11y|layout|behaviour|parity
+    severity: str  # P0 | high | medium | low
+    category: str  # copy|contract|security|perf|a11y|layout|behaviour|parity
     zero_trust_violation: bool
     title: str
     expected: str
@@ -127,7 +131,7 @@ class AuditObserver:
         self.pass_n = pass_n
         self.persona = persona
         self.journey = journey
-        self.page = page          # Playwright page — set lazily by the journey
+        self.page = page  # Playwright page — set lazily by the journey
         self.findings: list[Finding] = []
         self.root = ARTIFACT_ROOT / f"pass-{pass_n}" / persona / journey
         self.root.mkdir(parents=True, exist_ok=True)
@@ -145,23 +149,39 @@ class AuditObserver:
         self._wire_page(page)
 
     def _wire_page(self, page: Any) -> None:
-        page.on("console", lambda msg: self._console_lines.append(
-            f"[{msg.type}] {msg.text}",
-        ))
+        page.on(
+            "console",
+            lambda msg: self._console_lines.append(
+                f"[{msg.type}] {msg.text}",
+            ),
+        )
         page.on("pageerror", lambda exc: self._js_errors.append(str(exc)))
         # Request/response pairs — headers + status only; no bodies.
-        page.on("request", lambda req: self._network_trace.append({
-            "t": "request", "ts": time.time(),
-            "method": req.method, "url": req.url,
-            "headers": {k: v for k, v in req.headers.items()
-                        if k.lower() not in {"authorization", "cookie"}},
-        }))
-        page.on("response", lambda resp: self._network_trace.append({
-            "t": "response", "ts": time.time(),
-            "url": resp.url, "status": resp.status,
-            "content_type": resp.headers.get("content-type", ""),
-            "csp": resp.headers.get("content-security-policy", ""),
-        }))
+        page.on(
+            "request",
+            lambda req: self._network_trace.append(
+                {
+                    "t": "request",
+                    "ts": time.time(),
+                    "method": req.method,
+                    "url": req.url,
+                    "headers": {k: v for k, v in req.headers.items() if k.lower() not in {"authorization", "cookie"}},
+                }
+            ),
+        )
+        page.on(
+            "response",
+            lambda resp: self._network_trace.append(
+                {
+                    "t": "response",
+                    "ts": time.time(),
+                    "url": resp.url,
+                    "status": resp.status,
+                    "content_type": resp.headers.get("content-type", ""),
+                    "csp": resp.headers.get("content-security-policy", ""),
+                }
+            ),
+        )
 
     # ─── step capture ────────────────────────────────────────────
     @contextmanager
@@ -181,7 +201,8 @@ class AuditObserver:
             try:
                 dom = self.page.content()
                 (stem.with_suffix(".dom.html")).write_text(
-                    redact_artifact(dom), encoding="utf-8",
+                    redact_artifact(dom),
+                    encoding="utf-8",
                 )
             except Exception:
                 pass
@@ -207,11 +228,16 @@ class AuditObserver:
             self._network_trace = []
         # Timing row for overall journey profiling.
         with (self.root / "_timing.jsonl").open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "step": name,
-                "duration_s": round(time.time() - started_at, 3),
-                "ts": started_at,
-            }) + "\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "step": name,
+                        "duration_s": round(time.time() - started_at, 3),
+                        "ts": started_at,
+                    }
+                )
+                + "\n"
+            )
 
     # ─── finding emission ────────────────────────────────────────
     def emit(
@@ -231,10 +257,7 @@ class AuditObserver:
     ) -> Finding:
         """Record a finding. Stored to disk and returned so the journey
         can optionally fail fast on P0."""
-        finding_id = (
-            f"pa-{time.strftime('%Y%m%d-%H%M%S')}"
-            f"-{self.persona}-{self.journey}-{_safe_filename(step)}"
-        )
+        finding_id = f"pa-{time.strftime('%Y%m%d-%H%M%S')}-{self.persona}-{self.journey}-{_safe_filename(step)}"
         f = Finding(
             id=finding_id,
             journey=self.journey,
@@ -246,9 +269,7 @@ class AuditObserver:
             title=title,
             expected=expected,
             observed=observed,
-            evidence_paths=sorted(
-                str(p) for p in self.root.glob(f"{_safe_filename(step)}.*")
-            ),
+            evidence_paths=sorted(str(p) for p in self.root.glob(f"{_safe_filename(step)}.*")),
             expectation_note=expectation_note,
             doc_mismatch=doc_mismatch,
             class_sweep=class_sweep,
@@ -258,7 +279,8 @@ class AuditObserver:
         findings_dir = ARTIFACT_ROOT / f"pass-{self.pass_n}" / "findings"
         findings_dir.mkdir(parents=True, exist_ok=True)
         (findings_dir / f"{finding_id}.json").write_text(
-            f.to_json(), encoding="utf-8",
+            f.to_json(),
+            encoding="utf-8",
         )
         return f
 
@@ -298,10 +320,7 @@ def sweep_related(category: str, surface: str) -> list[str]:
     journeys that touch a form)."""
     from tests.journeys import JOURNEY_REGISTRY  # local import to avoid circular
 
-    return [
-        key for key, meta in JOURNEY_REGISTRY.items()
-        if meta.category == category
-    ]
+    return [key for key, meta in JOURNEY_REGISTRY.items() if meta.category == category]
 
 
 # ── Utilities ────────────────────────────────────────────────────────

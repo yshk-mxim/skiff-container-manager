@@ -10,7 +10,7 @@ SKIFF's implemented practices map to most of the Scorecard checks. The **current
 |---|---|---|
 | **Binary-Artifacts** | 10 | No binary blobs in `main`; only Python source + TOML + static web assets |
 | **Branch-Protection** | 8–10 | Depends on GitHub branch-protection settings on `main` (maintainer-controlled) |
-| **CI-Tests** | 10 | `make ci` runs on every PR; 889 tests + 95 % coverage |
+| **CI-Tests** | 10 | `make ci` runs on every PR; 1100+ tests + ≥94 % coverage gate |
 | **CII-Best-Practices** | 10 | Tracked separately via [`openssf-best-practices.md`](openssf-best-practices.md) |
 | **Code-Review** | 8–10 | Single-maintainer posture; CODEOWNERS gates governance paths. External contributors get full review on PRs |
 | **Contributors** | 0–3 | Single-maintainer expected low here — deliberate trade-off documented in SECURITY.md §Design Trade-offs |

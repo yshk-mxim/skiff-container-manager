@@ -20,8 +20,7 @@ pytestmark = pytest.mark.unit
 
 
 CSV_PATH = Path("docs/dev/coverage_bottomup.csv")
-REQUIRED_COLS = ("engine_endpoint", "skiff_route", "exercised_by_journey",
-                 "security_justified_no")
+REQUIRED_COLS = ("engine_endpoint", "skiff_route", "exercised_by_journey", "security_justified_no")
 
 
 def _load_rows() -> list[dict[str, str]]:
@@ -60,8 +59,7 @@ def test_every_row_has_exerciser_or_security_no() -> None:
         if not has_journey and not has_security_no:
             orphans.append(row.get("engine_endpoint", "<blank>"))
     assert not orphans, (
-        f"{len(orphans)} engine endpoints with neither journey nor "
-        f"security_justified_no: {orphans[:5]}..."
+        f"{len(orphans)} engine endpoints with neither journey nor security_justified_no: {orphans[:5]}..."
     )
 
 
@@ -87,9 +85,7 @@ def test_referenced_journeys_exist() -> None:
                 continue
             if ref not in known:
                 missing.append(f"{row['engine_endpoint']}: {ref!r}")
-    assert not missing, (
-        f"bottomup CSV references non-existent journeys: {missing[:10]}..."
-    )
+    assert not missing, f"bottomup CSV references non-existent journeys: {missing[:10]}..."
 
 
 def test_security_justified_no_rows_have_reason() -> None:

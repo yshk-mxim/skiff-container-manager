@@ -37,12 +37,14 @@ BACKING_CSVS = (
 
 
 def test_tracker_markdown_exists() -> None:
-    assert TRACKER.exists(), (
-        f"{TRACKER} missing — run `make tracker` to regenerate"
-    )
+    assert TRACKER.exists(), f"{TRACKER} missing — run `make tracker` to regenerate"
 
 
 def test_every_backing_csv_exists_and_has_rows() -> None:
+    # findings_tracker.csv can legitimately be empty (a fresh project
+    # with no persona-audit passes yet has zero findings). Other CSVs
+    # must carry at least one data row.
+    may_be_empty = {Path("docs/dev/findings_tracker.csv")}
     missing: list[str] = []
     empty: list[str] = []
     for p in BACKING_CSVS:
@@ -51,7 +53,7 @@ def test_every_backing_csv_exists_and_has_rows() -> None:
             continue
         with p.open(encoding="utf-8") as fh:
             rows = list(csv.reader(fh))
-        if len(rows) <= 1:  # header only
+        if len(rows) <= 1 and p not in may_be_empty:
             empty.append(str(p))
     assert not missing, f"missing CSVs: {missing}"
     assert not empty, f"CSVs with only a header row: {empty}"
@@ -64,10 +66,8 @@ def test_tracker_refresh_date_is_recent() -> None:
     m = re.search(r"refreshed (\d{4}-\d{2}-\d{2})", text)
     assert m, "tracker header missing 'refreshed YYYY-MM-DD' line"
     d = _dt.date.fromisoformat(m.group(1))
-    age = (_dt.date.today() - d).days
-    assert age <= 30, (
-        f"tracker refreshed {age} days ago (> 30) — rerun `make tracker`"
-    )
+    age = (_dt.datetime.now(tz=_dt.UTC).date() - d).days
+    assert age <= 30, f"tracker refreshed {age} days ago (> 30) — rerun `make tracker`"
 
 
 def test_testing_tracker_rollup_matches_journey_count() -> None:
@@ -83,15 +83,12 @@ def test_testing_tracker_rollup_matches_journey_count() -> None:
 
     real_count = 0
     for p in Path("tests/journeys").glob("test_*.py"):
-        real_count += len(
-            _re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), _re.MULTILINE)
-        )
+        real_count += len(_re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), _re.MULTILINE))
     claimed = int(e2e.get("test_function_count", "0"))
     # Allow equal. If the tracker is off by more than 2 journeys
     # it's been skipped in a recent commit — rerun.
     assert abs(claimed - real_count) <= 2, (
-        f"testing_tracker claims {claimed} journey tests but real count is "
-        f"{real_count} — rerun `make tracker`"
+        f"testing_tracker claims {claimed} journey tests but real count is {real_count} — rerun `make tracker`"
     )
 
 
@@ -105,7 +102,4 @@ def test_findings_csv_counts_match_tracker_md() -> None:
     with Path("docs/dev/findings_tracker.csv").open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     real = len(rows)
-    assert claimed == real, (
-        f"tracker MD claims {claimed} findings but CSV has {real} rows — "
-        "rerun `make tracker`"
-    )
+    assert claimed == real, f"tracker MD claims {claimed} findings but CSV has {real} rows — rerun `make tracker`"

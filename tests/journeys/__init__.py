@@ -52,9 +52,16 @@ JOURNEY_REGISTRY: dict[str, JourneyMeta] = {}
 
 _VALID_CATEGORIES = frozenset(
     {
-        "first_run", "quick_start", "container_lifecycle", "compose",
-        "volumes_networks", "files_tab", "audit_observability",
-        "security_reviewer", "error_recovery", "ui_ux",
+        "first_run",
+        "quick_start",
+        "container_lifecycle",
+        "compose",
+        "volumes_networks",
+        "files_tab",
+        "audit_observability",
+        "security_reviewer",
+        "error_recovery",
+        "ui_ux",
     },
 )
 _VALID_SEVERITIES = frozenset({"P0", "high", "medium", "low"})
@@ -93,9 +100,7 @@ def journey(
     if severity not in _VALID_SEVERITIES:
         raise ValueError(f"Unknown severity {severity!r}; valid: {sorted(_VALID_SEVERITIES)}")
 
-    persona_tags: tuple[str, ...] = (
-        (persona,) if isinstance(persona, str) else tuple(persona)
-    )
+    persona_tags: tuple[str, ...] = (persona,) if isinstance(persona, str) else tuple(persona)
     if not persona_tags:
         # Default: every persona runs it. Only useful for the most
         # universal journeys (e.g. "can sign in").

@@ -237,9 +237,10 @@ source = ["skiff"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
-# Contributor-friendly threshold. Current main tracks ~97%, but we don't
-# want a cosmetic branch addition in an external PR to fail CI solely on
-# coverage delta. Maintainer raises locally if the suite is being hardened.
+# Contributor-friendly threshold. Current main tracks a little above
+# this floor, but we don't want a cosmetic branch addition in an
+# external PR to fail CI solely on coverage delta. Maintainer raises
+# locally when the suite is being hardened.
 fail_under = 94
 # Project target is ≥95 per docs/dev/feature-development.md §7d, with
 # critical modules at 100 %. 94 as the hard floor gives a 1-point

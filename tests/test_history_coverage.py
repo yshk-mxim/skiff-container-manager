@@ -35,8 +35,7 @@ def test_hb_has_regression_test(hb: HistoricalBug) -> None:
     finding; impossible-to-find test → finding."""
     if not hb.regression_test:
         pytest.skip(
-            f"{hb.id}: no regression_test assigned yet — backfill in "
-            f"tests/journeys/_history.py::HISTORICAL_BUGS"
+            f"{hb.id}: no regression_test assigned yet — backfill in tests/journeys/_history.py::HISTORICAL_BUGS"
         )
     # Parse `tests/test_foo.py::test_bar` format.
     if "::" not in hb.regression_test:
@@ -66,8 +65,7 @@ def test_hb_has_fix_commit(hb: HistoricalBug) -> None:
     CHANGELOG.md can link to it and bisect is precise."""
     assert hb.fix_commit_short, f"{hb.id}: fix_commit_short empty"
     assert len(hb.fix_commit_short) >= 7, (
-        f"{hb.id}: fix_commit_short {hb.fix_commit_short!r} too short; "
-        f"use first 7+ chars of the SHA"
+        f"{hb.id}: fix_commit_short {hb.fix_commit_short!r} too short; use first 7+ chars of the SHA"
     )
 
 

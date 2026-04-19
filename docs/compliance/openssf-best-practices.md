@@ -38,7 +38,7 @@ The canonical list of Passing criteria lives at [bestpractices.dev/criteria/0](h
 
 ### Quality
 
-- **Project MUST have at least one automated test suite**: 889 tests (pytest + hypothesis + integration).
+- **Project MUST have at least one automated test suite**: 1100+ tests (pytest + hypothesis + integration + persona-audit journeys).
 - **Tests invoked by a standard command**: `make test` / `make ci`.
 - **Policy that new functionality should be added with new tests**: documented in [docs/dev/feature-development.md §7d](../dev/feature-development.md).
 - **Project MUST have a well-known compiler/interpreter for the language it's written in**: Python 3.12+, specified in pyproject.toml's `requires-python`.

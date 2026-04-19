@@ -56,6 +56,7 @@ def _run_seed_container(live_server: str, name_prefix: str, image: str = "alpine
       - Body is RunContainerRequest (extra=forbid).
     """
     from tests.e2e_helpers import auth_headers
+
     name = f"{name_prefix}-{uuid.uuid4().hex[:8]}"
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
@@ -73,6 +74,7 @@ def _run_seed_container(live_server: str, name_prefix: str, image: str = "alpine
 
 def _teardown_by_name(live_server: str, name: str) -> None:
     from tests.e2e_helpers import auth_headers
+
     try:
         requests.delete(
             f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
@@ -139,10 +141,9 @@ def test_journey_stop_then_start_cycle(audited_page, live_server, audit_observer
             row = page.locator(f"tr:has-text('{name}')").first
             # Either a Start button appears, or the state chip reads
             # 'exited' — both indicate the stop went through.
-            assert (
-                row.locator("button:has-text('Start')").count() > 0
-                or row.locator("text=exited").count() > 0
-            ), "row did not reflect stopped state"
+            assert row.locator("button:has-text('Start')").count() > 0 or row.locator("text=exited").count() > 0, (
+                "row did not reflect stopped state"
+            )
 
         with step("step_5_click_start_again"):
             row = page.locator(f"tr:has-text('{name}')").first
@@ -180,9 +181,7 @@ def test_journey_restart(audited_page, live_server, audit_observer, persona):
             # Row should still exist + still be running after a moment.
             page.wait_for_timeout(1500)
             row = page.locator(f"tr:has-text('{name}')").first
-            assert row.locator("button:has-text('Stop')").count() > 0, (
-                "container not running after restart"
-            )
+            assert row.locator("button:has-text('Stop')").count() > 0, "container not running after restart"
     finally:
         _teardown_by_name(live_server, name)
 
@@ -215,10 +214,9 @@ def test_journey_pause_and_unpause(audited_page, live_server, audit_observer, pe
             page.wait_for_timeout(1000)
             # Paused state chip OR Unpause button should appear.
             row = page.locator(f"tr:has-text('{name}')").first
-            assert (
-                row.locator("text=paused").count() > 0
-                or row.locator("button:has-text('Unpause')").count() > 0
-            ), "paused state not reflected after pause"
+            assert row.locator("text=paused").count() > 0 or row.locator("button:has-text('Unpause')").count() > 0, (
+                "paused state not reflected after pause"
+            )
     finally:
         _teardown_by_name(live_server, name)
 
@@ -260,8 +258,7 @@ def test_journey_force_kill_requires_confirm(audited_page, live_server, audit_ob
             # Dialog must have fired at least once — otherwise a
             # destructive action dispatched without confirmation.
             assert dialog_seen["count"] > 0, (
-                "Kill dispatched without a confirm dialog — destructive "
-                "action bypasses Nielsen #5 (error prevention)"
+                "Kill dispatched without a confirm dialog — destructive action bypasses Nielsen #5 (error prevention)"
             )
     finally:
         _teardown_by_name(live_server, name)
@@ -275,7 +272,7 @@ def test_journey_force_kill_requires_confirm(audited_page, live_server, audit_ob
 def test_journey_rename_persists(audited_page, live_server, audit_observer, persona):
     """Rename via API (UI rename modal auth'ed by the same contract),
     then confirm the list shows the new name."""
-    from tests.e2e_helpers import MEDIUM, SHORT, auth_headers, login, nav_to
+    from tests.e2e_helpers import MEDIUM, auth_headers, login, nav_to
 
     page = audited_page
     name = _run_seed_container(live_server, "rn")
@@ -298,11 +295,8 @@ def test_journey_rename_persists(audited_page, live_server, audit_observer, pers
             # — substring match would also hit `<name>-renamed`.
             # Also allow the scan to succeed via inner_text check.
             body = page.locator("#main").inner_text()
-            original_lines = [ln for ln in body.splitlines()
-                              if name in ln and "renamed" not in ln]
-            assert not original_lines, (
-                f"original name still visible: {original_lines[:3]}"
-            )
+            original_lines = [ln for ln in body.splitlines() if name in ln and "renamed" not in ln]
+            assert not original_lines, f"original name still visible: {original_lines[:3]}"
     finally:
         _teardown_by_name(live_server, new_name)
         _teardown_by_name(live_server, name)
@@ -349,10 +343,9 @@ def test_journey_bulk_stop_multiple(audited_page, live_server, audit_observer, p
             for n in names:
                 row = page.locator(f"tr:has-text('{n}')").first
                 # Each row should offer a Start button (i.e., stopped).
-                assert (
-                    row.locator("button:has-text('Start')").count() > 0
-                    or row.locator("text=exited").count() > 0
-                ), f"{n} did not reach stopped state after bulk stop"
+                assert row.locator("button:has-text('Start')").count() > 0 or row.locator("text=exited").count() > 0, (
+                    f"{n} did not reach stopped state after bulk stop"
+                )
     finally:
         for n in names:
             _teardown_by_name(live_server, n)
@@ -376,9 +369,11 @@ def test_journey_delete_emits_undo_toast(audited_page, live_server, audit_observ
     try:
         # Stop the container first so delete doesn't need force=true.
         from tests.e2e_helpers import auth_headers
+
         requests.post(
             f"{live_server.rstrip('/')}/api/containers/{name}/stop",
-            headers=auth_headers(), timeout=60,
+            headers=auth_headers(),
+            timeout=60,
         )
 
         with step("step_1_sign_in"):
@@ -446,9 +441,7 @@ def test_journey_commit_container_to_image(audited_page, live_server, audit_obse
                 headers=auth_headers(),
                 timeout=60,
             )
-            assert r.status_code in (200, 201), (
-                f"commit failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code in (200, 201), f"commit failed: {r.status_code} {r.text}"
             body = r.json()
             assert body.get("ok") is True, f"commit response missing ok: {body}"
             # Store the resulting image id / ref for cleanup.
@@ -554,7 +547,8 @@ def test_journey_stats_endpoint_returns_shape(audited_page, live_server, audit_o
         with step("step_1_fetch_stats"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/stats",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             if r.status_code != 200:
                 audit_observer.emit(
@@ -568,8 +562,11 @@ def test_journey_stats_endpoint_returns_shape(audited_page, live_server, audit_o
                 pytest.fail(f"stats failed: {r.status_code}")
             body = r.json()
             # Must expose CPU + memory fields for the UI to render.
-            missing = [k for k in ("cpu_percent", "memory_mb", "memory_limit_mb")
-                       if k not in body and k.replace("_", "") not in {kk.replace("_", "") for kk in body}]
+            missing = [
+                k
+                for k in ("cpu_percent", "memory_mb", "memory_limit_mb")
+                if k not in body and k.replace("_", "") not in {kk.replace("_", "") for kk in body}
+            ]
             if missing:
                 audit_observer.emit(
                     step="step_1_fetch_stats",
@@ -625,16 +622,13 @@ def test_journey_exec_roundtrip_writes_file(audited_page, live_server, audit_obs
             r = _rq.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/ls",
                 params={"path": "/tmp"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
-            assert r.status_code == 200, (
-                f"ls /tmp failed: {r.status_code} {r.text[:200]!r}"
-            )
+            assert r.status_code == 200, f"ls /tmp failed: {r.status_code} {r.text[:200]!r}"
             body = r.json()
             names = [e.get("name") for e in (body.get("entries") or body.get("files") or [])]
-            assert "pa-mark" in names, (
-                f"exec write not visible via ls; entries: {names[:10]}"
-            )
+            assert "pa-mark" in names, f"exec write not visible via ls; entries: {names[:10]}"
     finally:
         _teardown_by_name(live_server, name)
 
@@ -645,7 +639,7 @@ def test_journey_exec_roundtrip_writes_file(audited_page, live_server, audit_obs
     severity="low",
 )
 def test_journey_restart_loop_repeated(audited_page, live_server, audit_observer, persona):
-    """Plan J-03 item: restart loop. Restart 3× in a row — every
+    """Plan J-03 item: restart loop. Restart 3x in a row — every
     restart must 200 and leave the container running. Guards against
     a bug where the second restart finds a stale client handle."""
     from tests.e2e_helpers import auth_headers
@@ -653,21 +647,22 @@ def test_journey_restart_loop_repeated(audited_page, live_server, audit_observer
     name = _run_seed_container(live_server, "rl")
     try:
         for i in range(3):
-            with step(f"step_{i+1}_restart"):
+            with step(f"step_{i + 1}_restart"):
                 r = requests.post(
                     f"{live_server.rstrip('/')}/api/containers/{name}/restart",
-                    headers=auth_headers(), timeout=60,
+                    headers=auth_headers(),
+                    timeout=60,
                 )
                 if r.status_code != 200:
                     audit_observer.emit(
-                        step=f"step_{i+1}_restart",
+                        step=f"step_{i + 1}_restart",
                         severity="medium",
                         category="behaviour",
-                        title=f"Restart #{i+1} returned {r.status_code}",
+                        title=f"Restart #{i + 1} returned {r.status_code}",
                         expected="200 OK on every restart in a tight loop",
                         observed=f"{r.status_code}: {r.text[:200]!r}",
                     )
-                    pytest.fail(f"restart {i+1} failed")
+                    pytest.fail(f"restart {i + 1} failed")
     finally:
         _teardown_by_name(live_server, name)
 
@@ -693,20 +688,19 @@ def test_journey_restart_policy_update_surface(audited_page, live_server, audit_
                 json={"restart_policy": {"Name": "on-failure", "MaximumRetryCount": 3}},
                 timeout=30,
             )
-            assert r.status_code == 200, (
-                f"restart-policy update failed: {r.status_code} {r.text[:200]!r}"
-            )
+            assert r.status_code == 200, f"restart-policy update failed: {r.status_code} {r.text[:200]!r}"
         with step("step_2_inspect_reflects_policy"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/inspect",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200
             import json as _json
+
             body_str = _json.dumps(r.json())
             assert "on-failure" in body_str, (
-                f"restart_policy on-failure not visible after update; "
-                f"body prefix: {body_str[:400]}"
+                f"restart_policy on-failure not visible after update; body prefix: {body_str[:400]}"
             )
     finally:
         _teardown_by_name(live_server, name)
@@ -728,6 +722,7 @@ def test_journey_rootless_exec_capability_check(audited_page, live_server, audit
     import uuid
 
     from tests.e2e_helpers import auth_headers
+
     name = f"pa-ru-{uuid.uuid4().hex[:6]}"
     # RunContainerRequest currently has no 'user' field (extra=forbid).
     # If that ever changes, this journey should start exercising it.
@@ -767,16 +762,13 @@ def test_journey_rootless_exec_capability_check(audited_page, live_server, audit
                 pytest.skip(
                     "REST exec not wired; WS-exec UID verification deferred",
                 )
-            assert r.status_code < 500, (
-                f"rootless exec 5xx: {r.status_code} {r.text[:200]!r}"
-            )
+            assert r.status_code < 500, f"rootless exec 5xx: {r.status_code} {r.text[:200]!r}"
             if 200 <= r.status_code < 300:
                 # If the endpoint ever lands, the output of `id` should
                 # include uid=10000 or gid=10000 since the seed set user.
                 body_str = r.text
                 assert "10000" in body_str, (
-                    f"rootless seed configured user=10000 but exec output "
-                    f"doesn't show it: {body_str[:200]!r}"
+                    f"rootless seed configured user=10000 but exec output doesn't show it: {body_str[:200]!r}"
                 )
     finally:
         _teardown_by_name(live_server, name)

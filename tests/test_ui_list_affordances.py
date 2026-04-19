@@ -100,8 +100,7 @@ def test_audit_log_discloses_its_cap(page, live_server):
         "name the current cap in text."
     )
     assert audit_filter.count() > 0, (
-        "Audit log has no filter input — with thousands of rows the "
-        "user has no way to find a specific event."
+        "Audit log has no filter input — with thousands of rows the user has no way to find a specific event."
     )
 
 
@@ -157,9 +156,7 @@ def test_delete_emits_undo_toast_on_every_resource(page, live_server, docker_cli
     # --- Container: create a stopped one so delete doesn't need force.
     cname = "e2e-undo-ctr-stopped"
     teardown_container(docker_client, cname)
-    c = docker_client.containers.run(
-        "alpine:latest", command="true", name=cname, detach=True
-    )
+    c = docker_client.containers.run("alpine:latest", command="true", name=cname, detach=True)
     c.wait(timeout=10)  # exit quickly so it's in stopped state
 
     # --- Volume: always deletable without force.
@@ -195,9 +192,7 @@ def test_delete_emits_undo_toast_on_every_resource(page, live_server, docker_cli
         toasts = page.locator(".toast.toast-undo")
         toasts.last.wait_for(state="visible", timeout=5_000)
         vlabel = toasts.last.locator(".toast-label").inner_text(timeout=2_000)
-        assert "will be deleted in" in vlabel, (
-            f"Volume delete toast wording regressed ({vlabel!r})."
-        )
+        assert "will be deleted in" in vlabel, f"Volume delete toast wording regressed ({vlabel!r})."
     finally:
         teardown_container(docker_client, cname)
         try:

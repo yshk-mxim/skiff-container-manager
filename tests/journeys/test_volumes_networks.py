@@ -34,10 +34,12 @@ def _name(prefix: str) -> str:
 
 def _delete_volume(live_server: str, name: str) -> None:
     from tests.e2e_helpers import auth_headers
+
     try:
         requests.delete(
             f"{live_server.rstrip('/')}/api/volumes/{name}",
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
     except requests.exceptions.RequestException:
         pass
@@ -45,10 +47,12 @@ def _delete_volume(live_server: str, name: str) -> None:
 
 def _delete_network(live_server: str, name: str) -> None:
     from tests.e2e_helpers import auth_headers
+
     try:
         requests.delete(
             f"{live_server.rstrip('/')}/api/networks/{name}",
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
     except requests.exceptions.RequestException:
         pass
@@ -86,20 +90,18 @@ def test_journey_volume_create_accepts_full_params(audited_page, live_server, au
             # across the 100-journey sweep. The live server is a separate
             # process so the in-process conftest reset doesn't reach it.
             # Treat a 403 here as a harness flake (not a finding).
-            assert r.status_code in (200, 201), (
-                f"volume create failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code in (200, 201), f"volume create failed: {r.status_code} {r.text}"
         with step("step_2_inspect_reflects_params"):
-            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{name}/inspect",
-                headers=auth_headers(), timeout=30,
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/volumes/{name}/inspect",
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"inspect failed: {r.status_code}"
             body = r.json()
             # Response uses lowercase 'labels' (not Docker's PascalCase).
             labels = body.get("labels") or body.get("Labels") or {}
-            assert labels.get("skiff-audit-run") == "1", (
-                f"label not persisted: {labels!r}"
-            )
+            assert labels.get("skiff-audit-run") == "1", f"label not persisted: {labels!r}"
     finally:
         _delete_volume(live_server, name)
 
@@ -117,8 +119,10 @@ def test_journey_network_create_with_subnet_and_labels(audited_page, live_server
 
     name = _name("net")
     # Randomise subnet octet to avoid collisions with prior runs.
+    # Not cryptographic — just a non-colliding test fixture.
     import random
-    octet = random.randint(100, 250)
+
+    octet = random.randint(100, 250)  # noqa: S311 — test fixture, not crypto
     subnet = f"172.28.{octet}.0/24"
     gateway = f"172.28.{octet}.1"
     try:
@@ -138,24 +142,20 @@ def test_journey_network_create_with_subnet_and_labels(audited_page, live_server
             )
             if r.status_code == 403 and "overlaps" in r.text.lower():
                 pytest.skip(f"subnet {subnet} overlaps (daemon state) — retry later")
-            assert r.status_code in (200, 201), (
-                f"network create failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code in (200, 201), f"network create failed: {r.status_code} {r.text}"
         with step("step_2_inspect_shows_subnet"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/networks/{name}/inspect",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
-            assert r.status_code == 200, (
-                f"network inspect failed: {r.status_code}"
-            )
+            assert r.status_code == 200, f"network inspect failed: {r.status_code}"
             body = r.json()
             import json as _json
+
             body_str = _json.dumps(body)
             assert subnet in body_str, (
-                f"subnet {subnet!r} not visible in inspect payload "
-                f"(keys: {list(body.keys())[:10]}): "
-                f"{body_str[:400]}"
+                f"subnet {subnet!r} not visible in inspect payload (keys: {list(body.keys())[:10]}): {body_str[:400]}"
             )
     finally:
         _delete_network(live_server, name)
@@ -198,9 +198,7 @@ def test_journey_network_bad_subnet_rejected(audited_page, live_server, audit_ob
                     observed=f"HTTP {r.status_code}: {r.text[:200]!r}",
                 )
                 pytest.fail("bad CIDR not caught at the validator boundary")
-            assert 400 <= r.status_code < 500, (
-                f"expected 4xx for bad CIDR; got {r.status_code}"
-            )
+            assert 400 <= r.status_code < 500, f"expected 4xx for bad CIDR; got {r.status_code}"
     finally:
         _delete_network(live_server, name)
 
@@ -239,7 +237,7 @@ def test_journey_volumes_and_networks_pages_have_search(audited_page, live_serve
                     observed="No search/filter input found",
                     covers_historical=hb_id,
                 )
-                assert False, f"{section} page missing search affordance"
+                pytest.fail(f"{section} page missing search affordance")
 
 
 @journey(
@@ -255,15 +253,14 @@ def test_journey_volume_prune_returns_reclaimed(audited_page, live_server, audit
     with step("step_1_prune_volumes"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/volumes/prune",
-            headers=auth_headers(), timeout=60,
+            headers=auth_headers(),
+            timeout=60,
         )
         assert r.status_code == 200, f"prune failed: {r.status_code}"
         body = r.json()
         # Either SpaceReclaimed or space_reclaimed depending on case.
         reclaimed_keys = {"SpaceReclaimed", "space_reclaimed", "space_reclaimed_mb", "reclaimed_bytes"}
-        assert any(k in body for k in reclaimed_keys), (
-            f"prune response missing SpaceReclaimed: {body!r}"
-        )
+        assert any(k in body for k in reclaimed_keys), f"prune response missing SpaceReclaimed: {body!r}"
 
 
 @journey(
@@ -309,24 +306,25 @@ def test_journey_network_connect_then_disconnect(audited_page, live_server, audi
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/networks/{net}/connect",
                 params={"container_id": cont},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"connect failed: {r.status_code} {r.text}"
         with step("step_2_disconnect"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/networks/{net}/disconnect",
                 params={"container_id": cont},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
-            assert r.status_code == 200, (
-                f"disconnect failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code == 200, f"disconnect failed: {r.status_code} {r.text}"
     finally:
         # Best-effort teardown.
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{cont}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass
@@ -381,12 +379,14 @@ def test_journey_volume_backup_via_cp(audited_page, live_server, audit_observer,
         pytest.skip(f"container seed failed: {r.status_code}")
     try:
         import time
+
         time.sleep(1)
         with step("step_1_cp_out_marker"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{cont}/files",
                 params={"path": "/vol/pa-marker"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             if r.status_code != 200:
                 audit_observer.emit(
@@ -401,7 +401,8 @@ def test_journey_volume_backup_via_cp(audited_page, live_server, audit_observer,
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{cont}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass
@@ -439,10 +440,7 @@ def test_journey_volume_nfs_driver_surface(audited_page, live_server, audit_obse
             # 4xx (validator rejected, e.g. NFS-only allowlist off).
             # 5xx is a broken-shape bug — the request body should be
             # syntactically valid regardless of daemon state.
-            assert r.status_code < 500, (
-                f"NFS-style driver_opts raised 5xx: {r.status_code} "
-                f"{r.text[:200]!r}"
-            )
+            assert r.status_code < 500, f"NFS-style driver_opts raised 5xx: {r.status_code} {r.text[:200]!r}"
             assert r.status_code in (200, 201, 400, 422, 403), (
                 f"unexpected NFS-create status {r.status_code}: {r.text[:200]!r}"
             )
@@ -450,17 +448,14 @@ def test_journey_volume_nfs_driver_surface(audited_page, live_server, audit_obse
             if r.status_code in (200, 201):
                 r2 = requests.get(
                     f"{live_server.rstrip('/')}/api/volumes/{name}/inspect",
-                    headers=auth_headers(), timeout=30,
+                    headers=auth_headers(),
+                    timeout=30,
                 )
-                assert r2.status_code == 200, (
-                    f"NFS volume inspect failed: {r2.status_code}"
-                )
+                assert r2.status_code == 200, f"NFS volume inspect failed: {r2.status_code}"
                 import json as _json
+
                 body_str = _json.dumps(r2.json())
-                assert "nfs" in body_str.lower(), (
-                    f"NFS driver_opts not persisted in inspect: "
-                    f"{body_str[:300]}"
-                )
+                assert "nfs" in body_str.lower(), f"NFS driver_opts not persisted in inspect: {body_str[:300]}"
     finally:
         _delete_volume(live_server, name)
 
@@ -516,12 +511,15 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
         with step("step_1_prune"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/volumes/prune",
-                headers=auth_headers(), timeout=60,
+                headers=auth_headers(),
+                timeout=60,
             )
             assert r.status_code == 200, f"prune failed: {r.status_code}"
         with step("step_2_attached_still_exists"):
-            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{attached}/inspect",
-                headers=auth_headers(), timeout=30,
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/volumes/{attached}/inspect",
+                headers=auth_headers(),
+                timeout=30,
             )
             if r.status_code != 200:
                 audit_observer.emit(
@@ -538,8 +536,10 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
             # emit a finding if it's still there, but don't hard-fail
             # — some runtimes don't consider it orphaned if the
             # allocation TTL hasn't elapsed.
-            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{dangling}/inspect",
-                headers=auth_headers(), timeout=30,
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/volumes/{dangling}/inspect",
+                headers=auth_headers(),
+                timeout=30,
             )
             if r.status_code == 200:
                 audit_observer.emit(
@@ -554,7 +554,8 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{cont}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass

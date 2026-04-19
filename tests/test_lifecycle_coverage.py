@@ -25,13 +25,13 @@ pytestmark = pytest.mark.unit
 
 @dataclass(frozen=True)
 class Transition:
-    resource: str            # Container / Image / Volume / Network / Stack
-    from_state: str          # e.g. 'running'
-    to_state: str            # e.g. 'paused'
-    action: str              # short imperative
-    journey_substring: str   # match against collected test_journey_* names
-    audit_event_key: str     # audit-event key in skiff/contract/events.py
-    wontfix_reason: str = "" # if set, transition is recorded but not required
+    resource: str  # Container / Image / Volume / Network / Stack
+    from_state: str  # e.g. 'running'
+    to_state: str  # e.g. 'paused'
+    action: str  # short imperative
+    journey_substring: str  # match against collected test_journey_* names
+    audit_event_key: str  # audit-event key in skiff/contract/events.py
+    wontfix_reason: str = ""  # if set, transition is recorded but not required
 
 
 TRANSITIONS: tuple[Transition, ...] = (
@@ -45,30 +45,86 @@ TRANSITIONS: tuple[Transition, ...] = (
     Transition("Container", "running", "killed", "kill", "test_journey_force_kill_requires_confirm", "container.kill"),
     Transition("Container", "running", "renamed", "rename", "test_journey_rename_persists", "container.rename"),
     Transition("Container", "exited", "absent", "delete", "test_journey_delete_emits_undo_toast", "container.remove"),
-    Transition("Container", "running", "committed", "commit", "test_journey_commit_container_to_image", "container.commit"),
-    Transition("Container", "running", "updated", "update restart-policy", "test_journey_restart_policy_update_surface", "container.update"),
     Transition(
-        "Container", "oom-killed", "auto-restarted", "restart-policy fires",
-        "", "container.restart",
+        "Container", "running", "committed", "commit", "test_journey_commit_container_to_image", "container.commit"
+    ),
+    Transition(
+        "Container",
+        "running",
+        "updated",
+        "update restart-policy",
+        "test_journey_restart_policy_update_surface",
+        "container.update",
+    ),
+    Transition(
+        "Container",
+        "oom-killed",
+        "auto-restarted",
+        "restart-policy fires",
+        "",
+        "container.restart",
         wontfix_reason="Requires kernel memory pressure a Playwright pass can't create reliably",
     ),
     # Image
     Transition("Image", "absent", "pulled", "pull", "test_journey_pull_then_run_separates_cleanly", "image.pull"),
-    Transition("Image", "pulled", "absent", "remove", "", "image.remove",
-               wontfix_reason="Covered by test_new_endpoint_coverage.py + hb-image-prune"),
-    Transition("Image", "any", "pruned", "prune", "", "image.prune",
-               wontfix_reason="Covered by test_new_endpoint_coverage.py::test_image_prune_returns_reclaimed_space"),
+    Transition(
+        "Image",
+        "pulled",
+        "absent",
+        "remove",
+        "",
+        "image.remove",
+        wontfix_reason="Covered by test_new_endpoint_coverage.py + hb-image-prune",
+    ),
+    Transition(
+        "Image",
+        "any",
+        "pruned",
+        "prune",
+        "",
+        "image.prune",
+        wontfix_reason="Covered by test_new_endpoint_coverage.py::test_image_prune_returns_reclaimed_space",
+    ),
     # Volume
-    Transition("Volume", "absent", "created", "create", "test_journey_volume_create_accepts_full_params", "volume.create"),
+    Transition(
+        "Volume", "absent", "created", "create", "test_journey_volume_create_accepts_full_params", "volume.create"
+    ),
     Transition("Volume", "unused", "pruned", "prune", "test_journey_prune_safety_only_hits_unused", "volume.prune"),
-    Transition("Volume", "attached", "preserved_by_prune", "prune with attachments", "test_journey_prune_safety_only_hits_unused", "volume.prune"),
-    Transition("Volume", "created", "absent", "remove", "", "volume.remove",
-               wontfix_reason="Covered implicitly by journey teardown fixtures"),
+    Transition(
+        "Volume",
+        "attached",
+        "preserved_by_prune",
+        "prune with attachments",
+        "test_journey_prune_safety_only_hits_unused",
+        "volume.prune",
+    ),
+    Transition(
+        "Volume",
+        "created",
+        "absent",
+        "remove",
+        "",
+        "volume.remove",
+        wontfix_reason="Covered implicitly by journey teardown fixtures",
+    ),
     # Network
-    Transition("Network", "absent", "created", "create", "test_journey_network_create_with_subnet_and_labels", "network.create"),
-    Transition("Network", "created", "connected", "connect", "test_journey_network_connect_then_disconnect", "network.connect"),
-    Transition("Network", "connected", "disconnected", "disconnect", "test_journey_network_connect_then_disconnect", "network.disconnect"),
-    Transition("Network", "created", "absent", "remove", "test_journey_network_connect_then_disconnect", "network.remove"),
+    Transition(
+        "Network", "absent", "created", "create", "test_journey_network_create_with_subnet_and_labels", "network.create"
+    ),
+    Transition(
+        "Network", "created", "connected", "connect", "test_journey_network_connect_then_disconnect", "network.connect"
+    ),
+    Transition(
+        "Network",
+        "connected",
+        "disconnected",
+        "disconnect",
+        "test_journey_network_connect_then_disconnect",
+        "network.disconnect",
+    ),
+    Transition(
+        "Network", "created", "absent", "remove", "test_journey_network_connect_then_disconnect", "network.remove"
+    ),
     # Stack
     Transition("Stack", "absent", "up", "compose up", "test_journey_upload_yaml_and_deploy", "compose.up"),
     Transition("Stack", "up", "down", "compose down", "test_journey_compose_explicit_tear_down", "compose.down"),
@@ -117,9 +173,7 @@ def test_transition_has_journey_coverage(transition: Transition) -> None:
             f"{transition.resource}:{transition.action} has an anaemic wontfix_reason"
         )
         return
-    assert transition.journey_substring, (
-        f"{transition.resource}:{transition.action} has no journey_substring"
-    )
+    assert transition.journey_substring, f"{transition.resource}:{transition.action} has no journey_substring"
     names = _collected_journey_names()
     assert transition.journey_substring in names, (
         f"transition {transition.resource}:{transition.action} names journey "
@@ -132,7 +186,4 @@ def test_every_audit_event_key_is_used_at_least_once() -> None:
     transition should be a string (free-form ok). Keeps the catalogue
     from drifting to invented keys."""
     for t in TRANSITIONS:
-        assert "." in t.audit_event_key, (
-            f"audit_event_key {t.audit_event_key!r} doesn't look like a "
-            f"namespaced key"
-        )
+        assert "." in t.audit_event_key, f"audit_event_key {t.audit_event_key!r} doesn't look like a namespaced key"

@@ -369,8 +369,7 @@ class ContainerLifecycleFSM(RuleBasedStateMachine):
         # Every 4xx/5xx must be envelope-shaped with a known code.
         if r.status_code >= 500:
             pytest.fail(
-                f"{method} {path} returned 500 — lifecycle FSM uncovered a "
-                f"stack-trace leak. Body: {r.text[:200]!r}"
+                f"{method} {path} returned 500 — lifecycle FSM uncovered a stack-trace leak. Body: {r.text[:200]!r}"
             )
         return r.status_code
 
@@ -476,9 +475,7 @@ class ContainerLifecycleFSM(RuleBasedStateMachine):
     @invariant()
     def every_container_has_valid_state(self):
         for c in self._daemon._containers.values():
-            assert c.status in _FakeContainer.VALID_STATES, (
-                f"container {c.name} has invalid state {c.status!r}"
-            )
+            assert c.status in _FakeContainer.VALID_STATES, f"container {c.name} has invalid state {c.status!r}"
 
     @invariant()
     def ui_matches_daemon_count(self):
@@ -498,9 +495,7 @@ class ContainerLifecycleFSM(RuleBasedStateMachine):
         # All containers are returned (all=True in list_containers handler).
         listed = {item["name"] for item in body}
         expected = set(self._daemon._containers.keys())
-        assert listed == expected, (
-            f"UI listing {listed!r} disagrees with daemon state {expected!r}"
-        )
+        assert listed == expected, f"UI listing {listed!r} disagrees with daemon state {expected!r}"
 
     @invariant()
     def no_duplicate_names(self):

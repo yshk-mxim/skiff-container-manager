@@ -82,7 +82,11 @@ def _df_response(draw):
         st.lists(
             st.one_of(
                 st.fixed_dictionaries(
-                    {"UsageData": st.one_of(st.none(), st.fixed_dictionaries({"Size": _nullable_int(), "RefCount": _nullable_int()}))}
+                    {
+                        "UsageData": st.one_of(
+                            st.none(), st.fixed_dictionaries({"Size": _nullable_int(), "RefCount": _nullable_int()})
+                        )
+                    }
                 ),
                 # Some drivers omit the UsageData key entirely.
                 st.fixed_dictionaries({}),
@@ -239,7 +243,16 @@ def test_container_stats_never_crashes_on_null_fields(stats):
                 )
                 assert r.status_code == 200, f"crashed on stats shape: {stats!r} → {r.text[:300]}"
                 body = r.json()
-                for field in ("cpu_percent", "mem_usage_mb", "mem_limit_mb", "mem_percent", "net_rx_mb", "net_tx_mb", "blk_read_mb", "blk_write_mb"):
+                for field in (
+                    "cpu_percent",
+                    "mem_usage_mb",
+                    "mem_limit_mb",
+                    "mem_percent",
+                    "net_rx_mb",
+                    "net_tx_mb",
+                    "blk_read_mb",
+                    "blk_write_mb",
+                ):
                     assert field in body, f"missing field {field!r}"
                     assert isinstance(body[field], (int, float)), (
                         f"field {field!r} is {body[field]!r} (type {type(body[field]).__name__}) — must be numeric"

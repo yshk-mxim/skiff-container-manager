@@ -23,11 +23,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class HistoricalBug:
-    id: str                        # 'hb-undo-on-delete'
-    one_line: str                  # observed problem
-    class_sweep: str               # what class the fix generalises to
-    fix_commit_short: str = ""     # first 7 chars; filled after fix lands
-    regression_test: str = ""      # tests/test_<file>.py::<test>
+    id: str  # 'hb-undo-on-delete'
+    one_line: str  # observed problem
+    class_sweep: str  # what class the fix generalises to
+    fix_commit_short: str = ""  # first 7 chars; filled after fix lands
+    regression_test: str = ""  # tests/test_<file>.py::<test>
 
 
 # Catalogue. Order = chronological-ish. Every row mapped to the fix

@@ -40,22 +40,22 @@ def test_header_has_required_columns() -> None:
 def test_every_row_is_fully_populated() -> None:
     """persona + journey + covered must all be non-blank."""
     rows = _load_rows()
-    bad: list[str] = []
-    for i, row in enumerate(rows, start=2):  # +2 = header + 1-index
-        for col in REQUIRED_COLS:
-            if not row.get(col, "").strip():
-                bad.append(f"line {i}: {col} blank in {row.get('journey')!r}")
+    bad: list[str] = [
+        f"line {i}: {col} blank in {row.get('journey')!r}"
+        for i, row in enumerate(rows, start=2)  # +2 = header + 1-index
+        for col in REQUIRED_COLS
+        if not row.get(col, "").strip()
+    ]
     assert not bad, "\n".join(bad)
 
 
-def test_every_covered_flag_is_Y() -> None:
+def test_every_covered_flag_is_Y() -> None:  # noqa: N802 — Y is semantic
     """`covered=N` means we shipped a row for an unexercised path —
     dead weight. Remove the row OR add a journey."""
     rows = _load_rows()
     uncovered = [r for r in rows if r.get("covered", "").strip() != "Y"]
     assert not uncovered, (
-        f"{len(uncovered)} rows marked covered!=Y (remove or add journey): "
-        f"{[r['journey'] for r in uncovered[:5]]}..."
+        f"{len(uncovered)} rows marked covered!=Y (remove or add journey): {[r['journey'] for r in uncovered[:5]]}..."
     )
 
 
@@ -78,10 +78,7 @@ def test_every_journey_reference_exists() -> None:
             continue
         if j not in known:
             missing.append(j)
-    assert not missing, (
-        f"topdown CSV references journeys that don't exist (renamed/removed?): "
-        f"{missing}"
-    )
+    assert not missing, f"topdown CSV references journeys that don't exist (renamed/removed?): {missing}"
 
 
 def test_every_journey_appears_at_least_once() -> None:
@@ -98,6 +95,4 @@ def test_every_journey_appears_at_least_once() -> None:
         for m in _re.finditer(r"^def (test_journey_\w+)", text, _re.MULTILINE):
             declared.add(m.group(1))
     missing = sorted(declared - referenced)
-    assert not missing, (
-        f"{len(missing)} journeys not yet in topdown CSV: {missing[:10]}..."
-    )
+    assert not missing, f"{len(missing)} journeys not yet in topdown CSV: {missing[:10]}..."

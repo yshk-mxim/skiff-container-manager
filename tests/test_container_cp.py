@@ -128,14 +128,17 @@ def _validate_path(path: str):
     return _validate_cp_path(path)
 
 
-@pytest.mark.parametrize("bad", [
-    "",
-    "relative/path",
-    "./a",
-    "\x00",
-    "/with\x00null",
-    "a" * 300,  # over the 256-char cap
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "relative/path",
+        "./a",
+        "\x00",
+        "/with\x00null",
+        "a" * 300,  # over the 256-char cap
+    ],
+)
 def test_validate_cp_path_rejects_bad_shapes(bad):
     """Non-absolute, null-byte-containing, or over-length paths are rejected
     as `validation.bad_input` — never silently accepted."""
@@ -277,11 +280,11 @@ def test_upload_wraps_single_file_into_tar():
                 # Validate the tarball contents: should contain exactly one
                 # `hello.txt` member with the original bytes.
                 tar_bytes = call.args[1]
-                tf = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r")
-                names = tf.getnames()
-                assert names == ["hello.txt"]
-                member = tf.extractfile("hello.txt").read()
-                assert member == b"hello world"
+                with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r") as tf:
+                    names = tf.getnames()
+                    assert names == ["hello.txt"]
+                    member = tf.extractfile("hello.txt").read()
+                    assert member == b"hello world"
     finally:
         config_module._cfg.api_token = orig_token
 
@@ -367,13 +370,16 @@ def test_upload_rejects_empty_filename():
 # ── Security: commit repo/tag grammar ────────────────────────────────────
 
 
-@pytest.mark.parametrize("bad_repo", [
-    "UPPER/not-lower",       # repo must be lowercase
-    "a" * 201,               # over 200-char cap
-    "bad name",              # space
-    "bad;cmd",               # shell metachar
-    "bad\ninjection",        # newline
-])
+@pytest.mark.parametrize(
+    "bad_repo",
+    [
+        "UPPER/not-lower",  # repo must be lowercase
+        "a" * 201,  # over 200-char cap
+        "bad name",  # space
+        "bad;cmd",  # shell metachar
+        "bad\ninjection",  # newline
+    ],
+)
 def test_commit_rejects_bad_repo_grammar(bad_repo):
     """Commit surface must reject non-OCI repo shapes upfront."""
     from skiff.validators import COMMIT_REPO_RE
@@ -381,13 +387,16 @@ def test_commit_rejects_bad_repo_grammar(bad_repo):
     assert COMMIT_REPO_RE.fullmatch(bad_repo) is None
 
 
-@pytest.mark.parametrize("bad_tag", [
-    ".bad-leading-dot",
-    "-bad-leading-dash",
-    "bad tag",
-    "a" * 129,
-    "bad\ninjection",
-])
+@pytest.mark.parametrize(
+    "bad_tag",
+    [
+        ".bad-leading-dot",
+        "-bad-leading-dash",
+        "bad tag",
+        "a" * 129,
+        "bad\ninjection",
+    ],
+)
 def test_commit_rejects_bad_tag_grammar(bad_tag):
     """Same for tag: must match OCI tag grammar."""
     from skiff.validators import COMMIT_TAG_RE
@@ -403,3 +412,94 @@ def test_commit_accepts_canonical_examples():
         assert COMMIT_REPO_RE.fullmatch(repo) is not None
     for tag in ("latest", "v1.2.3", "3.12-slim", "dev_build"):
         assert COMMIT_TAG_RE.fullmatch(tag) is not None
+
+
+# ── /files GET (tar download) + POST (tar upload) ───────────────────────
+
+
+def _invoke_cp(mock_container: MagicMock, method: str, path: str, **kw):
+    from skiff import config as config_module
+    from skiff import docker_client as dc_module
+    from skiff.app import app
+
+    orig_token = config_module._cfg.api_token
+    config_module._cfg.api_token = ""
+    for lim in {config_module.limiter, app.state.limiter}:
+        lim.reset()
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = mock_container
+    mock_client.ping.return_value = True
+    # Merge caller-supplied headers with the default CSRF sentinel.
+    headers = {"X-Requested-With": "ContainerManager", **kw.pop("headers", {})}
+    try:
+        with (
+            patch.object(dc_module, "_client", mock_client),
+            patch.object(dc_module, "_client_last_ping", float("inf")),
+            patch("skiff.docker_client.get_client", return_value=mock_client),
+        ):
+            with TestClient(app, raise_server_exceptions=False) as tc:
+                return tc.request(method, path, headers=headers, **kw)
+    finally:
+        config_module._cfg.api_token = orig_token
+
+
+def test_files_get_returns_tar_stream():
+    """GET /files?path=/etc/hosts should stream tar bytes."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    c.get_archive.return_value = (iter([b"tarchunk1", b"tarchunk2"]), {"name": "hosts", "size": 18})
+    r = _invoke_cp(c, "GET", "/api/containers/abc123def456/files?path=/etc/hosts")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/x-tar"
+    assert 'filename="hosts.tar"' in r.headers["content-disposition"]
+    assert r.content == b"tarchunk1tarchunk2"
+
+
+def test_files_get_path_not_found_returns_404_envelope():
+    """docker.errors.NotFound → resource.not_found envelope (not 500)."""
+    import docker.errors
+
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    c.get_archive.side_effect = docker.errors.NotFound("no such path")
+    r = _invoke_cp(c, "GET", "/api/containers/abc123def456/files?path=/nonexistent")
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "resource.not_found"
+
+
+def test_files_post_uploads_tar_bytes():
+    """POST /files accepts tar body + writes via put_archive."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    c.put_archive.return_value = True
+    tar_body = b"FAKE_TAR_BYTES"
+    r = _invoke_cp(
+        c,
+        "POST",
+        "/api/containers/abc123def456/files?path=/tmp",
+        data=tar_body,
+        headers={"X-Requested-With": "ContainerManager", "Content-Type": "application/x-tar"},
+    )
+    assert r.status_code == 200
+    c.put_archive.assert_called_once_with("/tmp", tar_body)
+
+
+def test_files_post_rejects_over_size_body():
+    """Body past CONTAINER_CP_MAX_MB must 400 before put_archive."""
+    from skiff import config as config_module
+
+    cap = config_module.CONTAINER_CP_MAX_MB
+    big = b"A" * (cap * 1024 * 1024 + 1)
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    r = _invoke_cp(
+        c,
+        "POST",
+        "/api/containers/abc123def456/files?path=/tmp",
+        data=big,
+        headers={"X-Requested-With": "ContainerManager", "Content-Type": "application/x-tar"},
+    )
+    # Middleware catches oversize bodies at 413 before the handler's
+    # 400 check. Either path is acceptable — both block the write.
+    assert r.status_code in (400, 413)
+    c.put_archive.assert_not_called()

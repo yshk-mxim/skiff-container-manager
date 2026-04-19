@@ -96,8 +96,8 @@ def test_every_skiff_y_row_has_a_registered_route(rows):
         if not route_claim:
             continue
         # Format: "METHOD /path" — allow multiple via + separator.
-        for part in re.split(r"\s*\+\s*|\s*/then/\s*", route_claim):
-            part = part.strip()
+        for raw_part in re.split(r"\s*\+\s*|\s*/then/\s*", route_claim):
+            part = raw_part.strip()
             if not part:
                 continue
             m = re.match(r"(GET|POST|PUT|DELETE|WS)\s+(/\S+)", part)
@@ -109,10 +109,7 @@ def test_every_skiff_y_row_has_a_registered_route(rows):
                 continue
             base_path = _normalise_path(path.split("?", 1)[0])
             if (method, base_path) not in registered:
-                bad.append(
-                    f"{row['capability']}: claims SKIFF=Y on {method} {base_path} "
-                    f"but route not in app.routes"
-                )
+                bad.append(f"{row['capability']}: claims SKIFF=Y on {method} {base_path} but route not in app.routes")
     assert not bad, "\n".join(bad)
 
 
@@ -130,16 +127,13 @@ def test_every_skiff_n_row_has_a_reason_or_is_a_finding(rows):
         is_expected = row.get("expectation", "").strip().upper().startswith("Y")
         if not has_reason and not is_expected:
             dead.append(row["capability"])
-    assert not dead, (
-        f"SKIFF=N rows with no rationale and expectation=N (remove "
-        f"from matrix or add a reason): {dead}"
-    )
+    assert not dead, f"SKIFF=N rows with no rationale and expectation=N (remove from matrix or add a reason): {dead}"
 
 
 def test_matrix_freshness_90_days(rows):
     """Rows must be re-verified at least every 90 days so a stale matrix
     doesn't linger. `last_verified: YYYY-MM-DD` per row."""
-    today = _dt.datetime.now(tz=_dt.timezone.utc).date()
+    today = _dt.datetime.now(tz=_dt.UTC).date()
     cutoff = today - _dt.timedelta(days=FRESHNESS_DAYS)
     stale: list[str] = []
     for row in rows:

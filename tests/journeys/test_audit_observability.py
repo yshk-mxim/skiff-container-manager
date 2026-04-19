@@ -65,7 +65,7 @@ def test_journey_audit_log_page_discloses_cap(audited_page, live_server, audit_o
                 observed="No tail control or count copy found on System page",
                 covers_historical="hb-audit-silently-truncated",
             )
-            assert False, "audit log cap not disclosed"
+            pytest.fail("audit log cap not disclosed")
 
 
 @journey(
@@ -84,7 +84,8 @@ def test_journey_events_endpoint_bounds_since_secs(audited_page, live_server, au
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/events",
             params={"since_secs": 5},
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
         assert r.status_code == 200, f"events endpoint failed: {r.status_code}"
         body = r.json()
@@ -96,7 +97,8 @@ def test_journey_events_endpoint_bounds_since_secs(audited_page, live_server, au
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/events",
             params={"since_secs": 10**9},
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
         if r.status_code == 200:
             audit_observer.emit(
@@ -124,16 +126,13 @@ def test_journey_prometheus_metrics_scrape(audited_page, live_server, audit_obse
         # SKIFF exposes Prometheus metrics at /api/system/metrics (authed).
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/metrics",
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
-        assert r.status_code == 200, (
-            f"metrics failed: {r.status_code} {r.text[:200]!r}"
-        )
+        assert r.status_code == 200, f"metrics failed: {r.status_code} {r.text[:200]!r}"
         body = r.text
         # Exposition format: '# HELP' + '# TYPE' lines.
-        assert "# HELP" in body and "# TYPE" in body, (
-            f"metrics body not in exposition format: {body[:200]!r}"
-        )
+        assert "# HELP" in body and "# TYPE" in body, f"metrics body not in exposition format: {body[:200]!r}"
 
 
 @journey(
@@ -155,7 +154,8 @@ def test_journey_audit_log_download_is_jsonl(audited_page, live_server, audit_ob
     try:
         requests.get(
             f"{live_server.rstrip('/')}/api/system/overview",
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
     except requests.exceptions.RequestException:
         pass
@@ -164,11 +164,10 @@ def test_journey_audit_log_download_is_jsonl(audited_page, live_server, audit_ob
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/audit-log",
             params={"download": 1},
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
-        assert r.status_code == 200, (
-            f"audit download failed: {r.status_code}: {r.text[:200]!r}"
-        )
+        assert r.status_code == 200, f"audit download failed: {r.status_code}: {r.text[:200]!r}"
         body = r.text.strip()
         assert body, "audit log download returned empty body"
         # Try parsing as JSON array first, fallback to JSONL.
@@ -211,14 +210,16 @@ def test_journey_audit_never_leaks_bearer(audited_page, live_server, audit_obser
     with step("step_1_emit_audit_with_token_in_url"):
         requests.get(
             f"{live_server.rstrip('/')}/api/system/overview?api_token=shouldnotleak",
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
 
     with step("step_2_read_audit_log"):
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/audit-log",
             params={"tail": 50},
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
         assert r.status_code == 200, f"audit read failed: {r.status_code}"
         body = r.text
@@ -280,7 +281,8 @@ def test_journey_events_stream_captures_container_lifecycle(audited_page, live_s
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/system/events",
                 params={"since_secs": 30},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"events failed: {r.status_code}"
             body = r.text
@@ -288,15 +290,12 @@ def test_journey_events_stream_captures_container_lifecycle(audited_page, live_s
             # Must mention the container name OR a 'create'/'start'
             # action — otherwise the SRE can't diagnose what happened
             # during the deploy window.
-            has_event = (
-                name in body
-                or "create" in body.lower()
-                or "start" in body.lower()
-            )
+            has_event = name in body or "create" in body.lower() or "start" in body.lower()
             if not has_event:
                 audit_observer.emit(
                     step="step_2_events_contain_deploy",
-                    severity="medium", category="parity",
+                    severity="medium",
+                    category="parity",
                     title="Events stream did not capture deploy action",
                     expected=f"Event mentioning {name} or 'create'/'start'",
                     observed=f"body prefix: {body[:300]!r}",
@@ -308,7 +307,8 @@ def test_journey_events_stream_captures_container_lifecycle(audited_page, live_s
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass
@@ -344,18 +344,15 @@ def test_journey_stderr_audit_ui_correlation(audited_page, live_server, audit_ob
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/audit-log",
             params={"tail": 100},
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
-        assert r.status_code == 200, (
-            f"audit read failed: {r.status_code} {r.text[:200]!r}"
-        )
+        assert r.status_code == 200, f"audit read failed: {r.status_code} {r.text[:200]!r}"
         body = r.text.lower()
         # Audit rows carry `"status":N`; our 4xx must appear as a
         # 4xx-status entry within the last 100 events.
         import re as _re
+
         statuses = _re.findall(r'"status":\s*(\d+)', body)
         has_4xx = any(400 <= int(s) < 500 for s in statuses)
-        assert has_4xx, (
-            f"audit log has no 4xx row within last 100 events; "
-            f"statuses seen: {set(statuses)}"
-        )
+        assert has_4xx, f"audit log has no 4xx row within last 100 events; statuses seen: {set(statuses)}"

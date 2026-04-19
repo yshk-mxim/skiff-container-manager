@@ -34,7 +34,9 @@ pytestmark = pytest.mark.e2e
     category="ui_ux",
     severity="medium",
     covers=(
-        "hb-volumes-no-search", "hb-networks-no-search", "hb-compose-no-search",
+        "hb-volumes-no-search",
+        "hb-networks-no-search",
+        "hb-compose-no-search",
     ),
 )
 def test_journey_every_list_page_has_search(audited_page, live_server, audit_observer, persona):
@@ -125,9 +127,9 @@ def test_journey_every_page_has_visible_focus_ring(audited_page, live_server, au
     severity="medium",
 )
 def test_journey_mobile_viewport_no_horizontal_scroll(audited_page, live_server, audit_observer, persona):
-    """At 375×667 (iPhone 13 mini), every page must fit without
+    """At 375x667 (iPhone 13 mini), every page must fit without
     horizontal scrollbar. Body scrollWidth ≤ window.innerWidth."""
-    from tests.e2e_helpers import login, nav_to
+    from tests.e2e_helpers import login
 
     page = audited_page
     page.set_viewport_size({"width": 375, "height": 667})
@@ -199,23 +201,19 @@ def test_journey_notifications_bell_shows_recent(audited_page, live_server, audi
         bell.click()
         page.wait_for_timeout(300)
         panel = page.locator("[data-testid='notif-panel'], .notif-panel")
-        assert panel.count() > 0, (
-            "notif-panel didn't render after bell click "
-            "(hb-no-notifications-history regression)"
-        )
+        assert panel.count() > 0, "notif-panel didn't render after bell click (hb-no-notifications-history regression)"
         panel_text = panel.inner_text(timeout=SHORT)
         if "pa-audit test toast" not in panel_text:
             audit_observer.emit(
                 step="step_4_bell_panel_contains_toast",
-                severity="medium", category="behaviour",
+                severity="medium",
+                category="behaviour",
                 title="Notifications panel missing recent toast",
                 expected="Emitted toast appears in panel within 400ms",
                 observed=f"panel text: {panel_text[:200]!r}",
                 covers_historical="hb-no-notifications-history",
             )
-            pytest.fail(
-                f"notifications panel missing emitted toast: {panel_text[:200]!r}"
-            )
+            pytest.fail(f"notifications panel missing emitted toast: {panel_text[:200]!r}")
 
 
 @journey(
@@ -242,8 +240,13 @@ def test_journey_every_empty_state_is_helpful(audited_page, live_server, audit_o
             if "No " in text and len(text.strip()) < 200:
                 # Likely a bare empty state. Check for actionable copy.
                 actionable = any(
-                    s in text.lower() for s in (
-                        "create", "get started", "add a", "+ new", "+ create",
+                    s in text.lower()
+                    for s in (
+                        "create",
+                        "get started",
+                        "add a",
+                        "+ new",
+                        "+ create",
                     )
                 )
                 if not actionable:
@@ -285,6 +288,7 @@ def test_journey_enter_submits_create_forms(audited_page, live_server, audit_obs
         if name_input.count() == 0:
             pytest.skip("name input not found")
         import uuid
+
         name_input.fill(f"pa-enter-{uuid.uuid4().hex[:6]}")
         name_input.press("Enter")
         page.wait_for_timeout(500)
@@ -292,9 +296,12 @@ def test_journey_enter_submits_create_forms(audited_page, live_server, audit_obs
         # Either modal closed (submit succeeded) or an error message
         # appeared inline. If the modal is still open with no error,
         # Enter was ignored — developer rubric violation.
-        modal_open = page.locator(
-            ".modal, dialog[open], [role='dialog']",
-        ).count() > 0
+        modal_open = (
+            page.locator(
+                ".modal, dialog[open], [role='dialog']",
+            ).count()
+            > 0
+        )
         error_inline = page.locator(".error, [role='alert']").count() > 0
         if modal_open and not error_inline:
             audit_observer.emit(
@@ -412,7 +419,7 @@ def test_journey_i18n_missing_key_audit(audited_page, live_server, audit_observe
     interpolated, or `{{missing}}`), emit a finding. SKIFF currently
     ships English-only; this journey exists so adding a locale
     doesn't leave placeholder strings visible."""
-    from tests.e2e_helpers import login, nav_to
+    from tests.e2e_helpers import login
 
     page = audited_page
     with step("step_1_sign_in"):
@@ -474,7 +481,7 @@ def test_journey_keyboard_reaches_every_primary_page(audited_page, live_server, 
             page.keyboard.press("Tab")
         # Walk the sidebar with ArrowDown (many nav lists support arrow
         # navigation; fall back to Tab if not).
-        for label in targets:
+        for label, expected_h2 in targets.items():
             # Type ⌘K palette first if the persona prefers it — here we
             # use straight keyboard nav for the stricter test.
             link = page.locator(f".sidebar a:has-text('{label}')").first
@@ -484,11 +491,11 @@ def test_journey_keyboard_reaches_every_primary_page(audited_page, live_server, 
             page.keyboard.press("Enter")
             try:
                 page.wait_for_selector(
-                    f"h2:has-text('{targets[label]}')",
+                    f"h2:has-text('{expected_h2}')",
                     timeout=5000,
                 )
                 reached.append(label)
-            except Exception:
+            except Exception:  # tab miss is observed, not an error
                 pass
 
     if len(reached) < len(targets) // 2:

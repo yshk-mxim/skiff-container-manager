@@ -54,6 +54,7 @@ def _project_name(prefix: str) -> str:
 
 def _deploy(live_server: str, project: str, yaml: bytes) -> None:
     from tests.e2e_helpers import auth_headers
+
     files = [("file", ("docker-compose.yml", yaml, "application/x-yaml"))]
     r = requests.post(
         f"{live_server.rstrip('/')}/api/compose/up",
@@ -67,6 +68,7 @@ def _deploy(live_server: str, project: str, yaml: bytes) -> None:
 
 def _down(live_server: str, project: str) -> None:
     from tests.e2e_helpers import auth_headers
+
     try:
         requests.post(
             f"{live_server.rstrip('/')}/api/compose/down",
@@ -86,7 +88,7 @@ def _down(live_server: str, project: str) -> None:
 def test_journey_upload_yaml_and_deploy(audited_page, live_server, audit_observer, persona):
     """Upload a one-service compose file via the UI's file input, click
     Deploy, assert the stack appears on the list."""
-    from tests.e2e_helpers import MEDIUM, login, nav_to
+    from tests.e2e_helpers import login, nav_to
 
     page = audited_page
     project = _project_name("up")
@@ -106,15 +108,18 @@ def test_journey_upload_yaml_and_deploy(audited_page, live_server, audit_observe
                 pytest.skip("compose project input not found")
             proj_input.fill(project)
             file_input = page.locator("input[type='file']").first
-            file_input.set_input_files({
-                "name": "docker-compose.yml",
-                "mimeType": "application/x-yaml",
-                "buffer": _MINIMAL_YAML,
-            })
+            file_input.set_input_files(
+                {
+                    "name": "docker-compose.yml",
+                    "mimeType": "application/x-yaml",
+                    "buffer": _MINIMAL_YAML,
+                }
+            )
 
         with step("step_4_stack_row_appears"):
             # Up to LONG (90s) for first-time image pull + container start.
             from tests.e2e_helpers import LONG
+
             page.wait_for_selector(f"text={project}", timeout=LONG)
     finally:
         _down(live_server, project)
@@ -140,13 +145,15 @@ def test_journey_compose_stop_then_start(audited_page, live_server, audit_observ
         with step("step_2_stop_stack_api"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/{project}/stop",
-                headers=auth_headers(), timeout=60,
+                headers=auth_headers(),
+                timeout=60,
             )
             assert r.status_code == 200, f"stop failed: {r.status_code} {r.text}"
         with step("step_3_start_stack_api"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/{project}/start",
-                headers=auth_headers(), timeout=60,
+                headers=auth_headers(),
+                timeout=60,
             )
             assert r.status_code == 200, f"start failed: {r.status_code} {r.text}"
         with step("step_4_list_still_has_stack"):
@@ -175,11 +182,10 @@ def test_journey_compose_scale_service(audited_page, live_server, audit_observer
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/{project}/scale",
                 params={"service_name": "worker", "replicas": 3},
-                headers=auth_headers(), timeout=120,
+                headers=auth_headers(),
+                timeout=120,
             )
-            assert r.status_code == 200, (
-                f"compose scale returned {r.status_code}: {r.text[:200]}"
-            )
+            assert r.status_code == 200, f"compose scale returned {r.status_code}: {r.text[:200]}"
         with step("step_2_verify_three_replicas"):
             # After scale, /api/containers must show 3 containers tagged
             # with this compose project. Go through the live server
@@ -187,16 +193,15 @@ def test_journey_compose_scale_service(audited_page, live_server, audit_observer
             # DOCKER_HOST is pointed elsewhere in the test env.
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"list failed: {r.status_code}"
             containers = r.json()
             # ContainerSummary carries compose_project + compose_service
             # as first-class fields (labels aren't serialised on the list).
             workers = [
-                c for c in containers
-                if c.get("compose_project") == project
-                and c.get("compose_service") == "worker"
+                c for c in containers if c.get("compose_project") == project and c.get("compose_service") == "worker"
             ]
             assert len(workers) == 3, (
                 f"expected 3 worker containers after scale; found {len(workers)} "
@@ -224,7 +229,8 @@ def test_journey_compose_pull(audited_page, live_server, audit_observer, persona
         with step("step_1_pull"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/{project}/pull",
-                headers=auth_headers(), timeout=300,
+                headers=auth_headers(),
+                timeout=300,
             )
             assert r.status_code == 200, f"pull failed: {r.status_code} {r.text}"
     finally:
@@ -247,7 +253,8 @@ def test_journey_download_yaml_matches_deployed(audited_page, live_server, audit
         with step("step_1_download_yaml"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/{project}/download",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"download failed: {r.status_code}"
             body = r.text
@@ -275,7 +282,8 @@ def test_journey_compose_aggregated_logs(audited_page, live_server, audit_observ
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/{project}/logs",
                 params={"tail": 50},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"logs failed: {r.status_code}"
     finally:
@@ -316,7 +324,7 @@ def test_journey_compose_page_has_search_bar(audited_page, live_server, audit_ob
                 observed="No search/filter input found",
                 covers_historical="hb-compose-no-search",
             )
-            assert False, "compose page missing search affordance"
+            pytest.fail("compose page missing search affordance")
 
 
 @journey(
@@ -358,10 +366,7 @@ def test_journey_compose_privileged_blocked(audited_page, live_server, audit_obs
                     expected="400/422 rejection with a validator envelope",
                     observed=f"HTTP {r.status_code}: {r.text[:300]!r}",
                 )
-                pytest.fail(
-                    f"privileged compose accepted (status {r.status_code}) — "
-                    "zero-trust violation"
-                )
+                pytest.fail(f"privileged compose accepted (status {r.status_code}) — zero-trust violation")
     finally:
         _down(live_server, project)
 
@@ -388,22 +393,22 @@ def test_journey_compose_explicit_tear_down(audited_page, live_server, audit_obs
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/down",
                 params={"project_name": project},
-                headers=auth_headers(), timeout=120,
+                headers=auth_headers(),
+                timeout=120,
             )
             assert r.status_code == 200, f"down failed: {r.status_code}"
         with step("step_3_stack_absent_from_list"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/stacks",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200
             body = r.json()
             # /api/compose/stacks returns a list directly.
             stacks = body if isinstance(body, list) else body.get("stacks", [])
             names = {s.get("name") or s.get("project_name") for s in stacks}
-            assert project not in names, (
-                f"stack {project} still listed after down; names: {names}"
-            )
+            assert project not in names, f"stack {project} still listed after down; names: {names}"
         with step("step_4_up_again_from_clean"):
             _deploy(live_server, project, _MINIMAL_YAML)
     finally:
@@ -427,7 +432,8 @@ def test_journey_compose_yaml_export_reimport_cycle(audited_page, live_server, a
         with step("step_1_download_yaml"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/{project}/download",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"download failed: {r.status_code}"
             exported = r.content
@@ -435,7 +441,8 @@ def test_journey_compose_yaml_export_reimport_cycle(audited_page, live_server, a
             requests.post(
                 f"{live_server.rstrip('/')}/api/compose/down",
                 params={"project_name": project},
-                headers=auth_headers(), timeout=120,
+                headers=auth_headers(),
+                timeout=120,
             )
         with step("step_3_reimport_exported_yaml"):
             files = [("file", ("docker-compose.yml", exported, "application/x-yaml"))]
@@ -490,7 +497,9 @@ def test_journey_compose_failed_service_triage_via_logs(audited_page, live_serve
         r = requests.post(
             f"{live_server.rstrip('/')}/api/compose/up",
             params={"project_name": project},
-            headers=auth_headers(), files=files, timeout=120,
+            headers=auth_headers(),
+            files=files,
+            timeout=120,
         )
         if r.status_code != 200:
             pytest.skip(f"up failed: {r.status_code}")
@@ -501,16 +510,15 @@ def test_journey_compose_failed_service_triage_via_logs(audited_page, live_serve
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/{project}/logs",
                 params={"tail": 100},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"logs failed: {r.status_code}"
             body = r.text.lower()
             # The crasher errored on a missing binary — SRE must see
             # the reason in the aggregated log to triage.
             crash_hints = ("no such", "not found", "executable")
-            assert any(h in body for h in crash_hints), (
-                f"failed-service logs missing crash hint: {r.text[:300]!r}"
-            )
+            assert any(h in body for h in crash_hints), f"failed-service logs missing crash hint: {r.text[:300]!r}"
     finally:
         _down(live_server, project)
 
@@ -544,7 +552,9 @@ def test_journey_compose_env_secret_not_leaked(audited_page, live_server, audit_
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/up",
                 params={"project_name": project},
-                headers=auth_headers(), files=files, timeout=120,
+                headers=auth_headers(),
+                files=files,
+                timeout=120,
             )
             if r.status_code != 200:
                 pytest.skip(f"up failed: {r.status_code}")
@@ -552,15 +562,16 @@ def test_journey_compose_env_secret_not_leaked(audited_page, live_server, audit_
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/system/audit-log",
                 params={"tail": 50},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
-            assert r.status_code == 200, (
-                f"audit read failed: {r.status_code} {r.text[:200]!r}"
-            )
+            assert r.status_code == 200, f"audit read failed: {r.status_code} {r.text[:200]!r}"
             if secret_value in r.text:
                 audit_observer.emit(
                     step="step_2_audit_does_not_leak",
-                    severity="P0", category="security", zero_trust=True,
+                    severity="P0",
+                    category="security",
+                    zero_trust=True,
                     title="Env secret leaked into audit log",
                     expected="Redactor strips MY_PASSWORD values",
                     observed=f"secret marker '{secret_value}' present in audit",
@@ -573,7 +584,8 @@ def test_journey_compose_env_secret_not_leaked(audited_page, live_server, audit_
             # download, this is where the assertion flips.
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/compose/{project}/download",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             # Accept either: secret present (current policy) OR masked.
             # Emit a low-severity observation of which it is so the

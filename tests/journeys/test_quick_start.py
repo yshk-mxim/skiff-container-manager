@@ -36,7 +36,11 @@ def _open_template(page, tid: str, timeout: int) -> None:
     card = page.locator(f"[data-testid='template-{tid}']")
     # Templates whose registry is not allowed render disabled; skip
     # those journeys on the CI with a restricted allowlist.
-    if not card.first.is_enabled() and card.first.get_attribute("style", timeout=1000) and "not-allowed" in (card.first.get_attribute("style") or ""):
+    if (
+        not card.first.is_enabled()
+        and card.first.get_attribute("style", timeout=1000)
+        and "not-allowed" in (card.first.get_attribute("style") or "")
+    ):
         pytest.skip(f"template {tid} disabled by registry allowlist")
     card.first.click()
     # Run modal renders on the containers page after a short delay.
@@ -74,8 +78,7 @@ def test_journey_template_opens_run_modal_nginx(audited_page, live_server, audit
         if cancel.count() > 0:
             cancel.click()
         # Modal should be gone.
-        page.wait_for_selector("h3:has-text('Run'), h2:has-text('Run')",
-                               state="hidden", timeout=SHORT)
+        page.wait_for_selector("h3:has-text('Run'), h2:has-text('Run')", state="hidden", timeout=SHORT)
 
 
 @journey(
@@ -103,8 +106,7 @@ def test_journey_template_postgres_shows_required_password(audited_page, live_se
         # env lands in the run-env textarea as KEY=VALUE lines.
         env_text = page.locator("#run-env").first.input_value()
         assert "POSTGRES_PASSWORD" in env_text, (
-            f"postgres template modal missing POSTGRES_PASSWORD env row "
-            f"(got {env_text!r})"
+            f"postgres template modal missing POSTGRES_PASSWORD env row (got {env_text!r})"
         )
 
     with step("step_4_close_without_submit"):
@@ -156,8 +158,7 @@ def test_journey_super_user_lists_templates_via_api(audited_page, live_server, a
     from tests.e2e_helpers import auth_headers
 
     with step("step_1_fetch_templates_api"):
-        r = requests.get(f"{live_server.rstrip('/')}/api/templates",
-                         headers=auth_headers(), timeout=10)
+        r = requests.get(f"{live_server.rstrip('/')}/api/templates", headers=auth_headers(), timeout=10)
         assert r.status_code == 200, f"GET /api/templates → {r.status_code}"
         body = r.json()
         assert "templates" in body, "response missing 'templates' key"
@@ -194,9 +195,7 @@ def test_journey_hobbyist_finds_template_by_search(audited_page, live_server, au
         # One template card should remain: postgres.
         page.wait_for_selector("[data-testid='template-postgres']", timeout=SHORT)
         # nginx card should be filtered out.
-        assert page.locator("[data-testid='template-nginx']").count() == 0, (
-            "search filter not actually filtering"
-        )
+        assert page.locator("[data-testid='template-nginx']").count() == 0, "search filter not actually filtering"
 
     with step("step_4_clear_search_restores_all"):
         search.fill("")
@@ -309,7 +308,8 @@ def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audi
         r = requests.post(
             f"{live_server.rstrip('/')}/api/images/pull",
             params={"image": ref},
-            headers=auth_headers(), timeout=300,
+            headers=auth_headers(),
+            timeout=300,
         )
         # 200 or 202 (background task) both acceptable.
         if r.status_code not in (200, 202):
@@ -333,14 +333,13 @@ def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audi
                 },
                 timeout=120,
             )
-            assert r.status_code in (200, 201), (
-                f"run after pull failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code in (200, 201), f"run after pull failed: {r.status_code} {r.text}"
     finally:
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass
@@ -363,18 +362,14 @@ def test_journey_images_prune_returns_reclaimed(audited_page, live_server, audit
     with step("step_1_prune_images"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/images/prune",
-            headers=auth_headers(), timeout=60,
+            headers=auth_headers(),
+            timeout=60,
         )
-        assert r.status_code == 200, (
-            f"images prune failed: {r.status_code} {r.text[:200]!r}"
-        )
+        assert r.status_code == 200, f"images prune failed: {r.status_code} {r.text[:200]!r}"
         body = r.json()
         # Must carry a reclaimed-space key so SRE can read the outcome.
-        reclaimed_keys = {"SpaceReclaimed", "space_reclaimed",
-                          "space_reclaimed_mb", "reclaimed_bytes"}
-        assert any(k in body for k in reclaimed_keys), (
-            f"images prune missing reclaimed-space key: {body}"
-        )
+        reclaimed_keys = {"SpaceReclaimed", "space_reclaimed", "space_reclaimed_mb", "reclaimed_bytes"}
+        assert any(k in body for k in reclaimed_keys), f"images prune missing reclaimed-space key: {body}"
 
 
 @journey(
@@ -392,22 +387,19 @@ def test_journey_image_tag_search_finds_stable_tag(audited_page, live_server, au
         r = requests.get(
             f"{live_server.rstrip('/')}/api/registry/tags",
             params={"image": "library/python", "name": "3.12"},
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
         # Accept 200 (found) or 404/502 (Docker Hub unreachable in CI);
         # 5xx indicates the server crashed on the filter param itself.
         if r.status_code in (404, 502, 504):
             pytest.skip(f"Docker Hub unreachable: {r.status_code}")
-        assert r.status_code == 200, (
-            f"tag search failed: {r.status_code} {r.text[:200]!r}"
-        )
+        assert r.status_code == 200, f"tag search failed: {r.status_code} {r.text[:200]!r}"
         body = r.json()
         tags = body.get("tags") or body.get("results") or []
         # Filter server-side must return at least some 3.12-named tags.
         matches = [t for t in tags if "3.12" in (t.get("name") if isinstance(t, dict) else str(t))]
-        assert matches, (
-            f"tag search for 3.12 returned no matches (body: {str(body)[:300]})"
-        )
+        assert matches, f"tag search for 3.12 returned no matches (body: {str(body)[:300]})"
 
 
 @journey(
@@ -420,6 +412,7 @@ def test_journey_context_menu_on_container_row(audited_page, live_server, audit_
     """hb-no-context-menu: right-click on a container row must open a
     context menu with the same verbs as the button group."""
     import uuid
+
     from tests.e2e_helpers import MEDIUM, SHORT, auth_headers, login, nav_to
 
     page = audited_page
@@ -449,19 +442,16 @@ def test_journey_context_menu_on_container_row(audited_page, live_server, audit_
             menu = page.locator(
                 ".context-menu, [role='menu'], .ctx-menu",
             ).first
-            assert menu.count() > 0 and menu.is_visible(), (
-                "no context menu rendered on right-click"
-            )
+            assert menu.count() > 0 and menu.is_visible(), "no context menu rendered on right-click"
             text = menu.inner_text(timeout=MEDIUM).lower()
             verbs_present = sum(v in text for v in ("stop", "restart", "delete", "logs"))
-            assert verbs_present >= 2, (
-                f"context menu missing the common verbs; text: {text[:200]!r}"
-            )
+            assert verbs_present >= 2, f"context menu missing the common verbs; text: {text[:200]!r}"
     finally:
         try:
             requests.delete(
                 f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         except requests.exceptions.RequestException:
             pass

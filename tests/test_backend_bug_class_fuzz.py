@@ -95,8 +95,7 @@ def _assert_envelope_shape(resp, context: str) -> None:
     # Must be JSON.
     ct = resp.headers.get("content-type", "")
     assert "application/json" in ct.lower(), (
-        f"{context}: error response content-type is {ct!r}, not JSON — "
-        f"body: {resp.text[:200]!r}"
+        f"{context}: error response content-type is {ct!r}, not JSON — body: {resp.text[:200]!r}"
     )
     try:
         body = resp.json()
@@ -110,8 +109,7 @@ def _assert_envelope_shape(resp, context: str) -> None:
         return
     code = detail.get("code")
     assert code in known_codes(), (
-        f"{context}: error envelope code {code!r} not in known_codes() — "
-        f"every error must be catalogued"
+        f"{context}: error envelope code {code!r} not in known_codes() — every error must be catalogued"
     )
     assert isinstance(detail.get("message"), str) and detail["message"], (
         f"{context}: envelope missing or empty `message` — body: {body!r}"
@@ -185,9 +183,7 @@ def test_docker_exceptions_surface_as_catalogued_envelope(exc):
         ):
             with TestClient(app, raise_server_exceptions=False) as tc:
                 for method, path, _ in _probed_read_endpoints:
-                    r = tc.request(
-                        method, path, headers={"X-Requested-With": "ContainerManager"}
-                    )
+                    r = tc.request(method, path, headers={"X-Requested-With": "ContainerManager"})
                     # Success path is impossible (we forced an exception).
                     # The invariant: error envelope + catalogued code.
                     assert r.status_code >= 400, (
@@ -321,8 +317,7 @@ def test_container_listing_survives_wild_unicode_names(names):
                 # Endpoint may reject a wild name as a 4xx, but it must
                 # NOT crash with a 500 — that's the class we're guarding.
                 assert r.status_code < 500, (
-                    f"wild-unicode names crashed handler (500): {r.text[:200]!r} "
-                    f"— names={names!r}"
+                    f"wild-unicode names crashed handler (500): {r.text[:200]!r} — names={names!r}"
                 )
 
                 # Body must be JSON (or a well-shaped envelope on 4xx).
@@ -420,9 +415,7 @@ def test_container_stats_never_emits_nan_or_infinity(stats):
                     "/api/containers/abc123def456/stats",
                     headers={"X-Requested-With": "ContainerManager"},
                 )
-                assert r.status_code < 500, (
-                    f"stats crashed on extreme numerics: {r.text[:200]!r}"
-                )
+                assert r.status_code < 500, f"stats crashed on extreme numerics: {r.text[:200]!r}"
                 # RFC 8259: the tokens NaN, Infinity, -Infinity are NOT
                 # valid JSON. Python's `json.dumps` with default settings
                 # emits them anyway (allow_nan=True default). A strict
@@ -447,14 +440,12 @@ def test_container_stats_never_emits_nan_or_infinity(stats):
                         "net_tx_mb",
                     ):
                         v = body.get(field)
-                        assert isinstance(v, (int, float)), (
-                            f"field {field!r} is {v!r} — must be numeric"
-                        )
+                        assert isinstance(v, (int, float)), f"field {field!r} is {v!r} — must be numeric"
                         import math
 
-                        assert not (
-                            isinstance(v, float) and math.isnan(v)
-                        ), f"field {field!r} is NaN for stats={stats!r}"
+                        assert not (isinstance(v, float) and math.isnan(v)), (
+                            f"field {field!r} is NaN for stats={stats!r}"
+                        )
                         assert v not in (float("inf"), float("-inf")), (
                             f"field {field!r} is infinite for stats={stats!r}"
                         )
@@ -518,8 +509,7 @@ def test_auth_gated_endpoints_return_catalogued_envelope(method_path, bad_tokens
                 headers["Authorization"] = f"Bearer {bad_token}"
             r = tc.request(method, path, headers=headers)
             assert r.status_code in (401, 403, 429), (
-                f"{method} {path} with bad token returned {r.status_code} — "
-                f"expected 401/403/429: {r.text[:200]!r}"
+                f"{method} {path} with bad token returned {r.status_code} — expected 401/403/429: {r.text[:200]!r}"
             )
             _assert_envelope_shape(r, f"{method} {path} w/ bad token")
     finally:

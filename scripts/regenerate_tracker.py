@@ -38,10 +38,20 @@ OPEN_WORK_CSV = DOCS_DEV / "open_work_tracker.csv"
 # ── 1. Findings ──────────────────────────────────────────────────────
 
 _FINDING_FIELDS = (
-    "finding_id", "first_pass", "last_pass", "journey", "persona",
-    "severity", "category", "zero_trust", "status",
-    "fix_commit", "regression_test", "class_sweep_test",
-    "expectation_note", "doc_update",
+    "finding_id",
+    "first_pass",
+    "last_pass",
+    "journey",
+    "persona",
+    "severity",
+    "category",
+    "zero_trust",
+    "status",
+    "fix_commit",
+    "regression_test",
+    "class_sweep_test",
+    "expectation_note",
+    "doc_update",
 )
 
 
@@ -70,22 +80,24 @@ def _regenerate_findings_csv() -> dict[str, int]:
                 status = d.get("status", "open")
                 counts["total"] += 1
                 counts[status] = counts.get(status, 0) + 1
-                rows.append({
-                    "finding_id": fid,
-                    "first_pass": pass_n,
-                    "last_pass": pass_n,
-                    "journey": d.get("journey", ""),
-                    "persona": d.get("persona", ""),
-                    "severity": d.get("severity", ""),
-                    "category": d.get("category", ""),
-                    "zero_trust": "Y" if d.get("zero_trust_violation") else "",
-                    "status": status,
-                    "fix_commit": d.get("fix_commit", ""),
-                    "regression_test": d.get("regression_test", ""),
-                    "class_sweep_test": d.get("class_sweep", ""),
-                    "expectation_note": d.get("expectation_note", ""),
-                    "doc_update": d.get("doc_mismatch", ""),
-                })
+                rows.append(
+                    {
+                        "finding_id": fid,
+                        "first_pass": pass_n,
+                        "last_pass": pass_n,
+                        "journey": d.get("journey", ""),
+                        "persona": d.get("persona", ""),
+                        "severity": d.get("severity", ""),
+                        "category": d.get("category", ""),
+                        "zero_trust": "Y" if d.get("zero_trust_violation") else "",
+                        "status": status,
+                        "fix_commit": d.get("fix_commit", ""),
+                        "regression_test": d.get("regression_test", ""),
+                        "class_sweep_test": d.get("class_sweep", ""),
+                        "expectation_note": d.get("expectation_note", ""),
+                        "doc_update": d.get("doc_mismatch", ""),
+                    }
+                )
     FINDINGS_CSV.parent.mkdir(parents=True, exist_ok=True)
     with FINDINGS_CSV.open("w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=_FINDING_FIELDS)
@@ -118,45 +130,96 @@ def _ensure_gui_elements_seed() -> int:
             return sum(1 for _ in csv.DictReader(fh))
     GUI_ELEMENTS_CSV.parent.mkdir(parents=True, exist_ok=True)
     skeleton: list[list[str]] = [
-        ["element", "purpose", "SKIFF_analogue",
-         "SKIFF_journey_exercising_it", "novice_discoverable_via",
-         "expert_shortcut_via"],
-        ["Home dashboard", "Endpoint overview",
-         "Dashboard", "test_journey_landing_on_dashboard",
-         "Sidebar entry", "/"],
-        ["Stacks page", "Compose stacks list",
-         "Compose page", "test_journey_upload_yaml_and_deploy",
-         "Sidebar entry", "-"],
-        ["App templates", "One-click deploy",
-         "Templates page", "test_journey_templates_catalog_visible",
-         "Sidebar entry", "-"],
-        ["Container Console", "In-browser exec",
-         "Terminal tab", "test_journey_terminal_survives_tab_switch",
-         "Detail tab", "⌘K: term"],
-        ["Images prune", "Reclaim unused images",
-         "Images prune button", "-",
-         "Images page header", "-"],
-        ["Containers tab", "Running containers list",
-         "Containers page", "test_journey_run_then_observe_on_list",
-         "Sidebar entry", "-"],
-        ["Volumes page", "Volume management",
-         "Volumes page", "test_journey_volume_create_accepts_full_params",
-         "Sidebar entry", "-"],
-        ["Dev Environments", "Dev container templates",
-         "Templates page (partial)", "test_journey_template_python_dev_opens_modal",
-         "Sidebar entry", "-"],
-        ["Workloads tree", "Grouped resource view",
-         "Sidebar", "test_journey_sidebar_navigation_reaches_every_page",
-         "Collapsible sections", "-"],
-        ["Interactive compose", "Edit stack YAML inline",
-         "Compose download + re-up", "test_journey_compose_yaml_export_reimport_cycle",
-         "Stack detail page", "-"],
-        ["Template library", "Community one-click apps",
-         "Templates page", "test_journey_templates_catalog_visible",
-         "Sidebar entry", "-"],
-        ["Keybinding reference", "TUI shortcut list",
-         "Help overlay / palette", "test_journey_developer_cmd_k_reaches_run",
-         "? key / ⌘K", "⌘K"],
+        [
+            "element",
+            "purpose",
+            "SKIFF_analogue",
+            "SKIFF_journey_exercising_it",
+            "novice_discoverable_via",
+            "expert_shortcut_via",
+        ],
+        ["Home dashboard", "Endpoint overview", "Dashboard", "test_journey_landing_on_dashboard", "Sidebar entry", "/"],
+        [
+            "Stacks page",
+            "Compose stacks list",
+            "Compose page",
+            "test_journey_upload_yaml_and_deploy",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "App templates",
+            "One-click deploy",
+            "Templates page",
+            "test_journey_templates_catalog_visible",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "Container Console",
+            "In-browser exec",
+            "Terminal tab",
+            "test_journey_terminal_survives_tab_switch",
+            "Detail tab",
+            "⌘K: term",
+        ],
+        ["Images prune", "Reclaim unused images", "Images prune button", "-", "Images page header", "-"],
+        [
+            "Containers tab",
+            "Running containers list",
+            "Containers page",
+            "test_journey_run_then_observe_on_list",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "Volumes page",
+            "Volume management",
+            "Volumes page",
+            "test_journey_volume_create_accepts_full_params",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "Dev Environments",
+            "Dev container templates",
+            "Templates page (partial)",
+            "test_journey_template_python_dev_opens_modal",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "Workloads tree",
+            "Grouped resource view",
+            "Sidebar",
+            "test_journey_sidebar_navigation_reaches_every_page",
+            "Collapsible sections",
+            "-",
+        ],
+        [
+            "Interactive compose",
+            "Edit stack YAML inline",
+            "Compose download + re-up",
+            "test_journey_compose_yaml_export_reimport_cycle",
+            "Stack detail page",
+            "-",
+        ],
+        [
+            "Template library",
+            "Community one-click apps",
+            "Templates page",
+            "test_journey_templates_catalog_visible",
+            "Sidebar entry",
+            "-",
+        ],
+        [
+            "Keybinding reference",
+            "TUI shortcut list",
+            "Help overlay / palette",
+            "test_journey_developer_cmd_k_reaches_run",
+            "? key / ⌘K",
+            "⌘K",
+        ],
     ]
     with GUI_ELEMENTS_CSV.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
@@ -170,21 +233,27 @@ def _ensure_gui_elements_seed() -> int:
 _TESTING_CATEGORIES = (
     ("unit", "tests/test_coverage_*.py, tests/test_fuzz*.py"),
     ("property", "tests/test_properties.py, tests/test_hypothesis*.py"),
-    ("state_machine", "tests/test_state_transitions.py, tests/test_container_journey_fuzz.py, tests/test_lifecycle_coverage.py"),
+    (
+        "state_machine",
+        "tests/test_state_transitions.py, tests/test_container_journey_fuzz.py, tests/test_lifecycle_coverage.py",
+    ),
     ("contract", "tests/test_contract.py, tests/test_route_contract.py, tests/test_capability_parity.py"),
     ("security", "tests/test_security.py, tests/test_secure_route.py, tests/test_zero_trust_invariants.py"),
     ("a11y", "tests/test_e2e_accessibility.py, tests/journeys/test_ui_ux.py"),
     ("e2e_tiered", "tests/test_e2e_tier_*.py"),
     ("e2e_journey", "tests/journeys/test_*.py"),
     ("docs", "tests/test_docs_sync.py, tests/test_docs_complete.py, tests/test_history_coverage.py"),
-    ("coverage_sweeps", "tests/test_coverage_topdown.py, tests/test_coverage_bottomup.py, tests/test_coverage_fields.py"),
+    (
+        "coverage_sweeps",
+        "tests/test_coverage_topdown.py, tests/test_coverage_bottomup.py, tests/test_coverage_fields.py",
+    ),
 )
 
 
 def _regenerate_testing_csv() -> int:
     """Count files + tests per category. Does NOT try to reach pytest
     — that's the job of `make test`. Counts are enough for the tracker."""
-    today = _dt.date.today().isoformat()
+    today = _dt.datetime.now(tz=_dt.UTC).date().isoformat()
     TESTING_CSV.parent.mkdir(parents=True, exist_ok=True)
     rows = [("test_type", "file_glob", "file_count", "test_function_count", "last_rolled_up")]
     for cat, glob in _TESTING_CATEGORIES:
@@ -209,8 +278,14 @@ def _regenerate_testing_csv() -> int:
 
 
 _OPEN_WORK_HEADER = (
-    "id", "type", "title", "rationale", "owner",
-    "deferred_until", "security_justified", "file_location",
+    "id",
+    "type",
+    "title",
+    "rationale",
+    "owner",
+    "deferred_until",
+    "security_justified",
+    "file_location",
 )
 
 _TODO_RE = re.compile(r"(TODO|FIXME|XXX)\b[:\s]*([^\n]+)")
@@ -224,8 +299,7 @@ def _regenerate_open_work_csv() -> int:
     seen = 0
     # Scan source + tests (skip venvs / caches).
     for path in Path().rglob("*.py"):
-        if any(part.startswith(".") or part in {"node_modules", "__pycache__"}
-               for part in path.parts):
+        if any(part.startswith(".") or part in {"node_modules", "__pycache__"} for part in path.parts):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -238,16 +312,18 @@ def _regenerate_open_work_csv() -> int:
             seen += 1
             kind = m.group(1).lower()
             note = m.group(2).strip()[:160]
-            rows.append((
-                f"ow-{seen:04d}",
-                kind,
-                note,
-                "",  # rationale filled in manually when triaged
-                "",  # owner
-                "",  # deferred_until
-                "",  # security_justified
-                f"{path}:{line_no}",
-            ))
+            rows.append(
+                (
+                    f"ow-{seen:04d}",
+                    kind,
+                    note,
+                    "",  # rationale filled in manually when triaged
+                    "",  # owner
+                    "",  # deferred_until
+                    "",  # security_justified
+                    f"{path}:{line_no}",
+                )
+            )
     with OPEN_WORK_CSV.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
         for row in rows:
@@ -262,7 +338,9 @@ def _last_commit_sha() -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         return r.stdout.strip() if r.returncode == 0 else ""
     except OSError:
@@ -281,7 +359,7 @@ def _count_journeys() -> int:
 
 def main() -> int:
     TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    today = _dt.date.today().isoformat()
+    today = _dt.datetime.now(tz=_dt.UTC).date().isoformat()
 
     counts = _regenerate_findings_csv()
     gui_rows = _ensure_gui_elements_seed()
@@ -298,10 +376,10 @@ def main() -> int:
 
 ## 1. Findings
 
-- total (all passes): **{counts['total']}**
-- fixed: **{counts.get('fixed', 0)}**
-- open: **{counts.get('open', 0)}**
-- wontfix (security_NO): **{counts.get('wontfix', 0)}**
+- total (all passes): **{counts["total"]}**
+- fixed: **{counts.get("fixed", 0)}**
+- open: **{counts.get("open", 0)}**
+- wontfix (security_NO): **{counts.get("wontfix", 0)}**
 
 Per-finding table in [`docs/dev/findings_tracker.csv`](findings_tracker.csv)
 (regenerated).
@@ -354,9 +432,11 @@ capture record:
 Every sweep has a corresponding gate in `tests/test_coverage_*.py`.
 """
     TRACKER_PATH.write_text(content, encoding="utf-8")
-    print(f"wrote {TRACKER_PATH} ({counts['total']} findings, "
-          f"{gui_rows} gui rows, {test_rows} test types, {open_rows} open items, "
-          f"{journeys} journeys)")
+    print(
+        f"wrote {TRACKER_PATH} ({counts['total']} findings, "
+        f"{gui_rows} gui rows, {test_rows} test types, {open_rows} open items, "
+        f"{journeys} journeys)"
+    )
     return 0
 
 

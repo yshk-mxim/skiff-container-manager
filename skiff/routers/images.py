@@ -47,7 +47,6 @@ _TRANSPORT_ERRORS = (
 )
 
 
-
 @router.get("/api/registry/search", dependencies=AUTH, tags=["images"])
 @secure_route.read(RATE.READ)
 def registry_search(request: Request, q: str = Query(..., min_length=1, max_length=100)):
@@ -122,7 +121,11 @@ def registry_tags(
         }
         if name:
             params["name"] = name
-        resp = requests.get(
+        # Justification: HUB_REPO_RE constrains `repo` to Docker-Hub
+        # grammar, host is hard-coded to hub.docker.com, and
+        # allow_redirects=False blocks any 3xx off-host bounce. Semgrep's
+        # generic f-string rule doesn't see the combined mitigation.
+        resp = requests.get(  # nosemgrep: python.flask.security.injection.ssrf-requests.ssrf-requests
             f"https://hub.docker.com/v2/repositories/{repo}/tags/",
             params=params,
             timeout=config.REGISTRY_TIMEOUT,

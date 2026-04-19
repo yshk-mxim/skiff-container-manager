@@ -46,18 +46,18 @@ class Persona:
     (e.g. `novice`) so adding a new persona doesn't mean editing every
     journey — only the ones that explicitly want to opt in."""
 
-    tag: str                                 # 'novice', 'developer', etc
-    name: str                                # human-readable
-    rate_limit_profile: str                  # maps to skiff/_config/profiles.toml
-    description: str                         # one-line mental model
-    click_delay_ms: int                      # typing / click cadence
-    preferred_viewport: Viewport             # default browser size
-    supports_viewports: tuple[Viewport, ...] # acceptable alternates
-    prefers_theme: str                       # 'light' | 'dark' | 'system'
-    uses_keyboard_shortcuts: bool            # ⌘K, Tab-nav
-    uses_palette: bool                       # opens ⌘K for nav
-    starting_pages: tuple[str, ...]          # first nav targets
-    done_rubric: tuple[str, ...]             # acceptance criteria
+    tag: str  # 'novice', 'developer', etc
+    name: str  # human-readable
+    rate_limit_profile: str  # maps to skiff/_config/profiles.toml
+    description: str  # one-line mental model
+    click_delay_ms: int  # typing / click cadence
+    preferred_viewport: Viewport  # default browser size
+    supports_viewports: tuple[Viewport, ...]  # acceptable alternates
+    prefers_theme: str  # 'light' | 'dark' | 'system'
+    uses_keyboard_shortcuts: bool  # ⌘K, Tab-nav
+    uses_palette: bool  # opens ⌘K for nav
+    starting_pages: tuple[str, ...]  # first nav targets
+    done_rubric: tuple[str, ...]  # acceptance criteria
     driving_heuristics: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -74,8 +74,7 @@ NOVICE = Persona(
     name="Novice operator",
     rate_limit_profile="tutor",
     description=(
-        "Docker is magic; clicks the thing that looks right. "
-        "Reads every prompt. Prefers chips, suggestions, templates."
+        "Docker is magic; clicks the thing that looks right. Reads every prompt. Prefers chips, suggestions, templates."
     ),
     click_delay_ms=1200,
     preferred_viewport=_DESKTOP_14,
@@ -111,8 +110,7 @@ DEVELOPER = Persona(
     uses_palette=True,
     starting_pages=("containers", "compose", "images"),
     done_rubric=(
-        "Can edit a file in a running container (exec OR Files→edit→upload) "
-        "and see the change in ≤90s.",
+        "Can edit a file in a running container (exec OR Files→edit→upload) and see the change in ≤90s.",
         "⌘K palette jumps to any container by name.",
         "Tab key follows visual order in every modal.",
         "Enter submits every non-multiline form.",
@@ -182,8 +180,7 @@ UI_UX_AUDITOR = Persona(
     name="UI/UX auditor",
     rate_limit_profile="dev",
     description=(
-        "Tab-only navigation; dark/light/high-contrast; mobile viewport; "
-        "prefers-reduced-motion; screen-reader labels."
+        "Tab-only navigation; dark/light/high-contrast; mobile viewport; prefers-reduced-motion; screen-reader labels."
     ),
     click_delay_ms=300,
     preferred_viewport=_DESKTOP_14,
@@ -195,7 +192,7 @@ UI_UX_AUDITOR = Persona(
     done_rubric=(
         "Every interactive element is tabbable in visual order.",
         "Focus ring visible on every focusable element.",
-        "No content lost at 375×667 viewport width.",
+        "No content lost at 375x667 viewport width.",
         "axe-core reports zero WCAG 2.1 AA violations on every sampled page.",
         "Every empty state explains what's missing (not just 'no …').",
         "Every list has a search bar (Nielsen #2 match real world).",

@@ -2392,10 +2392,9 @@ function buildHubSearch(onSelect) {
 // replace_id pair is sent on submit so the server can preserve env values
 // without exposing them to the client (zero-trust clone).
 function showRunModal(prefillImage, prefillSource) {
-  // `prefillImage` accepts either a string image ref (legacy) or a
-  // template object `{image, name, command, ports, env, volumes}` from
-  // pages/templates.js _deployTemplate. Previously the type check below
-  // discarded the template object silently, opening an empty modal.
+  // `prefillImage` accepts either a string image ref or a template
+  // object `{image, name, command, ports, env, volumes}` sent by
+  // pages/templates.js _deployTemplate.
   var prefillTemplate = null;
   if (prefillImage && typeof prefillImage === 'object' && !Array.isArray(prefillImage)) {
     prefillTemplate = prefillImage;

@@ -39,6 +39,7 @@ def _seed(live_server: str, name_prefix: str, read_only: bool = True) -> str:
     safer-by-default UX); pass read_only=False for journeys that exercise
     upload/write paths on the container rootfs."""
     from tests.e2e_helpers import auth_headers
+
     name = f"{name_prefix}-{uuid.uuid4().hex[:6]}"
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
@@ -57,10 +58,12 @@ def _seed(live_server: str, name_prefix: str, read_only: bool = True) -> str:
 
 def _teardown(live_server: str, name: str) -> None:
     from tests.e2e_helpers import auth_headers
+
     try:
         requests.delete(
             f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
-            headers=auth_headers(), timeout=30,
+            headers=auth_headers(),
+            timeout=30,
         )
     except requests.exceptions.RequestException:
         pass
@@ -84,7 +87,8 @@ def test_journey_files_browser_lists_etc(audited_page, live_server, audit_observ
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/ls",
                 params={"path": "/etc"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"ls failed: {r.status_code}"
             body = r.json()
@@ -114,7 +118,8 @@ def test_journey_files_download_contents(audited_page, live_server, audit_observ
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/files",
                 params={"path": "/etc/hostname"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200, f"download failed: {r.status_code}"
             # Response should be a non-empty tar stream. We don't parse
@@ -143,7 +148,8 @@ def test_journey_files_path_traversal_rejected(audited_page, live_server, audit_
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/ls",
                 params={"path": "/etc/../../../../etc/passwd"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         # Acceptable: 400/422 (validator rejects) OR 200 where the path
         # canonicalises to a container path (e.g. /etc/passwd INSIDE
@@ -153,7 +159,9 @@ def test_journey_files_path_traversal_rejected(audited_page, live_server, audit_
         if r.status_code == 500:
             audit_observer.emit(
                 step="step_1_attempt_traversal_ls",
-                severity="P0", category="security", zero_trust=True,
+                severity="P0",
+                category="security",
+                zero_trust=True,
                 title="Path-traversal returns 500 — validator boundary broken",
                 expected="400/422 or canonicalised-safe 200",
                 observed=f"HTTP 500: {r.text[:200]!r}",
@@ -164,12 +172,11 @@ def test_journey_files_path_traversal_rejected(audited_page, live_server, audit_
         # markers like /Users or /home/<realuser>.
         if r.status_code == 200:
             import json as _json
+
             body_str = _json.dumps(r.json())
             host_markers = ("/Users/", "/Volumes/", "/private/var/folders")
             escaped = [m for m in host_markers if m in body_str]
-            assert not escaped, (
-                f"path traversal escaped to host filesystem: {escaped}"
-            )
+            assert not escaped, f"path traversal escaped to host filesystem: {escaped}"
     finally:
         _teardown(live_server, name)
 
@@ -214,14 +221,14 @@ def test_journey_files_empty_state_explains_what_is_missing(audited_page, live_s
                 # Need at least 30 more chars of context to count as
                 # helpful, or an explicit word like "diff", "modify",
                 # "image", "baseline".
-                has_context = (
-                    len(rest) >= 30
-                    or any(w in rest.lower() for w in ("diff", "modif", "baseline", "image", "browse", "upload"))
+                has_context = len(rest) >= 30 or any(
+                    w in rest.lower() for w in ("diff", "modif", "baseline", "image", "browse", "upload")
                 )
                 if not has_context:
                     audit_observer.emit(
                         step="step_4_empty_state_helpful",
-                        severity="medium", category="copy",
+                        severity="medium",
+                        category="copy",
                         title="Files tab empty state is context-free",
                         expected="Copy that explains what 'changes' means",
                         observed=f"Only '{banned_copy}' visible",
@@ -327,13 +334,12 @@ def test_journey_files_diff_view_lists_changes(audited_page, live_server, audit_
         with step("step_1_fetch_diff"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/diff",
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             if r.status_code == 404:
                 pytest.skip("diff endpoint not surfaced under this path")
-            assert r.status_code == 200, (
-                f"diff endpoint returned {r.status_code}: {r.text[:200]!r}"
-            )
+            assert r.status_code == 200, f"diff endpoint returned {r.status_code}: {r.text[:200]!r}"
             body = r.json()
             # Body is typically a list of dicts from docker-py.
             assert isinstance(body, (list, dict)), f"unexpected shape: {type(body)}"
@@ -371,14 +377,13 @@ def test_journey_files_upload_then_verify(audited_page, live_server, audit_obser
             )
             if r.status_code == 404:
                 pytest.skip("upload endpoint not surfaced under this path")
-            assert r.status_code in (200, 201), (
-                f"upload failed: {r.status_code} {r.text}"
-            )
+            assert r.status_code in (200, 201), f"upload failed: {r.status_code} {r.text}"
         with step("step_2_ls_tmp_sees_uploaded_file"):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/ls",
                 params={"path": "/tmp"},
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
             assert r.status_code == 200
             entries = r.json().get("entries") or r.json().get("files") or []
@@ -416,7 +421,8 @@ def test_journey_files_symlink_navigation_safe(audited_page, live_server, audit_
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/containers/{name}/ls",
                 params={"path": "/bin"},  # /bin → /usr/bin on modern alpine
-                headers=auth_headers(), timeout=30,
+                headers=auth_headers(),
+                timeout=30,
             )
         # /bin is a symlink to /usr/bin on Alpine. Must either resolve
         # safely (200 with executable listings) OR refuse with 4xx.
@@ -424,15 +430,14 @@ def test_journey_files_symlink_navigation_safe(audited_page, live_server, audit_
         if r.status_code >= 500:
             audit_observer.emit(
                 step="step_1_ls_with_symlinks",
-                severity="high", category="contract",
+                severity="high",
+                category="contract",
                 title=f"ls on symlink target returned {r.status_code}",
                 expected="200 or 4xx — never 5xx",
                 observed=f"{r.status_code}: {r.text[:200]!r}",
             )
             pytest.fail("symlink navigation 5xx")
-        assert r.status_code in (200, 400, 403, 404, 422), (
-            f"unexpected status {r.status_code} for symlink ls"
-        )
+        assert r.status_code in (200, 400, 403, 404, 422), f"unexpected status {r.status_code} for symlink ls"
         if r.status_code == 200:
             # Resolved listing must contain at least one expected binary
             # from /usr/bin — busybox, sh, ls, etc.
@@ -481,7 +486,9 @@ def test_journey_files_oversize_upload_rejected(audited_page, live_server, audit
         if 200 <= r.status_code < 300:
             audit_observer.emit(
                 step="step_1_upload_oversize",
-                severity="P0", category="security", zero_trust=True,
+                severity="P0",
+                category="security",
+                zero_trust=True,
                 title="No upload size cap — disk-exhaustion DoS vector",
                 expected="4xx rejection on oversized bodies",
                 observed=f"50 MiB upload returned {r.status_code}",
@@ -489,8 +496,6 @@ def test_journey_files_oversize_upload_rejected(audited_page, live_server, audit
             pytest.fail(
                 f"50 MiB upload accepted ({r.status_code}) — no size cap",
             )
-        assert 400 <= r.status_code < 500, (
-            f"expected 4xx for oversize; got {r.status_code}: {r.text[:200]!r}"
-        )
+        assert 400 <= r.status_code < 500, f"expected 4xx for oversize; got {r.status_code}: {r.text[:200]!r}"
     finally:
         _teardown(live_server, name)

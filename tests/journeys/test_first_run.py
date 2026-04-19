@@ -64,9 +64,7 @@ def test_journey_landing_on_dashboard(audited_page, live_server, audit_observer,
 
     with step("step_4_recent_activity_visible"):
         # "Recent activity (last 5 min)" section header must be present.
-        assert page.locator("text=Recent activity").count() > 0, (
-            "Dashboard missing the recent-activity section."
-        )
+        assert page.locator("text=Recent activity").count() > 0, "Dashboard missing the recent-activity section."
 
 
 @journey(
@@ -90,17 +88,14 @@ def test_journey_templates_catalog_visible(audited_page, live_server, audit_obse
 
     with step("step_3_all_known_templates_render"):
         # The 8 seeded templates from config._APP_TEMPLATES.
-        for tid in ("nginx", "postgres", "redis", "mysql", "mongo",
-                    "python", "node", "alpine"):
+        for tid in ("nginx", "postgres", "redis", "mysql", "mongo", "python", "node", "alpine"):
             assert page.locator(f"[data-testid='template-{tid}']").count() == 1, (
                 f"Template {tid!r} card missing from the catalogue"
             )
 
     with step("step_4_filter_input_present"):
         # The Templates page should have a search/filter input.
-        assert page.locator("input[type='search']").count() > 0, (
-            "Templates page missing its filter input"
-        )
+        assert page.locator("input[type='search']").count() > 0, "Templates page missing its filter input"
 
 
 @journey(
@@ -191,14 +186,16 @@ def test_journey_keyboard_reaches_every_sidebar_entry(audited_page, live_server,
     with step("step_3_tab_through_sidebar"):
         for _ in range(40):  # upper bound; sidebar has ~8 entries
             page.keyboard.press("Tab")
-            active_text = page.evaluate(
-                "() => document.activeElement && document.activeElement.innerText",
-            ) or ""
+            active_text = (
+                page.evaluate(
+                    "() => document.activeElement && document.activeElement.innerText",
+                )
+                or ""
+            )
             reached.add(active_text.strip().split("\n")[0])
         # We expect a substantial fraction of sidebar labels to appear
         # via Tab traversal.
-        expected = {"Dashboard", "Containers", "Images", "Templates",
-                    "Volumes", "Networks", "Compose", "System"}
+        expected = {"Dashboard", "Containers", "Images", "Templates", "Volumes", "Networks", "Compose", "System"}
         hits = expected & reached
         # Finding if fewer than half the sidebar entries are reached
         # (not a hard fail — depends on which element Playwright started
@@ -240,7 +237,8 @@ def test_journey_zero_config_wizard_reachable(audited_page, live_server, audit_o
     with step("step_1_probe_setup_state"):
         r = requests.get(
             f"{live_server.rstrip('/')}/api/setup-state",
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
         assert r.status_code == 200, f"setup-state failed: {r.status_code}"
         body = r.json()
@@ -250,20 +248,13 @@ def test_journey_zero_config_wizard_reachable(audited_page, live_server, audit_o
         #     [when unconfigured]
         #   tunnel_active, tunnel_socket [when unconfigured + loopback]
         # A novice needs to know at minimum whether setup is configured.
-        assert "configured" in body, (
-            f"/api/setup-state missing `configured`; keys: {list(body.keys())}"
-        )
-        assert isinstance(body["configured"], bool), (
-            f"`configured` must be bool; got {type(body['configured'])}"
-        )
+        assert "configured" in body, f"/api/setup-state missing `configured`; keys: {list(body.keys())}"
+        assert isinstance(body["configured"], bool), f"`configured` must be bool; got {type(body['configured'])}"
         # If unconfigured, wizard needs the window timers. This matters
         # for the novice's "can I still set up?" read.
         if not body["configured"]:
             for k in ("window_open", "window_expires_in"):
-                assert k in body, (
-                    f"unconfigured /api/setup-state missing `{k}`; "
-                    f"keys: {list(body.keys())}"
-                )
+                assert k in body, f"unconfigured /api/setup-state missing `{k}`; keys: {list(body.keys())}"
 
 
 @journey(
@@ -284,11 +275,10 @@ def test_journey_abandoned_wizard_recovers(audited_page, live_server, audit_obse
         for _ in range(2):
             r = requests.get(
                 f"{live_server.rstrip('/')}/api/setup-state",
-                headers=auth_headers(), timeout=10,
+                headers=auth_headers(),
+                timeout=10,
             )
-            assert r.status_code == 200, (
-                f"setup-state must remain serviceable across reopens; got {r.status_code}"
-            )
+            assert r.status_code == 200, f"setup-state must remain serviceable across reopens; got {r.status_code}"
 
 
 @journey(
@@ -307,7 +297,8 @@ def test_journey_tunnel_status_queryable(audited_page, live_server, audit_observ
     with step("step_1_query_tunnel_status"):
         r = requests.get(
             f"{live_server.rstrip('/')}/api/tunnel/status",
-            headers=auth_headers(), timeout=10,
+            headers=auth_headers(),
+            timeout=10,
         )
         # Acceptable: 200 (tunnel or not) or 501 (tunnel feature disabled
         # on this build). Not acceptable: 500.

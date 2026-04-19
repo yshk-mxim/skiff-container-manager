@@ -1,0 +1,26 @@
+# Semgrep exclusions for vendored / third-party assets that SKIFF
+# ships but does not author. Flagging minified libraries as OWASP
+# findings is noise — the rule-set is aimed at first-party code.
+
+# xterm.js terminal renderer — vendored at `skiff/static/xterm/`.
+# See `skiff/static/xterm/LICENSE` for the upstream MIT licence.
+skiff/static/xterm/
+
+# Swagger UI bundle — vendored under `skiff/static/swagger-ui/`.
+# Upstream at https://github.com/swagger-api/swagger-ui.
+skiff/static/swagger-ui/
+
+# Virtualenvs / build artefacts / caches.
+.venv/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+__pycache__/
+
+# Test fixtures run scanner-tainted inputs on purpose; lint them with
+# the unit linters (ruff S-rules, bandit) — semgrep's noisy OWASP
+# rule-set flags test-exclusive patterns (subprocess with env kwargs,
+# dynamic urllib) that are legitimate in a test harness but would
+# be bugs in production code.
+tests/
+

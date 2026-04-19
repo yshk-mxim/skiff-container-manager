@@ -59,8 +59,7 @@ def test_every_route_has_openapi_description():
             if not (op.get("description") or op.get("summary")):
                 missing.append(f"{method.upper()} {path}")
     assert not missing, (
-        f"Routes without OpenAPI description/summary (add a docstring to "
-        f"the handler function): {missing!r}"
+        f"Routes without OpenAPI description/summary (add a docstring to the handler function): {missing!r}"
     )
 
 
@@ -94,7 +93,7 @@ def test_every_knob_documented():
     but isn't documented is an operational risk."""
     from skiff.config import knobs
 
-    knobs_md = (DOCS_DIR / "config-knobs.md")
+    knobs_md = DOCS_DIR / "config-knobs.md"
     if not knobs_md.exists():
         pytest.skip("docs/config-knobs.md missing — run `make docs` to generate")
     text = knobs_md.read_text(encoding="utf-8")
@@ -105,8 +104,7 @@ def test_every_knob_documented():
         if f"`{name}`" not in text and name not in text:
             missing.append(name)
     assert not missing, (
-        f"Knobs not documented: {missing!r}. Run `make docs` to regenerate "
-        f"docs/config-knobs.md from the source."
+        f"Knobs not documented: {missing!r}. Run `make docs` to regenerate docs/config-knobs.md from the source."
     )
 
 
@@ -124,10 +122,7 @@ def test_every_audit_event_documented():
         pytest.skip("docs/audit-events.md missing — run `make docs` to generate")
     text = events_md.read_text(encoding="utf-8")
     missing = [k for k in sorted(_EVENTS.keys()) if k not in text]
-    assert not missing, (
-        f"Audit events not documented: {missing!r}. Run `make docs` to "
-        f"regenerate docs/audit-events.md."
-    )
+    assert not missing, f"Audit events not documented: {missing!r}. Run `make docs` to regenerate docs/audit-events.md."
 
 
 # ── Gate 5: every screenshot referenced from README exists ──────────────
@@ -166,8 +161,7 @@ def test_every_sidebar_page_has_readme_pointer():
     if not README.exists():
         pytest.skip("README.md missing")
     text = README.read_text(encoding="utf-8").lower()
-    sidebar_pages = ("dashboard", "containers", "images", "templates",
-                     "volumes", "networks", "compose", "system")
+    sidebar_pages = ("dashboard", "containers", "images", "templates", "volumes", "networks", "compose", "system")
     missing = [p for p in sidebar_pages if p not in text]
     assert not missing, (
         f"README doesn't mention sidebar pages: {missing!r}. Add to the "
@@ -217,6 +211,4 @@ def test_every_persona_done_rubric_has_reachability():
 
     for p in ALL_PERSONAS:
         assert p.done_rubric, f"persona {p.tag} has empty done_rubric"
-        assert p.tag in personas_in_journeys, (
-            f"persona {p.tag} has a done_rubric but no journey drives it"
-        )
+        assert p.tag in personas_in_journeys, f"persona {p.tag} has a done_rubric but no journey drives it"

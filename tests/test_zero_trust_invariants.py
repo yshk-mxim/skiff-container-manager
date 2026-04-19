@@ -63,22 +63,24 @@ def _mock_client(**overrides) -> MagicMock:
 
 # Endpoints explicitly allowed to be unauthenticated. Mirrors the list
 # in tests/test_crud_completeness.py; kept in sync via a cross-file test.
-_PUBLIC_PATHS = frozenset({
-    "/api/health",
-    "/api/setup-state",
-    "/api/setup",
-    "/api/config/public",
-    "/api/auth/login",
-    "/api/auth/logout",
-    "/api/auth-required",
-    "/api/contract/error-codes",
-    "/api/openapi.json",
-    "/api/docs",
-    "/api/setup/probe-docker",
-    "/api/setup/tunnel",
-    "/api/tunnel/status",
-    "/api/tunnel/reconnect",
-})
+_PUBLIC_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/setup-state",
+        "/api/setup",
+        "/api/config/public",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth-required",
+        "/api/contract/error-codes",
+        "/api/openapi.json",
+        "/api/docs",
+        "/api/setup/probe-docker",
+        "/api/setup/tunnel",
+        "/api/tunnel/status",
+        "/api/tunnel/reconnect",
+    }
+)
 
 
 # ── ZT-1: every error response uses the catalogued envelope ─────────────
@@ -100,13 +102,13 @@ def test_zt_every_4xx_5xx_has_catalogued_envelope():
     try:
         with TestClient(app, raise_server_exceptions=False) as tc:
             probes = [
-                ("GET", "/api/containers"),                     # 401
-                ("DELETE", "/api/containers/abc"),             # 401
-                ("POST", "/api/containers/run"),               # 401
-                ("GET", "/api/images"),                        # 401
-                ("GET", "/api/volumes"),                       # 401
-                ("GET", "/api/networks"),                      # 401
-                ("GET", "/api/compose/stacks"),                # 401
+                ("GET", "/api/containers"),  # 401
+                ("DELETE", "/api/containers/abc"),  # 401
+                ("POST", "/api/containers/run"),  # 401
+                ("GET", "/api/images"),  # 401
+                ("GET", "/api/volumes"),  # 401
+                ("GET", "/api/networks"),  # 401
+                ("GET", "/api/compose/stacks"),  # 401
             ]
             missing_envelope: list[str] = []
             for method, path in probes:
@@ -125,9 +127,7 @@ def test_zt_every_4xx_5xx_has_catalogued_envelope():
                     missing_envelope.append(f"{method} {path}: {detail!r}")
                     continue
                 if detail.get("code") not in known_codes():
-                    missing_envelope.append(
-                        f"{method} {path}: {detail.get('code')!r}"
-                    )
+                    missing_envelope.append(f"{method} {path}: {detail.get('code')!r}")
             assert not missing_envelope, missing_envelope
     finally:
         config_module._cfg.api_token = orig_token
@@ -282,12 +282,8 @@ def test_zt_no_bearer_in_error_response_bodies():
             for method, path in probes:
                 r = tc.request(method, path, headers=headers)
                 body = r.text
-                assert real_token not in body, (
-                    f"{method} {path}: bearer leaked into body: {body[:300]!r}"
-                )
-                assert not _BEARER_RE.search(body), (
-                    f"{method} {path}: bearer-shaped pattern in body: {body[:300]!r}"
-                )
+                assert real_token not in body, f"{method} {path}: bearer leaked into body: {body[:300]!r}"
+                assert not _BEARER_RE.search(body), f"{method} {path}: bearer-shaped pattern in body: {body[:300]!r}"
     finally:
         config_module._cfg.api_token = orig_token
 
@@ -399,8 +395,13 @@ def test_zt_sensitive_env_vars_redacted_in_inspect():
     container.attrs = {
         "Id": container.id,
         "Created": "2026-04-18T00:00:00Z",
-        "State": {"Running": True, "Paused": False, "Status": "running",
-                  "StartedAt": "2026-04-18T00:00:00Z", "ExitCode": 0},
+        "State": {
+            "Running": True,
+            "Paused": False,
+            "Status": "running",
+            "StartedAt": "2026-04-18T00:00:00Z",
+            "ExitCode": 0,
+        },
         "Config": {
             "Image": "alpine:latest",
             "Cmd": ["sh"],
@@ -416,10 +417,18 @@ def test_zt_sensitive_env_vars_redacted_in_inspect():
             "User": "",
             "Hostname": "",
         },
-        "HostConfig": {"Memory": 0, "NanoCpus": 0, "RestartPolicy": {"Name": "no"},
-                       "Privileged": False, "CapAdd": [], "CapDrop": [],
-                       "PortBindings": {}, "Binds": [], "ReadonlyRootfs": False,
-                       "IpcMode": ""},
+        "HostConfig": {
+            "Memory": 0,
+            "NanoCpus": 0,
+            "RestartPolicy": {"Name": "no"},
+            "Privileged": False,
+            "CapAdd": [],
+            "CapDrop": [],
+            "PortBindings": {},
+            "Binds": [],
+            "ReadonlyRootfs": False,
+            "IpcMode": "",
+        },
         "Mounts": [],
         "NetworkSettings": {"Networks": {}, "Ports": {}, "IPAddress": ""},
         "Name": "/zt-test",
@@ -467,13 +476,9 @@ def test_zt_public_paths_match_crud_completeness_file():
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "_PUBLIC":
                     if isinstance(node.value, ast.Set):
-                        crud_public = {
-                            elt.value for elt in node.value.elts
-                            if isinstance(elt, ast.Constant)
-                        }
+                        crud_public = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)}
     assert crud_public is not None, (
-        "Could not parse _PUBLIC from test_crud_completeness.py — "
-        "the set literal may have moved"
+        "Could not parse _PUBLIC from test_crud_completeness.py — the set literal may have moved"
     )
     divergence_this_side = _PUBLIC_PATHS - crud_public
     divergence_other_side = crud_public - _PUBLIC_PATHS

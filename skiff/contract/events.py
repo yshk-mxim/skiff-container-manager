@@ -291,8 +291,7 @@ _EVENTS: dict[str, _EventSpec] = {
         severity="warning",
         required=("id", "path", "cap_mb"),
         description=(
-            "`docker cp`-out truncated at the configured size cap; "
-            "raise CONTAINER_CP_MAX_MB or tar a smaller path."
+            "`docker cp`-out truncated at the configured size cap; raise CONTAINER_CP_MAX_MB or tar a smaller path."
         ),
     ),
     "container.cp_put": _EventSpec(

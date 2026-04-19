@@ -47,7 +47,7 @@ def main() -> int:
             except (OSError, json.JSONDecodeError):
                 continue
 
-    today = _dt.date.today().isoformat()
+    today = _dt.datetime.now(tz=_dt.UTC).date().isoformat()
     out_path = REPORT_DIR / f"persona_audit_report_{today}.md"
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -72,8 +72,7 @@ def main() -> int:
         "## By severity",
         "",
     ]
-    for sev in ("P0", "high", "medium", "low"):
-        lines.append(f"- {sev}: {by_severity.get(sev, 0)}")
+    lines.extend(f"- {sev}: {by_severity.get(sev, 0)}" for sev in ("P0", "high", "medium", "low"))
     lines += [
         "",
         "## By category",

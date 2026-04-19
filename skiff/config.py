@@ -952,11 +952,15 @@ _APP_TEMPLATES: list[dict] = [
         "ports": [{"host": 5432, "container": 5432, "protocol": "tcp"}],
         "env": [
             {
-                "key": "POSTGRES_PASSWORD", "value": "changeme", "required": True,
+                "key": "POSTGRES_PASSWORD",
+                "value": "changeme",
+                "required": True,
                 "help": "Admin password — CHANGE THIS before use.",
             },
             {
-                "key": "POSTGRES_DB", "value": "app", "required": False,
+                "key": "POSTGRES_DB",
+                "value": "app",
+                "required": False,
                 "help": "Default database name.",
             },
         ],
@@ -983,11 +987,15 @@ _APP_TEMPLATES: list[dict] = [
         "ports": [{"host": 3306, "container": 3306, "protocol": "tcp"}],
         "env": [
             {
-                "key": "MYSQL_ROOT_PASSWORD", "value": "changeme", "required": True,
+                "key": "MYSQL_ROOT_PASSWORD",
+                "value": "changeme",
+                "required": True,
                 "help": "Root password — CHANGE THIS before use.",
             },
             {
-                "key": "MYSQL_DATABASE", "value": "app", "required": False,
+                "key": "MYSQL_DATABASE",
+                "value": "app",
+                "required": False,
                 "help": "Default database name.",
             },
         ],

@@ -40,11 +40,7 @@ def _route_shapes() -> list[tuple[str, str]]:
 
     from skiff.app import app
 
-    shapes: list[tuple[str, str]] = []
-    for r in app.routes:
-        if isinstance(r, Route):
-            for m in (r.methods or ()):
-                shapes.append((m, r.path))
+    shapes: list[tuple[str, str]] = [(m, r.path) for r in app.routes if isinstance(r, Route) for m in (r.methods or ())]
     return shapes
 
 
@@ -54,9 +50,9 @@ def _route_shapes() -> list[tuple[str, str]]:
 # `/api/containers/{id}/start` pass without exact equality gymnastics.
 _EXPECTED_CRUD = {
     "containers": [
-        ("GET", "/api/containers"),                         # Read-list
+        ("GET", "/api/containers"),  # Read-list
         ("GET", "/api/containers/{container_id}/inspect"),  # Read-one
-        ("POST", "/api/containers/run"),                    # Create
+        ("POST", "/api/containers/run"),  # Create
         ("POST", "/api/containers/{container_id}/rename"),  # Update
         ("POST", "/api/containers/{container_id}/update"),  # Update (limits)
         ("POST", "/api/containers/{container_id}/commit"),  # Commit to image
@@ -66,32 +62,32 @@ _EXPECTED_CRUD = {
         ("POST", "/api/containers/{container_id}/pause"),
         ("POST", "/api/containers/{container_id}/unpause"),
         ("POST", "/api/containers/{container_id}/kill"),
-        ("DELETE", "/api/containers/{container_id}"),       # Delete (undoable)
-        ("GET", "/api/containers/{container_id}/logs"),     # Read-logs
+        ("DELETE", "/api/containers/{container_id}"),  # Delete (undoable)
+        ("GET", "/api/containers/{container_id}/logs"),  # Read-logs
         ("GET", "/api/containers/{container_id}/stats"),
         ("GET", "/api/containers/{container_id}/top"),
         ("GET", "/api/containers/{container_id}/diff"),
-        ("GET", "/api/containers/{container_id}/files"),    # cp — tar download
-        ("POST", "/api/containers/{container_id}/files"),   # cp — tar upload
+        ("GET", "/api/containers/{container_id}/files"),  # cp — tar download
+        ("POST", "/api/containers/{container_id}/files"),  # cp — tar upload
         ("POST", "/api/containers/{container_id}/upload"),  # cp — multipart upload
-        ("GET", "/api/containers/{container_id}/ls"),       # file-browser ls
+        ("GET", "/api/containers/{container_id}/ls"),  # file-browser ls
     ],
     "images": [
         ("GET", "/api/images"),
         ("GET", "/api/images/{image_id}/inspect"),
-        ("POST", "/api/images/pull"),                       # Create
-        ("POST", "/api/images/{image_id}/tag"),             # Update
+        ("POST", "/api/images/pull"),  # Create
+        ("POST", "/api/images/{image_id}/tag"),  # Update
         ("POST", "/api/images/push"),
-        ("POST", "/api/images/prune"),                      # Bulk cleanup
+        ("POST", "/api/images/prune"),  # Bulk cleanup
         ("DELETE", "/api/images/{image_id}"),
         ("GET", "/api/registry/search"),
         ("GET", "/api/registry/tags"),
-        ("GET", "/api/templates"),                          # Quick-start catalogue
+        ("GET", "/api/templates"),  # Quick-start catalogue
     ],
     "volumes": [
         ("GET", "/api/volumes"),
         ("GET", "/api/volumes/{volume_name}/inspect"),
-        ("POST", "/api/volumes/create"),                    # Create (full params)
+        ("POST", "/api/volumes/create"),  # Create (full params)
         ("DELETE", "/api/volumes/{volume_name}"),
         ("POST", "/api/volumes/prune"),
     ],
@@ -109,10 +105,10 @@ _EXPECTED_CRUD = {
         ("POST", "/api/compose/up"),
         ("POST", "/api/compose/down"),
         ("GET", "/api/compose/{project_name}/logs"),
-        ("GET", "/api/compose/{project_name}/download"),   # YAML export
-        ("POST", "/api/compose/{project_name}/pull"),      # Update images
-        ("POST", "/api/compose/{project_name}/scale"),     # Scale service
-        ("POST", "/api/compose/{project_name}/stop"),      # Lifecycle
+        ("GET", "/api/compose/{project_name}/download"),  # YAML export
+        ("POST", "/api/compose/{project_name}/pull"),  # Update images
+        ("POST", "/api/compose/{project_name}/scale"),  # Scale service
+        ("POST", "/api/compose/{project_name}/stop"),  # Lifecycle
         ("POST", "/api/compose/{project_name}/start"),
         ("POST", "/api/compose/{project_name}/services/{service_name}/restart"),
     ],
@@ -120,8 +116,8 @@ _EXPECTED_CRUD = {
         ("GET", "/api/system/info"),
         ("GET", "/api/system/df"),
         ("GET", "/api/system/metrics"),
-        ("GET", "/api/system/overview"),         # Dashboard aggregation
-        ("GET", "/api/system/events"),           # Docker event stream (polled)
+        ("GET", "/api/system/overview"),  # Dashboard aggregation
+        ("GET", "/api/system/events"),  # Docker event stream (polled)
         ("GET", "/api/system/audit-log"),
         ("GET", "/api/system/audit-log/download"),
         ("POST", "/api/system/prune"),
@@ -158,21 +154,21 @@ def test_all_routes_have_auth_dependency():
     # Endpoints explicitly allowed to be unauthenticated — they power
     # the sign-in flow, health probe, setup wizard, Swagger UI, and
     # OpenAPI schema that the UI consumes pre-login.
-    _PUBLIC = {
+    _PUBLIC = {  # noqa: N806 — uppercase marks this as a constant-style set
         "/api/health",
         "/api/setup-state",
         "/api/setup",
         "/api/config/public",
         "/api/auth/login",
         "/api/auth/logout",
-        "/api/auth-required",        # public by design — "do I need auth?"
+        "/api/auth-required",  # public by design — "do I need auth?"
         "/api/contract/error-codes",
         "/api/openapi.json",
-        "/api/docs",                  # Swagger UI HTML — no data
-        "/api/setup/probe-docker",   # wizard-only, rate-limited
-        "/api/setup/tunnel",         # wizard-only, rate-limited
-        "/api/tunnel/status",        # public during wizard
-        "/api/tunnel/reconnect",     # public during wizard
+        "/api/docs",  # Swagger UI HTML — no data
+        "/api/setup/probe-docker",  # wizard-only, rate-limited
+        "/api/setup/tunnel",  # wizard-only, rate-limited
+        "/api/tunnel/status",  # public during wizard
+        "/api/tunnel/reconnect",  # public during wizard
     }
     missing_auth: list[str] = []
     for r in app.routes:
@@ -196,8 +192,7 @@ def test_all_routes_have_auth_dependency():
         if not has_auth:
             missing_auth.append(f"{next(iter(r.methods or {}), '?')} {r.path}")
     assert not missing_auth, (
-        f"Routes without auth dependency: {missing_auth!r}. Add to _PUBLIC "
-        f"with a comment if intentional, or wire AUTH."
+        f"Routes without auth dependency: {missing_auth!r}. Add to _PUBLIC with a comment if intentional, or wire AUTH."
     )
 
 

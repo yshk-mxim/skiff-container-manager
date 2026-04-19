@@ -47,7 +47,8 @@ def test_journey_missing_auth_returns_401(audited_page, live_server, audit_obser
     with step("step_1_probe_every_route_without_auth"):
         for method, path in endpoints:
             r = requests.request(
-                method, f"{live_server.rstrip('/')}{path}",
+                method,
+                f"{live_server.rstrip('/')}{path}",
                 timeout=10,
             )
             # Allow 401 or 403 (both count as blocked).
@@ -61,9 +62,7 @@ def test_journey_missing_auth_returns_401(audited_page, live_server, audit_obser
                     expected="401 Unauthorized (or 403)",
                     observed=f"{r.status_code}: {r.text[:200]!r}",
                 )
-                pytest.fail(
-                    f"{method} {path} accessible without auth (status {r.status_code})"
-                )
+                pytest.fail(f"{method} {path} accessible without auth (status {r.status_code})")
 
 
 @journey(
@@ -215,9 +214,7 @@ def test_journey_invalid_token_returns_401(audited_page, live_server, audit_obse
             headers={"Authorization": "Bearer not-a-real-token"},
             timeout=10,
         )
-        assert r.status_code in (401, 403), (
-            f"wrong bearer got {r.status_code} (expected 401/403)"
-        )
+        assert r.status_code in (401, 403), f"wrong bearer got {r.status_code} (expected 401/403)"
         body = r.text.lower()
         # Should not reveal whether the token format was right / wrong /
         # expired — all three map to the same error class.
@@ -304,7 +301,8 @@ def test_journey_no_route_surfaces_outside_openapi(audited_page, live_server, au
 
         doc_norm = {_norm(p) for p in doc_paths}
         undoc = [
-            (m, p) for (m, p) in registered
+            (m, p)
+            for (m, p) in registered
             if _norm(p) not in doc_norm
             and not p.startswith("/static")
             and p not in {"/", "/redoc", "/docs", "/api/openapi.json", "/api/docs"}
@@ -322,6 +320,7 @@ def test_journey_no_route_surfaces_outside_openapi(audited_page, live_server, au
 
 def _token() -> str:
     from tests.conftest_e2e import E2E_TOKEN
+
     return E2E_TOKEN
 
 
@@ -348,10 +347,10 @@ def test_journey_reviewer_mode_blocks_mutation(audited_page, live_server, audit_
     journey (or manually).
     """
     import os
+
     if os.environ.get("PA_RUN_REVIEWER_LATCH") != "1":
         pytest.skip(
-            "enter-reviewer is a one-way latch; set PA_RUN_REVIEWER_LATCH=1 "
-            "to run this journey in a dedicated server",
+            "enter-reviewer is a one-way latch; set PA_RUN_REVIEWER_LATCH=1 to run this journey in a dedicated server",
         )
     with step("step_1_enter_reviewer"):
         r = requests.post(
@@ -445,9 +444,13 @@ def test_journey_ws_auth_lockout(audited_page, live_server, audit_observer, pers
             + "?token=not-a-real-token"
         )
         try:
-            ws = connect(url, open_timeout=3, additional_headers={
-                "Authorization": "Bearer not-a-real-token",
-            })
+            ws = connect(
+                url,
+                open_timeout=3,
+                additional_headers={
+                    "Authorization": "Bearer not-a-real-token",
+                },
+            )
             ws.close()
             # If we got here, the handshake succeeded — that's a breach.
             audit_observer.emit(

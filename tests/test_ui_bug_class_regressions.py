@@ -116,9 +116,7 @@ def test_no_dead_external_links_on_rendered_app(page, live_server):
     discovered_domains: set[str] = set()
 
     def _collect_current_page():
-        hrefs = page.evaluate(
-            "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)"
-        )
+        hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)")
         for href in hrefs:
             d = _domain_of(href)
             if d and not d.startswith(("127.0.0.1", "localhost", "::1")):

@@ -1160,6 +1160,7 @@ def container_ls(
     doesn't exhaust memory."""
     _validate_cp_path(path)
     container = validators._get_container(client, container_id)
+
     # Busybox ls doesn't have `--full-time`; try GNU form first and fall
     # back to busybox if it errored. Both provide enough data to parse.
     def _exec(cmd: list[str]) -> tuple[int, str]:
@@ -1190,8 +1191,12 @@ def container_ls(
 # `ls -la` leading-char → entry type. Dispatch via dict keeps
 # `_parse_ls_line` within the project's C901/AP009 complexity budget.
 _LS_TYPE_BY_PREFIX = {
-    "d": "dir", "l": "link", "c": "device", "b": "device",
-    "s": "socket", "p": "fifo",
+    "d": "dir",
+    "l": "link",
+    "c": "device",
+    "b": "device",
+    "s": "socket",
+    "p": "fifo",
 }
 
 

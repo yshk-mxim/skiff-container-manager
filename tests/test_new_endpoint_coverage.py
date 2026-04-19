@@ -58,7 +58,8 @@ def _invoke(mock_client: MagicMock, method: str, path: str, **kw):
         ):
             with TestClient(app, raise_server_exceptions=False) as tc:
                 return tc.request(
-                    method, path,
+                    method,
+                    path,
                     headers={"X-Requested-With": "ContainerManager"},
                     **kw,
                 )
@@ -84,12 +85,19 @@ def test_overview_aggregates_counts_and_events():
 
 def test_overview_counts_by_state():
     """Per-state container breakdown must sum correctly."""
+
     def _c(status):
-        m = MagicMock(); m.status = status; return m
+        m = MagicMock()
+        m.status = status
+        return m
 
     mc = _mock_client()
     mc.containers.list.return_value = [
-        _c("running"), _c("running"), _c("exited"), _c("paused"), _c("created"),
+        _c("running"),
+        _c("running"),
+        _c("exited"),
+        _c("paused"),
+        _c("created"),
     ]
     r = _invoke(mc, "GET", "/api/system/overview")
     assert r.status_code == 200
@@ -154,8 +162,7 @@ def test_templates_entries_carry_required_fields():
     category, ports, env, volumes, command, is_allowed."""
     r = _invoke(_mock_client(), "GET", "/api/templates")
     for t in r.json()["templates"]:
-        for k in ("id", "name", "description", "image", "category",
-                  "ports", "env", "volumes", "command", "is_allowed"):
+        for k in ("id", "name", "description", "image", "category", "ports", "env", "volumes", "command", "is_allowed"):
             assert k in t, f"template {t.get('id')!r} missing {k!r}"
 
 
@@ -199,13 +206,18 @@ def test_image_prune_all_flag_changes_filter():
 
 def _fake_subprocess_ok():
     class _R:
-        returncode = 0; stdout = "ok"; stderr = ""
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
     return _R()
 
 
 def _fake_subprocess_fail(stderr="boom"):
     class _R:
-        returncode = 1; stdout = ""
+        returncode = 1
+        stdout = ""
+
     _R.stderr = stderr
     return _R()
 
@@ -275,9 +287,7 @@ def test_commit_rejects_uppercase_repository():
 
 def test_commit_rejects_bad_tag():
     """Tag grammar rejects leading-dash + whitespace."""
-    r = _invoke(_mock_client(),
-                "POST",
-                "/api/containers/abc123def456/commit?repository=local/a&tag=-bad")
+    r = _invoke(_mock_client(), "POST", "/api/containers/abc123def456/commit?repository=local/a&tag=-bad")
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "validation.bad_image_name"
 
@@ -286,7 +296,8 @@ def test_commit_succeeds_with_canonical_inputs():
     """Happy path — returns OkResponse with image_id/repository/tag."""
     mc = _mock_client()
     ctr = MagicMock()
-    img = MagicMock(); img.short_id = "sha123"
+    img = MagicMock()
+    img.short_id = "sha123"
     ctr.commit.return_value = img
     mc.containers.get.return_value = ctr
     r = _invoke(mc, "POST", "/api/containers/abc123def456/commit?repository=local/app&tag=v1")
