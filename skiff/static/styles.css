@@ -416,3 +416,120 @@ body.reviewer-mode .btn.danger { display: none !important; }
 
 /* Muted text helper */
 .muted { color: var(--muted); }
+
+/* ── Dashboard stat cards ────────────────────────────────── */
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-card .stat-value { font-size: 26px; font-weight: 600; color: var(--text); }
+.stat-card .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-card .stat-subtitle { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* ── App template cards ──────────────────────────────────── */
+.template-card:hover { border-color: var(--accent, #0d9488); box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.12); }
+
+/* ── Notifications bell ──────────────────────────────────── */
+.notif-bell {
+  position: fixed;
+  top: 12px;
+  right: 18px;
+  z-index: 900;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 16px;
+  user-select: none;
+}
+.notif-bell .notif-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--red, #ef4444);
+  color: white;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 4px;
+  text-align: center;
+}
+.notif-panel {
+  position: fixed;
+  top: 52px;
+  right: 18px;
+  z-index: 901;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 320px;
+  max-height: 400px;
+  overflow-y: auto;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.notif-panel .notif-row {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.notif-panel .notif-row:last-child { border-bottom: none; }
+
+/* ── Context menu ────────────────────────────────────────── */
+.ctx-menu {
+  position: fixed;
+  z-index: 2000;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+  padding: 4px 0;
+  min-width: 160px;
+  font-size: 13px;
+}
+.ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 6px 14px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+.ctx-menu button:hover { background: var(--sidebar-hover); }
+.ctx-menu button.danger { color: var(--red, #ef4444); }
+
+/* ── Tour overlay ────────────────────────────────────────── */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tour-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  max-width: 460px;
+  width: 94vw;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}

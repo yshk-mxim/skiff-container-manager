@@ -37,6 +37,7 @@ _EXPECTED_EXPORTS: frozenset[str] = frozenset(
         "formModal",
         "table",
         "inspect",
+        "downloadJson",
         "registerPage",
         "getPages",
         "getPage",
