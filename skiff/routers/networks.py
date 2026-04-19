@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import ipaddress as _ipaddress
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
 from skiff import config
+from skiff import validators as _skiff_validators
 from skiff.auth import AUTH
 from skiff.contract.errors import http_error
 from skiff.contract.responses import NetworkSummary, OkResponse
@@ -22,6 +24,11 @@ from skiff.validators import (
     safe_docker_call,
     validate_container_id,
 )
+
+# Label key/value grammar — shared constants in skiff.validators so the
+# volume and network routers use the same rules.
+_NET_LABEL_KEY_RE = _skiff_validators.DOCKER_LABEL_KEY_RE
+_NET_LABEL_VAL_RE = _skiff_validators.DOCKER_LABEL_VAL_RE
 
 router = APIRouter()
 
@@ -58,6 +65,44 @@ def inspect_network(request: Request, network_id: str, client=Depends(docker_cli
     return net.attrs
 
 
+def _parse_net_labels(raw: str) -> dict[str, str]:
+    """Parse `key=value` list used by volume + network create."""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for entry_raw in raw.replace(",", "\n").splitlines():
+        entry = entry_raw.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise http_error("network.bad_labels", message=f"entry missing '=': {entry[:64]!r}")
+        k, _, v = entry.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if not _NET_LABEL_KEY_RE.fullmatch(k):
+            raise http_error("network.bad_labels", message=f"invalid key {k[:64]!r}")
+        if not _NET_LABEL_VAL_RE.fullmatch(v):
+            raise http_error("network.bad_labels", message=f"invalid value for {k[:64]!r}")
+        out[k] = v
+    return out
+
+
+def _validate_cidr(cidr: str, field: str) -> str:
+    """Parse + normalise a CIDR using the stdlib. Accepts v4 or v6."""
+    try:
+        net = _ipaddress.ip_network(cidr, strict=False)
+    except (ValueError, TypeError) as exc:
+        raise http_error("network.bad_subnet", message=f"{field}: {exc}") from exc
+    return str(net)
+
+
+def _validate_ip(addr: str, field: str) -> str:
+    try:
+        return str(_ipaddress.ip_address(addr))
+    except (ValueError, TypeError) as exc:
+        raise http_error("network.bad_gateway", message=f"{field}: {exc}") from exc
+
+
 @router.post("/api/networks/create", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
     RATE.WRITE,
@@ -68,14 +113,52 @@ def create_network(
     request: Request,
     name: str,
     driver: str = "bridge",
+    subnet: str = "",
+    gateway: str = "",
+    labels: str = "",
+    internal: bool = False,
+    attachable: bool = False,
+    enable_ipv6: bool = False,
     client=Depends(docker_client_dep),
 ) -> OkResponse:
-    """Create a new Docker network with the specified driver."""
+    """Create a new Docker network.
+
+    - `subnet` / `gateway`: optional CIDR + IP for an IPAM pool. Either
+      both or neither. If only `subnet` is passed, Docker picks a gateway.
+    - `labels`: `key=value` pairs, one per line or comma-separated.
+    - `internal`: if true, no outbound connectivity from containers on this
+      network (DB-tier, auth-tier use cases).
+    - `attachable`: if true, standalone containers can join (not just
+      services). Default false matches Docker's own `docker network create`.
+    - `enable_ipv6`: allocate an IPv6 pool too.
+    """
     if not NETWORK_NAME_RE.fullmatch(name):
         raise http_error("network.bad_name")
     if driver not in _VALID_DRIVERS:
         raise http_error("network.bad_driver")
-    net = safe_docker_call(client.networks.create, name, driver=driver)
+    parsed_labels = _parse_net_labels(labels)
+    kwargs: dict[str, Any] = {"driver": driver}
+    if parsed_labels:
+        kwargs["labels"] = parsed_labels
+    if internal:
+        kwargs["internal"] = True
+    if attachable:
+        kwargs["attachable"] = True
+    if enable_ipv6:
+        kwargs["enable_ipv6"] = True
+    if subnet:
+        subnet_norm = _validate_cidr(subnet, "subnet")
+        pool_kwargs: dict[str, str] = {"subnet": subnet_norm}
+        if gateway:
+            pool_kwargs["gateway"] = _validate_ip(gateway, "gateway")
+        from docker.types import IPAMConfig, IPAMPool
+
+        kwargs["ipam"] = IPAMConfig(pool_configs=[IPAMPool(**pool_kwargs)])
+    elif gateway:
+        # Gateway without subnet is nonsensical — Docker will reject but
+        # surface it earlier with a cleaner envelope.
+        raise http_error("network.bad_subnet", message="gateway requires subnet")
+    net = safe_docker_call(client.networks.create, name, **kwargs)
     return OkResponse(id=net.short_id, name=name)
 
 

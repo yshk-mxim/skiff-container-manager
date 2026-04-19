@@ -192,6 +192,30 @@
    * `actions` is an array of DOM nodes (typically buttons). `close()` removes
    * the modal from the DOM and optionally calls opts.onClose().
    */
+  /**
+   * Trigger a client-side JSON download for `data` with the given
+   * filename. Used by inspect views so operators can export a
+   * container / volume / network / image definition for backup or
+   * diffing without copying from the browser's pretty-print.
+   *
+   * @param {Object|Array} data — JSON-serialisable
+   * @param {string} filename — e.g. "container-abc123.json"
+   */
+  function downloadJson(data, filename) {
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 500);
+  }
+
+  /**
+   * Centred overlay modal. Spec: `{ title, body, actions }`.
+   * Click on backdrop closes. Returns `{ modal, box, close }`.
+   */
   function modal(opts) {
     opts = opts || {};
     var box = el('div', { class: 'modal' });
@@ -282,6 +306,16 @@
             });
           }),
         );
+      } else if (f.type === 'checkbox') {
+        // Checkboxes wrap differently: the label sits to the RIGHT of
+        // the box (vs above for text/select). Render the input without
+        // the outer `.field > label > input` sandwich so spec-submitted
+        // booleans surface correctly via `.checked`.
+        input = el('input', {
+          type: 'checkbox',
+          name: f.name,
+          checked: f.value ? 'checked' : null,
+        });
       } else {
         input = el('input', {
           type: f.type || 'text',
@@ -291,6 +325,17 @@
         });
       }
       byName[f.name] = input;
+      // Checkboxes flow inline: <input><span>label</span>(?) so the
+      // clicky target is natural for a novice user. Text/select/textarea
+      // keep the vertical layout (label above input).
+      if (f.type === 'checkbox') {
+        var cbLabel = el('label', { class: 'field field-checkbox' },
+          input,
+          el('span', { class: 'field-label', text: f.label || f.name }),
+          f.help ? helpIcon(f.help) : null,
+        );
+        return cbLabel;
+      }
       var label = el('label', { class: 'field' },
         el('span', { class: 'field-label', text: f.label || f.name },
           f.help ? helpIcon(f.help) : null,
@@ -306,7 +351,12 @@
     function getValues() {
       var values = {};
       Object.keys(byName).forEach(function(k) {
-        values[k] = byName[k].value;
+        var inp = byName[k];
+        if (inp.type === 'checkbox') {
+          values[k] = !!inp.checked;
+        } else {
+          values[k] = inp.value;
+        }
       });
       return values;
     }
@@ -601,6 +651,7 @@
     formModal: formModal,
     table: table,
     inspect: inspect,
+    downloadJson: downloadJson,
     registerPage: registerPage,
     getPages: getPages,
     getPage: getPage,

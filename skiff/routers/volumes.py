@@ -90,17 +90,86 @@ def inspect_volume(
     )
 
 
+# Drivers we allow for volume create. `local` is the default; others are
+# opt-in and require the host to have the plugin installed. Listing them
+# explicitly here (vs accepting any string) keeps surface area tight —
+# unknown drivers are rejected at the API boundary, not by docker's own
+# error path.
+_VOLUME_VALID_DRIVERS = frozenset({"local", "nfs", "tmpfs"})
+
+# Label / driver_opt key+value alphabet. Mirrors Docker's own permissive
+# rules but rejects anything that would break an API request line or leak
+# control chars into the audit log.
+_VOLUME_LABEL_KEY_RE = validators.DOCKER_LABEL_KEY_RE
+_VOLUME_LABEL_VAL_RE = validators.DOCKER_LABEL_VAL_RE
+
+
+def _parse_kv_list(raw: str, key_re, val_re, err_code: str) -> dict[str, str]:
+    """Parse a newline- or comma-separated `key=value` list.
+
+    Blank lines / empty entries are skipped so the UI textarea can trail
+    a newline without rejecting the submission."""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    # Accept either newline or comma separators — the UI uses newlines,
+    # URL-encoded forms use commas.
+    for entry_raw in raw.replace(",", "\n").splitlines():
+        entry = entry_raw.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise http_error(err_code, message=f"entry missing '=': {entry[:64]!r}")
+        k, _, v = entry.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if not key_re.fullmatch(k):
+            raise http_error(err_code, message=f"invalid key {k[:64]!r}")
+        if not val_re.fullmatch(v):
+            raise http_error(err_code, message=f"invalid value for {k[:64]!r}")
+        out[k] = v
+    return out
+
+
 @router.post("/api/volumes/create", dependencies=AUTH, tags=["volumes"])
 @secure_route.mutate(
     RATE.WRITE,
     audit="volume.created",
-    audit_fields=lambda request, name, **kw: {"name": name},  # noqa: ARG005
+    audit_fields=lambda request, name, driver="local", **kw: {"name": name, "driver": driver},  # noqa: ARG005
 )
-def create_volume(request: Request, name: str, client=Depends(docker_client_dep)) -> OkResponse:
-    """Create a new named volume."""
+def create_volume(
+    request: Request,
+    name: str,
+    driver: str = "local",
+    labels: str = "",
+    driver_opts: str = "",
+    client=Depends(docker_client_dep),
+) -> OkResponse:
+    """Create a new named volume.
+
+    - `driver`: `local` (default), or one of the allowlisted drivers.
+    - `labels`: `key=value` pairs, one per line or comma-separated.
+    - `driver_opts`: driver-specific options, same `key=value` format
+      (e.g. for `local` driver: `type=nfs`, `device=:/path`, `o=addr=...`).
+
+    Volumes are immutable after creation — set everything at this call.
+    """
     if not _VOLUME_NAME_RE.fullmatch(name):
         raise http_error("volume.bad_name")
-    vol = safe_docker_call(client.volumes.create, name=name)
+    if driver not in _VOLUME_VALID_DRIVERS:
+        raise http_error("volume.bad_driver", message=f"driver {driver!r} not in allowlist")
+    parsed_labels = _parse_kv_list(
+        labels, _VOLUME_LABEL_KEY_RE, _VOLUME_LABEL_VAL_RE, "volume.bad_labels",
+    )
+    parsed_opts = _parse_kv_list(
+        driver_opts, _VOLUME_LABEL_KEY_RE, _VOLUME_LABEL_VAL_RE, "volume.bad_driver_opts",
+    )
+    kwargs: dict[str, Any] = {"name": name, "driver": driver}
+    if parsed_labels:
+        kwargs["labels"] = parsed_labels
+    if parsed_opts:
+        kwargs["driver_opts"] = parsed_opts
+    vol = safe_docker_call(client.volumes.create, **kwargs)
     return OkResponse(name=vol.name)
 
 
