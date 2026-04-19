@@ -283,10 +283,9 @@ def test_journey_events_stream_captures_container_lifecycle(audited_page, live_s
     with step("step_1_deploy_container"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/containers/run",
+            params={"image": "alpine:3.20", "name": name},
             headers={**auth_headers(), "Content-Type": "application/json"},
             json={
-                "image": "alpine:3.20",
-                "name": name,
                 "command": "sleep 3600",
                 "labels": {"skiff-audit-run": "1"},
             },
@@ -344,8 +343,9 @@ def test_journey_stderr_audit_ui_correlation(audited_page, live_server, audit_ob
         # Invalid container name → 4xx envelope + audit line.
         r = requests.post(
             f"{live_server.rstrip('/')}/api/containers/run",
+            params={"image": "", "name": "!!bad!!"},
             headers={**auth_headers(), "Content-Type": "application/json"},
-            json={"image": "", "name": "!!bad!!"},
+            json={},
             timeout=10,
         )
         if not (400 <= r.status_code < 500):

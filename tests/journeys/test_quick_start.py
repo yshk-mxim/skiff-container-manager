@@ -324,10 +324,9 @@ def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audi
         with step("step_2_run_after_pull"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/run",
+                params={"image": ref, "name": name},
                 headers={**auth_headers(), "Content-Type": "application/json"},
                 json={
-                    "image": ref,
-                    "name": name,
                     "command": "sleep 3600",
                     "labels": {"skiff-audit-run": "1"},
                 },

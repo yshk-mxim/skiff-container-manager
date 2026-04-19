@@ -39,8 +39,8 @@ def test_journey_missing_auth_returns_401(audited_page, live_server, audit_obser
     endpoints = [
         ("GET", "/api/containers/ls"),
         ("POST", "/api/containers/run"),
-        ("POST", "/api/volumes"),
-        ("POST", "/api/networks"),
+        ("POST", "/api/volumes/create"),
+        ("POST", "/api/networks/create"),
         ("POST", "/api/compose/up"),
         ("GET", "/api/system/overview"),
     ]
@@ -77,7 +77,7 @@ def test_journey_mutating_requires_x_requested_with(audited_page, live_server, a
     CSRF cover: simple-request bypass must fail for mutations."""
     with step("step_1_post_without_xrw"):
         r = requests.post(
-            f"{live_server.rstrip('/')}/api/volumes",
+            f"{live_server.rstrip('/')}/api/volumes/create",
             params={"name": "pa-csrf-test"},
             headers={
                 "Authorization": f"Bearer {_token()}",
@@ -111,7 +111,7 @@ def test_journey_forged_origin_rejected(audited_page, live_server, audit_observe
     the origin allowlist — reviewer perimeter check."""
     with step("step_1_forged_origin"):
         r = requests.post(
-            f"{live_server.rstrip('/')}/api/volumes",
+            f"{live_server.rstrip('/')}/api/volumes/create",
             params={"name": "pa-origin-test"},
             headers={
                 "Authorization": f"Bearer {_token()}",
@@ -149,12 +149,13 @@ def test_journey_every_4xx_has_catalogued_envelope(audited_page, live_server, au
     with step("step_1_trigger_400"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/containers/run",
+            params={"image": "", "name": "!!bad name!!"},  # invalid
             headers={
                 "Authorization": f"Bearer {_token()}",
                 "X-Requested-With": "ContainerManager",
                 "Content-Type": "application/json",
             },
-            json={"image": "", "name": "!!bad name!!"},  # invalid
+            json={},
             timeout=10,
         )
         if not (400 <= r.status_code < 500):
@@ -340,7 +341,7 @@ def test_journey_reviewer_mode_blocks_mutation(audited_page, live_server, audit_
     try:
         with step("step_2_mutation_blocked"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/volumes",
+                f"{live_server.rstrip('/')}/api/volumes/create",
                 params={"name": "pa-reviewer-test"},
                 headers={
                     "Authorization": f"Bearer {_token()}",

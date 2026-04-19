@@ -49,15 +49,19 @@ _AUDIT_LABEL = "skiff-audit-run"
 
 def _run_seed_container(live_server: str, name_prefix: str, image: str = "alpine:3.20") -> str:
     """Seed a container via the API. Returns the container name.
-    Uses a `skiff-audit-run` label so conftest teardown can sweep."""
+    Uses a `skiff-audit-run` label so conftest teardown can sweep.
+
+    Contract (see skiff/routers/containers.py::run_container):
+      - `image` + `name` are QUERY PARAMS, not body fields.
+      - Body is RunContainerRequest (extra=forbid).
+    """
     from tests.e2e_helpers import auth_headers
     name = f"{name_prefix}-{uuid.uuid4().hex[:8]}"
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": image, "name": name},
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": image,
-            "name": name,
             "command": "sleep 3600",
             "labels": {_AUDIT_LABEL: "1"},
         },
@@ -723,20 +727,29 @@ def test_journey_rootless_exec_capability_check(audited_page, live_server, audit
 
     from tests.e2e_helpers import auth_headers
     name = f"pa-ru-{uuid.uuid4().hex[:6]}"
+    # RunContainerRequest currently has no 'user' field (extra=forbid).
+    # If that ever changes, this journey should start exercising it.
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": name},
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": "alpine:3.20",
-            "name": name,
             "command": "sleep 3600",
-            "user": "10000:10000",
             "labels": {"skiff-audit-run": "1"},
         },
         timeout=120,
     )
     if r.status_code not in (200, 201):
         pytest.skip(f"rootless seed failed: {r.status_code}")
+    # Parity finding: body schema has no user field yet.
+    audit_observer.emit(
+        step="step_0_schema_check",
+        severity="low",
+        category="parity",
+        title="RunContainerRequest has no 'user' field — rootless exec not wired",
+        expected="body.user accepted for UID/GID-scoped run",
+        observed="container seeded as default UID (schema omits user)",
+    )
     try:
         with step("step_1_exec_whoami"):
             r = requests.post(

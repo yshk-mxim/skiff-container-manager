@@ -69,28 +69,32 @@ def test_journey_volume_create_accepts_full_params(audited_page, live_server, au
     name = _name("vol")
     try:
         with step("step_1_create_full_params"):
+            # Route takes labels/driver_opts as key=value,key=value strings
+            # (parsed by _parse_kv_list in skiff/routers/volumes.py).
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/volumes",
-                params={"name": name, "driver": "local"},
-                headers={**auth_headers(), "Content-Type": "application/json"},
-                json={
-                    "labels": {"skiff-audit-run": "1", "pa-class": "vol-create"},
-                    "driver_opts": {"type": "tmpfs", "device": "tmpfs", "o": "size=1m"},
+                f"{live_server.rstrip('/')}/api/volumes/create",
+                params={
+                    "name": name,
+                    "driver": "local",
+                    "labels": "skiff-audit-run=1,pa-class=vol-create",
+                    "driver_opts": "type=tmpfs,device=tmpfs,o=size=1m",
                 },
+                headers=auth_headers(),
                 timeout=30,
             )
             assert r.status_code in (200, 201), (
                 f"volume create failed: {r.status_code} {r.text}"
             )
         with step("step_2_inspect_reflects_params"):
-            r = requests.get(
-                f"{live_server.rstrip('/')}/api/volumes/{name}",
+            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{name}/inspect",
                 headers=auth_headers(), timeout=30,
             )
             assert r.status_code == 200, f"inspect failed: {r.status_code}"
             body = r.json()
-            assert body.get("Labels", {}).get("skiff-audit-run") == "1", (
-                f"label not persisted: {body.get('Labels')!r}"
+            # Response uses lowercase 'labels' (not Docker's PascalCase).
+            labels = body.get("labels") or body.get("Labels") or {}
+            assert labels.get("skiff-audit-run") == "1", (
+                f"label not persisted: {labels!r}"
             )
     finally:
         _delete_volume(live_server, name)
@@ -111,16 +115,16 @@ def test_journey_network_create_with_subnet_and_labels(audited_page, live_server
     try:
         with step("step_1_create_network"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/networks",
-                params={"name": name, "driver": "bridge"},
-                headers={**auth_headers(), "Content-Type": "application/json"},
-                json={
+                f"{live_server.rstrip('/')}/api/networks/create",
+                params={
+                    "name": name,
+                    "driver": "bridge",
                     "subnet": "172.28.200.0/24",
                     "gateway": "172.28.200.1",
-                    "labels": {"skiff-audit-run": "1"},
-                    "internal": False,
-                    "attachable": True,
+                    "labels": "skiff-audit-run=1",
+                    "attachable": "true",
                 },
+                headers=auth_headers(),
                 timeout=30,
             )
             assert r.status_code in (200, 201), (
@@ -128,12 +132,13 @@ def test_journey_network_create_with_subnet_and_labels(audited_page, live_server
             )
         with step("step_2_inspect_shows_subnet"):
             r = requests.get(
-                f"{live_server.rstrip('/')}/api/networks/{name}",
+                f"{live_server.rstrip('/')}/api/networks/{name}/inspect",
                 headers=auth_headers(), timeout=30,
             )
             body = r.json()
-            ipam = body.get("IPAM", {}).get("Config", [])
-            subnets = [c.get("Subnet") for c in ipam]
+            # Response uses lowercase 'ipam' (not Docker's PascalCase).
+            ipam = (body.get("ipam") or body.get("IPAM") or {}).get("config") or (body.get("ipam") or body.get("IPAM") or {}).get("Config") or []
+            subnets = [c.get("subnet") or c.get("Subnet") for c in ipam]
             assert "172.28.200.0/24" in subnets, (
                 f"subnet not persisted: {subnets!r}"
             )
@@ -156,10 +161,13 @@ def test_journey_network_bad_subnet_rejected(audited_page, live_server, audit_ob
     try:
         with step("step_1_invalid_cidr"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/networks",
-                params={"name": name, "driver": "bridge"},
-                headers={**auth_headers(), "Content-Type": "application/json"},
-                json={"subnet": "999.999.999.0/24"},
+                f"{live_server.rstrip('/')}/api/networks/create",
+                params={
+                    "name": name,
+                    "driver": "bridge",
+                    "subnet": "999.999.999.0/24",
+                },
+                headers=auth_headers(),
                 timeout=30,
             )
             # Must be rejected (4xx). A 5xx would mean we're passing
@@ -237,7 +245,7 @@ def test_journey_volume_prune_returns_reclaimed(audited_page, live_server, audit
         assert r.status_code == 200, f"prune failed: {r.status_code}"
         body = r.json()
         # Either SpaceReclaimed or space_reclaimed depending on case.
-        reclaimed_keys = {"SpaceReclaimed", "space_reclaimed", "reclaimed_bytes"}
+        reclaimed_keys = {"SpaceReclaimed", "space_reclaimed", "space_reclaimed_mb", "reclaimed_bytes"}
         assert any(k in body for k in reclaimed_keys), (
             f"prune response missing SpaceReclaimed: {body!r}"
         )
@@ -258,10 +266,9 @@ def test_journey_network_connect_then_disconnect(audited_page, live_server, audi
     # Seed container
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": cont},
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": "alpine:3.20",
-            "name": cont,
             "command": "sleep 3600",
             "labels": {"skiff-audit-run": "1"},
         },
@@ -271,10 +278,13 @@ def test_journey_network_connect_then_disconnect(audited_page, live_server, audi
         pytest.skip(f"container seed failed: {r.status_code}")
     # Seed network
     r = requests.post(
-        f"{live_server.rstrip('/')}/api/networks",
-        params={"name": net, "driver": "bridge"},
-        headers={**auth_headers(), "Content-Type": "application/json"},
-        json={"labels": {"skiff-audit-run": "1"}},
+        f"{live_server.rstrip('/')}/api/networks/create",
+        params={
+            "name": net,
+            "driver": "bridge",
+            "labels": "skiff-audit-run=1",
+        },
+        headers=auth_headers(),
         timeout=30,
     )
     assert r.status_code in (200, 201), f"network seed failed: {r.status_code}"
@@ -327,23 +337,26 @@ def test_journey_volume_backup_via_cp(audited_page, live_server, audit_observer,
     cont = _name("bcont")
     # Seed volume.
     r = requests.post(
-        f"{live_server.rstrip('/')}/api/volumes",
-        params={"name": vol, "driver": "local"},
-        headers={**auth_headers(), "Content-Type": "application/json"},
-        json={"labels": {"skiff-audit-run": "1"}},
+        f"{live_server.rstrip('/')}/api/volumes/create",
+        params={
+            "name": vol,
+            "driver": "local",
+            "labels": "skiff-audit-run=1",
+        },
+        headers=auth_headers(),
         timeout=30,
     )
     if r.status_code not in (200, 201):
         pytest.skip(f"volume seed failed: {r.status_code}")
     # Seed container with the volume mounted + marker written at boot.
+    # volumes field takes list of 'name:/path[:ro|rw]' strings.
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": cont},
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": "alpine:3.20",
-            "name": cont,
             "command": 'sh -c "echo marker > /vol/pa-marker && sleep 3600"',
-            "volumes": [{"mount": "/vol", "type": "volume", "name": vol}],
+            "volumes": [f"{vol}:/vol"],
             "labels": {"skiff-audit-run": "1"},
         },
         timeout=120,
@@ -397,17 +410,14 @@ def test_journey_volume_nfs_driver_surface(audited_page, live_server, audit_obse
     try:
         with step("step_1_create_nfs_style_volume"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/volumes",
-                params={"name": name, "driver": "local"},
-                headers={**auth_headers(), "Content-Type": "application/json"},
-                json={
-                    "driver_opts": {
-                        "type": "nfs",
-                        "o": "addr=127.0.0.1,nfsvers=4",
-                        "device": ":/export/test",
-                    },
-                    "labels": {"skiff-audit-run": "1"},
+                f"{live_server.rstrip('/')}/api/volumes/create",
+                params={
+                    "name": name,
+                    "driver": "local",
+                    "driver_opts": "type=nfs,o=addr=127.0.0.1 nfsvers=4,device=:/export/test",
+                    "labels": "skiff-audit-run=1",
                 },
+                headers=auth_headers(),
                 timeout=30,
             )
             # 200/201 means accepted (mount happens lazily at first use).
@@ -444,10 +454,13 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
 
     def _mk_vol(vname):
         return requests.post(
-            f"{live_server.rstrip('/')}/api/volumes",
-            params={"name": vname, "driver": "local"},
-            headers={**auth_headers(), "Content-Type": "application/json"},
-            json={"labels": {"skiff-audit-run": "1"}},
+            f"{live_server.rstrip('/')}/api/volumes/create",
+            params={
+                "name": vname,
+                "driver": "local",
+                "labels": "skiff-audit-run=1",
+            },
+            headers=auth_headers(),
             timeout=30,
         )
 
@@ -457,12 +470,11 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
     # Attach the first to a running container.
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": cont},
         headers={**auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": "alpine:3.20",
-            "name": cont,
             "command": "sleep 3600",
-            "volumes": [{"mount": "/vol", "type": "volume", "name": attached}],
+            "volumes": [f"{attached}:/vol"],
             "labels": {"skiff-audit-run": "1"},
         },
         timeout=60,
@@ -480,8 +492,7 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
             )
             assert r.status_code == 200, f"prune failed: {r.status_code}"
         with step("step_2_attached_still_exists"):
-            r = requests.get(
-                f"{live_server.rstrip('/')}/api/volumes/{attached}",
+            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{attached}/inspect",
                 headers=auth_headers(), timeout=30,
             )
             if r.status_code != 200:
@@ -499,8 +510,7 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
             # emit a finding if it's still there, but don't hard-fail
             # — some runtimes don't consider it orphaned if the
             # allocation TTL hasn't elapsed.
-            r = requests.get(
-                f"{live_server.rstrip('/')}/api/volumes/{dangling}",
+            r = requests.get(f"{live_server.rstrip('/')}/api/volumes/{dangling}/inspect",
                 headers=auth_headers(), timeout=30,
             )
             if r.status_code == 200:

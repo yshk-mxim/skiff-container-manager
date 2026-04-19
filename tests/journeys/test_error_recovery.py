@@ -48,11 +48,9 @@ def test_journey_typo_image_name_returns_actionable_error(audited_page, live_ser
     with step("step_1_run_typo"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/containers/run",
+            params={"image": "nginz:doesnotexistanywhere", "name": name},
             headers={**_auth_headers(), "Content-Type": "application/json"},
-            json={
-                "image": "nginz:doesnotexistanywhere",
-                "name": name,
-            },
+            json={},
             timeout=120,
         )
         # 4xx with structured envelope, not a 5xx.
@@ -88,12 +86,11 @@ def test_journey_port_collision_explains_conflict(audited_page, live_server, aud
         with step("step_1_seed_container_a"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/run",
+                params={"image": "alpine:3.20", "name": first},
                 headers={**_auth_headers(), "Content-Type": "application/json"},
                 json={
-                    "image": "alpine:3.20",
-                    "name": first,
                     "command": "nc -l -p 9999",
-                    "ports": [{"host": 18099, "container": 9999, "protocol": "tcp"}],
+                    "ports": {"9999/tcp": "18099"},
                     "labels": {"skiff-audit-run": "1"},
                 },
                 timeout=120,
@@ -104,12 +101,11 @@ def test_journey_port_collision_explains_conflict(audited_page, live_server, aud
         with step("step_2_attempt_conflict"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/run",
+                params={"image": "alpine:3.20", "name": second},
                 headers={**_auth_headers(), "Content-Type": "application/json"},
                 json={
-                    "image": "alpine:3.20",
-                    "name": second,
                     "command": "nc -l -p 9999",
-                    "ports": [{"host": 18099, "container": 9999, "protocol": "tcp"}],
+                    "ports": {"9999/tcp": "18099"},
                     "labels": {"skiff-audit-run": "1"},
                 },
                 timeout=60,
@@ -154,10 +150,9 @@ def test_journey_missing_required_env_var(audited_page, live_server, audit_obser
         with step("step_1_deploy_postgres_no_password"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/run",
+                params={"image": "postgres:16-alpine", "name": name},
                 headers={**_auth_headers(), "Content-Type": "application/json"},
                 json={
-                    "image": "postgres:16-alpine",
-                    "name": name,
                     "labels": {"skiff-audit-run": "1"},
                 },
                 timeout=120,
@@ -197,11 +192,12 @@ def test_journey_denied_registry_explains_allowlist(audited_page, live_server, a
     with step("step_1_attempt_denied_registry"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/containers/run",
-            headers={**_auth_headers(), "Content-Type": "application/json"},
-            json={
+            params={
                 "image": "quay.io/prometheus/node-exporter:latest",
                 "name": name,
             },
+            headers={**_auth_headers(), "Content-Type": "application/json"},
+            json={},
             timeout=30,
         )
         # Must be rejected with a 4xx. The message should name
@@ -239,7 +235,7 @@ def test_journey_rate_limit_headers_present(audited_page, live_server, audit_obs
     consumers can back off gracefully. Super-user rubric."""
     with step("step_1_mutation_with_headers"):
         r = requests.post(
-            f"{live_server.rstrip('/')}/api/volumes",
+            f"{live_server.rstrip('/')}/api/volumes/create",
             params={"name": f"pa-rl-{uuid.uuid4().hex[:6]}"},
             headers={**_auth_headers(), "Content-Type": "application/json"},
             json={"labels": {"skiff-audit-run": "1"}},
@@ -274,10 +270,9 @@ def test_journey_logs_viewer_clears_connecting_placeholder(audited_page, live_se
     name = f"pa-lf-{uuid.uuid4().hex[:6]}"
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": name},
         headers={**_auth_headers(), "Content-Type": "application/json"},
         json={
-            "image": "alpine:3.20",
-            "name": name,
             "command": "sleep 3600",  # produces no logs
             "labels": {"skiff-audit-run": "1"},
         },
