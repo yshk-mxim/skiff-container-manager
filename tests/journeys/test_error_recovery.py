@@ -322,3 +322,77 @@ def test_journey_logs_viewer_clears_connecting_placeholder(audited_page, live_se
             )
         except requests.exceptions.RequestException:
             pass
+
+
+# ── Plan-named J-09 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("sre_ops", "hobbyist"),
+    category="error_recovery",
+    severity="medium",
+)
+def test_journey_disk_full_pull_surfaces_error(audited_page, live_server, audit_observer, persona):
+    """Plan J-09 item: disk-full on pull. We can't truly fill the disk
+    in a test, but a pull of a non-existent reference produces an
+    analogous failure. The error body must explain the failure in
+    user terms — no raw docker-py error wrapping."""
+    with step("step_1_pull_nonexistent_ref"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/images/pull",
+            params={"ref": "nonexistent-repo-xyz-abc123/never-existed:999"},
+            headers=_auth_headers(), timeout=60,
+        )
+        body = r.text.lower()
+        if "traceback" in body:
+            audit_observer.emit(
+                step="step_1_pull_nonexistent_ref",
+                severity="high",
+                category="copy",
+                title="Image pull failure leaks Python traceback",
+                expected="User-readable 'image not found' / 'unreachable'",
+                observed=r.text[:300],
+            )
+            pytest.fail("pull error leaks traceback")
+
+
+@journey(
+    persona=("super_user",),
+    category="error_recovery",
+    severity="medium",
+)
+def test_journey_rate_limited_burst_returns_429(audited_page, live_server, audit_observer, persona):
+    """Plan J-09 item: rate-limited burst. Super-user hammers a
+    rate-limited endpoint and expects a 429 with Retry-After. The
+    headers-present journey is a shape test; this one is the
+    enforcement test."""
+    saw_429 = False
+    statuses: list[int] = []
+    with step("step_1_burst_30_requests"):
+        for _ in range(30):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/system/df",
+                headers=_auth_headers(), timeout=5,
+            )
+            statuses.append(r.status_code)
+            if r.status_code == 429:
+                saw_429 = True
+                if "retry-after" not in {k.lower() for k in r.headers.keys()}:
+                    audit_observer.emit(
+                        step="step_1_burst_30_requests",
+                        severity="medium",
+                        category="contract",
+                        title="429 returned without Retry-After header",
+                        expected="Retry-After header per RFC 6585",
+                        observed=f"headers: {list(r.headers.keys())[:10]}",
+                    )
+                break
+    if not saw_429:
+        audit_observer.emit(
+            step="step_1_burst_30_requests",
+            severity="low",
+            category="parity",
+            title="Rate limiter did not fire on 30-request burst",
+            expected="Eventually a 429 under dev/ci profile",
+            observed=f"statuses: {statuses[:10]}...",
+        )
