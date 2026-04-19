@@ -59,7 +59,8 @@ def inspect_network(request: Request, network_id: str, client=Depends(docker_cli
     `Options`, `Labels`, and driver-specific metadata that a scripted
     caller sometimes needs.
     """
-    if not _NETWORK_ID_RE.fullmatch(network_id):
+    # Accept either a hex network id OR a user-defined network name.
+    if not (_NETWORK_ID_RE.fullmatch(network_id) or NETWORK_NAME_RE.fullmatch(network_id)):
         raise http_error("validation.bad_input")
     net = safe_docker_call(client.networks.get, network_id, kind="network")
     return net.attrs
@@ -170,7 +171,8 @@ def create_network(
 )
 def delete_network(request: Request, network_id: str, client=Depends(docker_client_dep)) -> OkResponse:
     """Remove a user-defined network (default networks are protected)."""
-    if not _NETWORK_ID_RE.fullmatch(network_id):
+    # Accept either a hex network id OR a user-defined network name.
+    if not (_NETWORK_ID_RE.fullmatch(network_id) or NETWORK_NAME_RE.fullmatch(network_id)):
         raise http_error("validation.bad_input")
     net = safe_docker_call(client.networks.get, network_id)
     if net.name in _BUILTIN_NETWORKS:
@@ -194,7 +196,9 @@ def connect_container_to_network(
     client=Depends(docker_client_dep),
 ) -> OkResponse:
     """Attach a container to a network."""
-    if not _NETWORK_ID_RE.fullmatch(network_id):
+    # Accept either a hex network id OR a user-defined network name.
+    # docker-py's networks.get handles both; matches the inspect route.
+    if not (_NETWORK_ID_RE.fullmatch(network_id) or NETWORK_NAME_RE.fullmatch(network_id)):
         raise http_error("validation.bad_input")
     validate_container_id(container_id)
     net = safe_docker_call(client.networks.get, network_id)
@@ -218,7 +222,9 @@ def disconnect_container_from_network(
     client=Depends(docker_client_dep),
 ) -> OkResponse:
     """Detach a container from a network."""
-    if not _NETWORK_ID_RE.fullmatch(network_id):
+    # Accept either a hex network id OR a user-defined network name.
+    # docker-py's networks.get handles both; matches the inspect route.
+    if not (_NETWORK_ID_RE.fullmatch(network_id) or NETWORK_NAME_RE.fullmatch(network_id)):
         raise http_error("validation.bad_input")
     validate_container_id(container_id)
     net = safe_docker_call(client.networks.get, network_id)

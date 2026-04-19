@@ -337,7 +337,22 @@ def _token() -> str:
 def test_journey_reviewer_mode_blocks_mutation(audited_page, live_server, audit_observer, persona):
     """Plan J-08 item: enter reviewer → attempt mutation. POST
     /api/profile/enter-reviewer, then attempt a mutation. The
-    mutation must be rejected server-side regardless of the bearer."""
+    mutation must be rejected server-side regardless of the bearer.
+
+    CRITICAL: enter-reviewer is a one-way latch by design (see
+    skiff/routers/system.py::enter_reviewer_mode — "Switching back
+    requires a restart"). Running this journey inside the shared
+    live-server suite would lock the server in reviewer mode for
+    every subsequent mutation test. The journey is therefore gated
+    behind an env flag; CI runs it with a dedicated server per
+    journey (or manually).
+    """
+    import os
+    if os.environ.get("PA_RUN_REVIEWER_LATCH") != "1":
+        pytest.skip(
+            "enter-reviewer is a one-way latch; set PA_RUN_REVIEWER_LATCH=1 "
+            "to run this journey in a dedicated server",
+        )
     with step("step_1_enter_reviewer"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/profile/enter-reviewer",
@@ -349,45 +364,29 @@ def test_journey_reviewer_mode_blocks_mutation(audited_page, live_server, audit_
         )
         if r.status_code not in (200, 204):
             pytest.skip(f"enter-reviewer not reachable: {r.status_code}")
-    try:
-        with step("step_2_mutation_blocked"):
-            r = requests.post(
-                f"{live_server.rstrip('/')}/api/volumes/create",
-                params={"name": "pa-reviewer-test"},
-                headers={
-                    "Authorization": f"Bearer {_token()}",
-                    "X-Requested-With": "ContainerManager",
-                    "Content-Type": "application/json",
-                },
-                json={"labels": {"skiff-audit-run": "1"}},
-                timeout=10,
+    with step("step_2_mutation_blocked"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/volumes/create",
+            params={"name": "pa-reviewer-test"},
+            headers={
+                "Authorization": f"Bearer {_token()}",
+                "X-Requested-With": "ContainerManager",
+                "Content-Type": "application/json",
+            },
+            json={"labels": {"skiff-audit-run": "1"}},
+            timeout=10,
+        )
+        if 200 <= r.status_code < 300:
+            audit_observer.emit(
+                step="step_2_mutation_blocked",
+                severity="P0",
+                category="security",
+                zero_trust=True,
+                title="Mutation succeeded in reviewer mode",
+                expected="403 Forbidden from reviewer gate",
+                observed=f"{r.status_code} accepted",
             )
-            if 200 <= r.status_code < 300:
-                audit_observer.emit(
-                    step="step_2_mutation_blocked",
-                    severity="P0",
-                    category="security",
-                    zero_trust=True,
-                    title="Mutation succeeded in reviewer mode",
-                    expected="403 Forbidden from reviewer gate",
-                    observed=f"{r.status_code} accepted",
-                )
-                pytest.fail("reviewer mode bypassed")
-    finally:
-        # Reset profile via the same endpoint (idempotent; entering
-        # 'dev' is safe).
-        try:
-            requests.post(
-                f"{live_server.rstrip('/')}/api/profile/enter-reviewer",
-                headers={
-                    "Authorization": f"Bearer {_token()}",
-                    "X-Requested-With": "ContainerManager",
-                },
-                json={"leave": True},
-                timeout=10,
-            )
-        except requests.exceptions.RequestException:
-            pass
+            pytest.fail("reviewer mode bypassed")
 
 
 @journey(

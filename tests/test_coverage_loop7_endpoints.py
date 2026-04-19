@@ -144,8 +144,10 @@ def test_network_inspect_returns_attrs(client, mock_docker):
 
 @pytest.mark.unit
 def test_network_inspect_bad_id_400(client):
+    # Must fail both the hex-ID regex AND the network-name regex.
+    # '@' is not in the network-name alphabet [a-zA-Z0-9_.-].
     resp = client.get(
-        "/api/networks/not-a-hex-id/inspect",
+        "/api/networks/bad@name/inspect",
         headers=AUTH_HEADER,
     )
     assert resp.status_code == 400
