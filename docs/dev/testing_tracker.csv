@@ -1,0 +1,11 @@
+test_type,file_glob,file_count,test_function_count,last_rolled_up
+unit,"tests/test_coverage_*.py, tests/test_fuzz*.py",23,465,2026-04-19
+property,"tests/test_properties.py, tests/test_hypothesis*.py",2,16,2026-04-19
+state_machine,"tests/test_state_transitions.py, tests/test_container_journey_fuzz.py, tests/test_lifecycle_coverage.py",3,9,2026-04-19
+contract,"tests/test_contract.py, tests/test_route_contract.py, tests/test_capability_parity.py",3,5,2026-04-19
+security,"tests/test_security.py, tests/test_secure_route.py, tests/test_zero_trust_invariants.py",3,24,2026-04-19
+a11y,"tests/test_e2e_accessibility.py, tests/journeys/test_ui_ux.py",2,11,2026-04-19
+e2e_tiered,tests/test_e2e_tier_*.py,4,21,2026-04-19
+e2e_journey,tests/journeys/test_*.py,10,100,2026-04-19
+docs,"tests/test_docs_sync.py, tests/test_docs_complete.py, tests/test_history_coverage.py",2,12,2026-04-19
+coverage_sweeps,"tests/test_coverage_topdown.py, tests/test_coverage_bottomup.py, tests/test_coverage_fields.py",3,15,2026-04-19

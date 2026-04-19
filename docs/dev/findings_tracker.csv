@@ -1,0 +1,3 @@
+finding_id,first_pass,last_pass,journey,persona,severity,category,zero_trust,status,fix_commit,regression_test,class_sweep_test,competitor_note,doc_update
+pa-20260418-235420-ui_ux_auditor-test_journey_keyboard_reaches_every_sidebar_entry-step_3_tab_through_sidebar,1,1,test_journey_keyboard_reaches_every_sidebar_entry,ui_ux_auditor,medium,a11y,,open,,,,,
+pa-20260418-235451-ui_ux_auditor-test_journey_keyboard_reaches_every_sidebar_entry-step_3_tab_through_sidebar,1,1,test_journey_keyboard_reaches_every_sidebar_entry,ui_ux_auditor,medium,a11y,,open,,,,,
