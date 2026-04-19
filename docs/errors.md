@@ -67,6 +67,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `docker.sdk_error` | 500 | Docker daemon returned {status}: {message} | docs/audit-events.md#docker-client-events |
 | `image.bad_id` | 400 | invalid image id |  |
 | `image.not_found` | 404 | image not found |  |
+| `image.prune_failed` | 400 | image prune failed |  |
 | `image.pull_failed` | 400 | image pull failed |  |
 | `image.pull_timed_out` | 504 | image pull timed out |  |
 | `image.push_failed` | 400 | image push failed |  |
@@ -75,7 +76,10 @@ Client switches on `code` (stable); displays `message` (human).
 | `image.registry_search_failed` | 502 | registry search failed |  |
 | `image.tag_fetch_failed` | 502 | tag fetch failed |  |
 | `network.bad_driver` | 400 | unsupported network driver |  |
+| `network.bad_gateway` | 400 | invalid gateway |  |
+| `network.bad_labels` | 400 | invalid network labels |  |
 | `network.bad_name` | 400 | invalid network name |  |
+| `network.bad_subnet` | 400 | invalid subnet |  |
 | `network.builtin_protected` | 400 | built-in network cannot be removed |  |
 | `network.not_found` | 404 | network not found |  |
 | `resource.in_use` | 409 | resource is in use: {detail} |  |
@@ -119,6 +123,9 @@ Client switches on `code` (stable); displays `message` (human).
 | `validation.tmpfs_path_blocked` | 400 | tmpfs on {path!r} is not permitted |  |
 | `validation.tmpfs_size_exceeds_cap` | 400 | total tmpfs size {total_mb:.0f}MB exceeds cap ({max_total_mb}MB) |  |
 | `validation.tmpfs_too_many` | 400 | too many tmpfs mounts (max {max_mounts}) |  |
+| `volume.bad_driver` | 400 | unsupported volume driver |  |
+| `volume.bad_driver_opts` | 400 | invalid volume driver options |  |
+| `volume.bad_labels` | 400 | invalid volume labels |  |
 | `volume.bad_name` | 400 | invalid volume name |  |
 | `volume.in_use` | 409 | volume is in use |  |
 | `volume.not_found` | 404 | volume not found |  |

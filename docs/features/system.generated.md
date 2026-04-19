@@ -14,7 +14,9 @@ carries the narrative and threat-model context.
 | GET | `/api/docs` | — | 120/minute | — | `api_docs_landing` | Discoverability landing page for the OpenAPI spec (CSP-safe). |
 | POST | `/api/profile/enter-reviewer` | — | 30/minute | ✓ | `enter_reviewer_mode` | One-way runtime switch into reviewer (read-only) profile. |
 | GET | `/api/system/df` | — | 5/minute | — | `system_disk_usage` | Return disk usage breakdown for images, containers, volumes, and build cache. |
+| GET | `/api/system/events` | — | 60/minute | — | `system_events` | Return recent Docker engine events. |
 | GET | `/api/system/info` | — | 60/minute | — | `system_info` | Return Docker engine version, OS, hardware, and container counts. |
 | GET | `/api/system/metrics` | — | 60/minute | — | `system_metrics` | Prometheus text-format metrics snapshot. |
+| GET | `/api/system/overview` | — | 60/minute | — | `system_overview` | Aggregated counts + recent events — powers the Dashboard home page. |
 | POST | `/api/system/prune` | — | 10/minute | ✓ | `system_prune` | Remove all stopped containers, dangling images, and unused networks. |
 | POST | `/api/system/prune-build-cache` | — | 10/minute | ✓ | `prune_build_cache` | Clear Docker build cache and return the amount of space reclaimed. |

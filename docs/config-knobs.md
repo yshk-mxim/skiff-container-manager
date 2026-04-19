@@ -21,7 +21,10 @@ every knob with its default, type, and one-line doc. See
 | `BODY_READ_TIMEOUT_SECS` | `30` | int | yes | no | Per-chunk timeout (seconds) for reading a request body. A client that drips one byte every 5 s would otherwise hold an ASGI worker open for minutes; at this timeout the middleware responds 408 `validation.body_timeout` instead. Set higher for very slow uploads over WAN links; lower for tighter slow-POST defence. |
 | `COMPOSE_DIR` | `$HOME/Library/Application Support/skiff/compose` |  | yes | no | Directory where uploaded docker-compose.yml files are stored (one subdir per project). |
 | `COMPOSE_DOWN_TIMEOUT` | `60` | int | yes | no | Seconds for `docker compose down`. |
+| `COMPOSE_MAX_REPLICAS` | `10` | int | yes | no | Max replicas per service via /scale. |
 | `COMPOSE_UP_TIMEOUT` | `120` | int | yes | no | Seconds for `docker compose up -d`. |
+| `CONTAINER_CP_MAX_MB` | `64` | int | yes | no | Max MB for /api/containers/{id}/files get/put (cp). |
+| `CONTAINER_LS_MAX_ENTRIES` | `2000` | int | yes | no | Max dir entries returned by /api/containers/{id}/ls. |
 | `CONTAINER_RESTART_TIMEOUT` | `10` | int | yes | no | Seconds for restart. |
 | `CONTAINER_STATS_TIMEOUT` | `10.0` | float | yes | no | Seconds for stats call. |
 | `CONTAINER_STOP_TIMEOUT` | `5` | int | yes | no | Seconds for graceful stop before kill. |
@@ -46,7 +49,7 @@ every knob with its default, type, and one-line doc. See
 | `PROFILE` | `` | _apply_profile | yes | no | Persona preset that seeds sensible defaults for RATE_LIMIT_SCALE and related knobs. One of: ci, dev, homelab, reviewer, sre, tutor. Explicit env wins. |
 | `RATE_LIMIT_SCALE` | `1` | _rate_scale_validator | yes | no | Multiplier applied to every rate-limit spec. 1=default, 100=CI (effectively uncapped). |
 | `REGISTRY_DESC_MAX` | `200` | int | yes | no | Max chars of registry description echoed back. |
-| `REGISTRY_MAX_TAGS` | `20` | int | yes | no | Tags per /api/registry/tags call. |
+| `REGISTRY_MAX_TAGS` | `100` | int | yes | no | Tags per /api/registry/tags call. |
 | `REGISTRY_SEARCH_PAGE_SIZE` | `10` | int | yes | no | Results per /api/registry/search call. |
 | `REGISTRY_TIMEOUT` | `8` | int | yes | no | Seconds for Docker Hub API requests. |
 | `SESSION_ABS_TIMEOUT` | `28800` | _validate | yes | no | Server-side absolute session lifetime, seconds. The client reads this via /api/config so a deployment tightening the window doesn't require a JS edit. Rejected at boot below 60 s so a zero / negative value can't lock the operator out of their own setup wizard. |

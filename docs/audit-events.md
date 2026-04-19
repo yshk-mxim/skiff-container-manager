@@ -37,11 +37,21 @@ intent for SIEM rule authors.
 | `build_cache.pruned` | info | `space_mb` | — | Docker build cache pruned. |
 | `compose.down` | info | `project` | — | Compose stack torn down. |
 | `compose.down_failed` | warning | `project`, `stderr` | — | compose down returned non-zero. |
+| `compose.pulled` | info | `project` | — | Compose stack images pulled (latest tags fetched). |
+| `compose.scaled` | info | `project`, `service`, `replicas` | — | Compose service scaled to N replicas. |
 | `compose.service_logs_failed` | warning | `project`, `service`, `error` | — | Per-service log fetch failed; aggregate view fell back. |
 | `compose.service_restarted` | info | `project`, `service` | `container_id` | Single compose service restarted. |
+| `compose.started` | info | `project` | — | Compose stack `start`ed (containers resumed without re-create). |
+| `compose.stopped` | info | `project` | — | Compose stack `stop`ed (containers halted, not removed). |
+| `compose.subcommand_failed` | warning | `project`, `subcommand`, `stderr` | — | A compose subcommand (stop/start/pull/scale) returned non-zero. |
 | `compose.up` | info | `project` | — | Compose stack deployed. |
 | `compose.up_failed` | warning | `project`, `stderr` | — | compose up returned non-zero; stderr truncated at 500 chars. |
 | `compose.upload` | info | `project`, `services` | — | Compose YAML accepted; stack about to deploy. |
+| `container.committed` | info | `id`, `repository`, `tag` | — | Running container committed to a new local image. |
+| `container.cp_get` | info | `id`, `path` | `size_bytes` | Container file / directory streamed out via `docker cp`-equivalent. |
+| `container.cp_get_truncated` | warning | `id`, `path`, `cap_mb` | — | `docker cp`-out truncated at the configured size cap; raise CONTAINER_CP_MAX_MB or tar a smaller path. |
+| `container.cp_put` | info | `id`, `path` | — | Tar archive uploaded into a container via POST /api/containers/{id}/files. |
+| `container.cp_put_ok` | info | `id`, `path`, `size_bytes` | — | Container cp-put succeeded. |
 | `container.created` | info | `id`, `name`, `image` | `memory`, `cpus`, `ports`, `readonly_rootfs`, `inherit_from` | New container created via /api/containers/run. `inherit_from` carries the source container ID when the caller asked to copy env vars from an existing container. |
 | `container.delete_queued` | info | `id`, `force`, `token_suffix` | — | Destructive delete queued under the undo window. |
 | `container.deleted` | info | `id`, `force` | — | Container deleted (either direct or after undo window). |
@@ -61,6 +71,7 @@ intent for SIEM rule authors.
 | `container.stopped` | info | `id` | — | Container stopped. |
 | `container.unpaused` | info | `id` | — | Container unpaused. |
 | `container.updated` | info | `id`, `name`, `changes` | — | Container resource limits updated in place. |
+| `container.upload_ok` | info | `id`, `path`, `filename`, `size_bytes` | — | Multipart file upload accepted into a container via /api/containers/{id}/upload. |
 | `docker.client_stale` | warning | `action` | — | Ping failed; client marked for reconnect. |
 | `docker.connected` | info | `host` | — | Docker SDK client reconnected. |
 | `docker.connection_failed` | error | `host`, `error` | — | Docker SDK could not connect on startup. |
@@ -68,6 +79,7 @@ intent for SIEM rule authors.
 | `image.delete_queued` | info | `id`, `token_suffix` | — | Image deletion queued under the undo window. |
 | `image.deleted` | info | `id` | — | Image deleted. |
 | `image.list` | info | — | `remote`, `path` | Audit-middleware classification for GET /api/images. |
+| `image.pruned` | info | — | — | Dangling / unused images pruned via /api/images/prune. |
 | `image.pulled` | info | `image` | — | Image pulled from a registry. |
 | `image.pushed` | info | `image` | — | Image pushed to a registry. |
 | `image.tagged` | info | `id`, `repository`, `tag` | — | Image tag operation succeeded. |
@@ -88,6 +100,7 @@ intent for SIEM rule authors.
 | `security.setup_window_open` | warning | — | `msg`, `bind`, `port`, `window_secs`, `lockout_attempts` | First-run setup wizard is reachable on BIND_HOST for SETUP_WINDOW_SECS after boot. Anyone with reach to that socket can claim the instance with their own token during the window (rate-limited; per-IP lockout). Set API_TOKEN in the environment to skip the wizard entirely. |
 | `security.short_env_token` | warning | `msg` | — | API_TOKEN from the environment is shorter than the setup wizard's 16-character minimum. Emitted once at startup so operators see weak-token deployments in their boot logs. |
 | `setup.configured` | info | `docker_host`, `registries` | — | First-boot setup completed successfully. |
+| `system.events_failed` | warning | — | `error` | `docker events` poll returned an unexpected shape; returning best-effort partial. |
 | `system.pruned` | info | — | `containers`, `images`, `networks`, `volumes`, `space_mb` | Docker system prune completed. |
 | `tunnel.manual_reconnect_required` | info | `socket`, `managed` | — | Operator hit Reconnect but the tunnel was not wizard-managed and the socket is down. SKIFF cannot re-open a tunnel it did not open itself (it never learned the SSH target). The client response includes the socket path so the operator can re-run `ssh -fNL <socket>:...`. |
 | `tunnel.reconnect_noop` | info | `socket`, `managed` | — | Operator hit Reconnect on a manual-tunnel deployment whose socket is still reachable. No SSH work was done — the Docker client was invalidated so the next API call refreshes state. |

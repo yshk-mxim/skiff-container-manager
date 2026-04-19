@@ -46,15 +46,19 @@ Known gaps (see [`SECURITY.md`](SECURITY.md) for the full list) include a shared
 
 ## Features
 
-- **Container lifecycle** — list, run, start, stop, restart, pause, unpause, kill, rename, remove
+- **Dashboard** — home-page overview with per-state container counts, disk usage, recent Docker events, and quick-action buttons
+- **Container lifecycle** — list, run, start, stop, restart, pause, unpause, kill, rename, remove, commit, bulk-select actions, right-click context menu
+- **Files tab** — live filesystem browser (docker cp wrapper): navigate, download any file, drag-drop upload, plus the classic `docker diff` view
 - **Logs** — tail, search, download, stream via WebSocket; filter by `since`/`until` timestamp
-- **Shell access** — interactive exec terminal via WebSocket
-- **Images** — list, pull, push (approved registries only), tag, remove, inspect
-- **Volumes** — create, delete, prune (named volumes only)
-- **Networks** — create, delete, connect/disconnect containers, prune
-- **Compose** — deploy and tear down stacks; sandbox-validated before execution
-- **System** — container engine info, disk usage, prune all / build cache
-- **Security** — Bearer token auth, CSRF protection, registry allowlist, rate limiting, security headers, audit logging
+- **Shell access** — xterm.js interactive exec terminal via WebSocket; persists across detail-tab switches
+- **Images** — list, pull, push (approved registries only), tag, remove, inspect, prune
+- **Templates** — one-click catalogue of common app deploys (nginx, postgres, redis, mysql, mongo, python/node/alpine dev shells) with sensible ports + env defaults
+- **Volumes** — create (driver, labels, driver_opts), delete, prune, inspect (named volumes only)
+- **Networks** — create (subnet, gateway, labels, internal, attachable, ipv6), delete, connect/disconnect, prune
+- **Compose** — deploy, teardown, per-service restart, stop/start, pull images, scale services, download YAML; sandbox-validated before execution
+- **System** — engine info, disk usage, prune all / build cache, live Docker events viewer, filterable audit log
+- **Notifications** — toasts mirrored into a bell-icon history panel (last 50)
+- **Security** — Bearer token auth, CSRF protection, registry allowlist, rate limiting, security headers, audit logging, reviewer-mode (read-only) profile
 
 ---
 
