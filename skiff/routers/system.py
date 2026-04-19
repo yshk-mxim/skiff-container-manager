@@ -542,6 +542,131 @@ import structlog  # noqa: E402 — log is only used by the prune handlers below
 log = structlog.get_logger(__name__)
 
 
+@router.get("/api/system/overview", dependencies=AUTH, tags=["system"])
+@secure_route.read(RATE.READ)
+def system_overview(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
+    """Aggregated counts + recent events — powers the Dashboard home page.
+
+    One call returns everything the dashboard needs so the page loads in
+    a single round-trip: per-state container counts, image count, volume
+    count, network count, disk usage, and recent events. Every count is
+    best-effort — a Docker failure on one sub-query degrades gracefully
+    to `null` instead of failing the whole response."""
+    import time
+
+    def _safe(fn, default=None):
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    def _list_all_containers():
+        return client.containers.list(all=True)
+
+    containers = _safe(_list_all_containers, []) or []
+    running = sum(1 for c in containers if c.status == "running")
+    paused = sum(1 for c in containers if c.status == "paused")
+    exited = sum(1 for c in containers if c.status in ("exited", "dead"))
+    created = sum(1 for c in containers if c.status == "created")
+
+    images = _safe(client.images.list, []) or []
+    volumes = _safe(client.volumes.list, []) or []
+    networks = _safe(client.networks.list, []) or []
+
+    df = _safe(client.df, {}) or {}
+    layers_mb = 0
+    for img in df.get("Images") or []:
+        layers_mb += (img.get("Size") or 0) / 1024 / 1024
+
+    now = int(time.time())
+    events: list[dict] = []
+    try:
+        gen = client.events(since=now - 300, until=now, decode=True)
+        for evt in gen:
+            events.append(
+                {
+                    "time": evt.get("time") or evt.get("timeNano", 0) // 10**9,
+                    "type": evt.get("Type") or "",
+                    "action": evt.get("Action") or "",
+                    "actor_id": (evt.get("Actor") or {}).get("ID", "")[:12],
+                    "actor_name": ((evt.get("Actor") or {}).get("Attributes") or {}).get("name", "")[:120],
+                }
+            )
+            if len(events) >= 25:
+                break
+    except Exception:
+        pass
+
+    return {
+        "containers": {
+            "total": len(containers),
+            "running": running,
+            "paused": paused,
+            "exited": exited,
+            "created": created,
+        },
+        "images": {"total": len(images), "disk_mb": round(layers_mb, 1)},
+        "volumes": {"total": len(volumes)},
+        "networks": {"total": len(networks)},
+        "recent_events": events,
+    }
+
+
+@router.get("/api/system/events", dependencies=AUTH, tags=["system"])
+@secure_route.read(RATE.READ)
+def system_events(
+    request: Request,
+    since_secs: int = 60,
+    limit: int = 200,
+    client=Depends(docker_client.docker_client_dep),
+) -> dict:
+    """Return recent Docker engine events.
+
+    Calls `docker events --since <now-since_secs>s --until <now>` via the
+    SDK's `client.events(since=..., until=..., decode=True)` generator and
+    drains it with a hard cap (`limit`, bounded at 500). Polling-based
+    rather than a streaming WS because:
+
+      - one HTTP GET is easier for a simple live viewer (re-poll every Ns)
+      - no WS cleanup / reconnect logic — matches the audit-log pattern
+      - every event is small (<1 KB); 200 events = ~50 KB response
+    """
+    import time
+
+    since_secs = max(1, min(int(since_secs), 3600))
+    limit = max(1, min(int(limit), 500))
+    now = int(time.time())
+    events: list[dict] = []
+    try:
+        # `client.events` returns a generator; with `until` set it terminates
+        # once events are drained instead of streaming forever.
+        gen = client.events(since=now - since_secs, until=now, decode=True)
+        for evt in gen:
+            events.append(
+                {
+                    "time": evt.get("time") or evt.get("timeNano", 0) // 10**9,
+                    "type": evt.get("Type") or "",
+                    "action": evt.get("Action") or "",
+                    "actor_id": (evt.get("Actor") or {}).get("ID", "")[:12],
+                    "actor_attributes": {
+                        # Limit labels to short common keys — the raw
+                        # Attributes dict can contain very long image
+                        # digests. Keep the useful ones for an operator:
+                        k: str(v)[:120]
+                        for k, v in ((evt.get("Actor") or {}).get("Attributes") or {}).items()
+                        if k in {"name", "image", "exitCode", "signal", "container"}
+                    },
+                }
+            )
+            if len(events) >= limit:
+                break
+    except Exception as exc:
+        # Docker may return events in an unexpected shape on some hosts;
+        # don't fail the whole request — return what we've got.
+        log.warning("system.events_failed", error=str(exc))
+    return {"since_secs": since_secs, "count": len(events), "events": events}
+
+
 @router.post("/api/system/prune", dependencies=AUTH, tags=["system"])
 @secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed counts)
 def system_prune(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
