@@ -307,3 +307,219 @@ def test_journey_network_connect_then_disconnect(audited_page, live_server, audi
         except requests.exceptions.RequestException:
             pass
         _delete_network(live_server, net)
+
+
+# ── Plan-named J-05 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("sre_ops",),
+    category="volumes_networks",
+    severity="medium",
+)
+def test_journey_volume_backup_via_cp(audited_page, live_server, audit_observer, persona):
+    """Plan J-05 item: backup via cp. Attach a volume to a container,
+    put a marker file inside, then docker-cp the file back out via
+    /api/containers/{id}/files?path=/vol/marker. Exercises the SRE
+    rubric where volumes need a user-triggerable backup path."""
+    from tests.e2e_helpers import auth_headers
+
+    vol = _name("bvol")
+    cont = _name("bcont")
+    # Seed volume.
+    r = requests.post(
+        f"{live_server.rstrip('/')}/api/volumes",
+        params={"name": vol, "driver": "local"},
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        json={"labels": {"skiff-audit-run": "1"}},
+        timeout=30,
+    )
+    if r.status_code not in (200, 201):
+        pytest.skip(f"volume seed failed: {r.status_code}")
+    # Seed container with the volume mounted + marker written at boot.
+    r = requests.post(
+        f"{live_server.rstrip('/')}/api/containers/run",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        json={
+            "image": "alpine:3.20",
+            "name": cont,
+            "command": 'sh -c "echo marker > /vol/pa-marker && sleep 3600"',
+            "volumes": [{"mount": "/vol", "type": "volume", "name": vol}],
+            "labels": {"skiff-audit-run": "1"},
+        },
+        timeout=120,
+    )
+    if r.status_code not in (200, 201):
+        _delete_volume(live_server, vol)
+        pytest.skip(f"container seed failed: {r.status_code}")
+    try:
+        import time
+        time.sleep(1)
+        with step("step_1_cp_out_marker"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{cont}/files",
+                params={"path": "/vol/pa-marker"},
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code != 200:
+                audit_observer.emit(
+                    step="step_1_cp_out_marker",
+                    severity="medium",
+                    category="behaviour",
+                    title=f"Volume backup via cp returned {r.status_code}",
+                    expected="200 with tar stream containing marker",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+    finally:
+        try:
+            requests.delete(
+                f"{live_server.rstrip('/')}/api/containers/{cont}?force=true",
+                headers=auth_headers(), timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
+        _delete_volume(live_server, vol)
+
+
+@journey(
+    persona=("sre_ops",),
+    category="volumes_networks",
+    severity="low",
+)
+def test_journey_volume_nfs_driver_surface(audited_page, live_server, audit_observer, persona):
+    """Plan J-05 item: NFS driver path. Create a volume with
+    driver=local + o=addr=…,nfsvers=4 style options. We don't actually
+    mount an NFS share — test probes that the backend accepts the
+    create payload (fails cleanly if the NFS server is unreachable,
+    not with a 500 traceback)."""
+    from tests.e2e_helpers import auth_headers
+
+    name = _name("nfsvol")
+    try:
+        with step("step_1_create_nfs_style_volume"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/volumes",
+                params={"name": name, "driver": "local"},
+                headers={**auth_headers(), "Content-Type": "application/json"},
+                json={
+                    "driver_opts": {
+                        "type": "nfs",
+                        "o": "addr=127.0.0.1,nfsvers=4",
+                        "device": ":/export/test",
+                    },
+                    "labels": {"skiff-audit-run": "1"},
+                },
+                timeout=30,
+            )
+            # 200/201 means accepted (mount happens lazily at first use).
+            # 400/422 means validator rejected (acceptable — NFS may be
+            # disabled). 5xx means broken shape.
+            if r.status_code >= 500:
+                audit_observer.emit(
+                    step="step_1_create_nfs_style_volume",
+                    severity="medium",
+                    category="contract",
+                    title=f"NFS driver_opts caused {r.status_code}",
+                    expected="2xx or 4xx — never 5xx",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail(f"NFS-style create 5xx: {r.status_code}")
+    finally:
+        _delete_volume(live_server, name)
+
+
+@journey(
+    persona=("sre_ops", "developer"),
+    category="volumes_networks",
+    severity="medium",
+)
+def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_observer, persona):
+    """Plan J-05 item: prune safety. Create one attached volume and
+    one dangling volume. Prune must remove the dangling one ONLY —
+    never the attached one."""
+    from tests.e2e_helpers import auth_headers
+
+    attached = _name("attv")
+    dangling = _name("danv")
+    cont = _name("attc")
+
+    def _mk_vol(vname):
+        return requests.post(
+            f"{live_server.rstrip('/')}/api/volumes",
+            params={"name": vname, "driver": "local"},
+            headers={**auth_headers(), "Content-Type": "application/json"},
+            json={"labels": {"skiff-audit-run": "1"}},
+            timeout=30,
+        )
+
+    if _mk_vol(attached).status_code not in (200, 201) or _mk_vol(dangling).status_code not in (200, 201):
+        pytest.skip("volume seed failed")
+
+    # Attach the first to a running container.
+    r = requests.post(
+        f"{live_server.rstrip('/')}/api/containers/run",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        json={
+            "image": "alpine:3.20",
+            "name": cont,
+            "command": "sleep 3600",
+            "volumes": [{"mount": "/vol", "type": "volume", "name": attached}],
+            "labels": {"skiff-audit-run": "1"},
+        },
+        timeout=60,
+    )
+    if r.status_code not in (200, 201):
+        _delete_volume(live_server, attached)
+        _delete_volume(live_server, dangling)
+        pytest.skip(f"container seed failed: {r.status_code}")
+
+    try:
+        with step("step_1_prune"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/volumes/prune",
+                headers=auth_headers(), timeout=60,
+            )
+            assert r.status_code == 200, f"prune failed: {r.status_code}"
+        with step("step_2_attached_still_exists"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/volumes/{attached}",
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code != 200:
+                audit_observer.emit(
+                    step="step_2_attached_still_exists",
+                    severity="P0",
+                    category="behaviour",
+                    title="Attached volume destroyed by prune",
+                    expected="Attached volume survives prune",
+                    observed=f"inspect after prune: {r.status_code}",
+                )
+                pytest.fail("attached volume pruned — data loss")
+        with step("step_3_dangling_may_be_gone"):
+            # Dangling volume SHOULD be gone (prune reclaimed it);
+            # emit a finding if it's still there, but don't hard-fail
+            # — some runtimes don't consider it orphaned if the
+            # allocation TTL hasn't elapsed.
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/volumes/{dangling}",
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code == 200:
+                audit_observer.emit(
+                    step="step_3_dangling_may_be_gone",
+                    severity="low",
+                    category="behaviour",
+                    title="Dangling volume not reclaimed by prune",
+                    expected="Unused volume removed by prune",
+                    observed="inspect still returned 200 — not pruned",
+                )
+    finally:
+        try:
+            requests.delete(
+                f"{live_server.rstrip('/')}/api/containers/{cont}?force=true",
+                headers=auth_headers(), timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
+        _delete_volume(live_server, attached)
+        _delete_volume(live_server, dangling)
