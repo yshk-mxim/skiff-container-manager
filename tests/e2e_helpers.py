@@ -86,3 +86,42 @@ def deploy_compose_stack(project_name: str, yaml: bytes) -> None:
         timeout=120,
     )
     assert r.status_code == 200, f"compose up failed: {r.status_code} {r.text}"
+
+
+# ── Terminal (xterm.js) helpers ──────────────────────────────────────────────
+# Starting with v1.0.1 the exec terminal is an xterm.js Terminal, not a plain
+# <input>. Tests that type into the terminal should use these helpers so the
+# input method matches the rendered widget.
+
+
+def term_send(page: Any, text: str) -> None:
+    """Type keystrokes into the currently-mounted xterm.js terminal.
+    Uses `page.keyboard.type` after focusing `.xterm` so xterm's
+    `onData` fires for each character (arrow keys, Ctrl-C, etc. would
+    go through `page.keyboard.press('ArrowUp')` / `.press('Control+C')`
+    on the same focused element).
+    """
+    page.locator(".xterm-helper-textarea, .xterm").first.focus()
+    page.keyboard.type(text)
+
+
+def term_read(page: Any) -> str:
+    """Read the visible terminal text — reliable across xterm.js
+    renderer backends (canvas vs DOM). Uses xterm's own active buffer
+    as the source of truth rather than inner_text on the host div,
+    which is noisy once xterm paints overlay rows.
+    """
+    return page.evaluate(
+        """() => {
+            const el = document.getElementById('term-output');
+            if (!el || !el._term) return (el?.innerText || '');
+            const t = el._term;
+            const buf = t.buffer.active;
+            const lines = [];
+            for (let i = 0; i < buf.length; i++) {
+                const line = buf.getLine(i);
+                if (line) lines.push(line.translateToString(true));
+            }
+            return lines.join('\\n');
+        }"""
+    )

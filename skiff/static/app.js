@@ -2,7 +2,7 @@
 // Copyright 2026 Yakov Shkolnikov and contributors
 "use strict";
 const API = '/api';
-let currentPage = 'containers';
+let currentPage = 'dashboard';
 let refreshTimer = null;
 let dockerOk = false;
 let _lastContainers = null;
@@ -502,7 +502,16 @@ function showPage(page) {
   });
   _refreshInFlight = false;
   _lastContainers = null;
-  var pages = { containers: loadContainers, images: loadImages, volumes: loadVolumes, networks: loadNetworks, compose: showCompose, system: loadSystem };
+  var pages = {
+    dashboard: showDashboard,
+    containers: loadContainers,
+    images: loadImages,
+    templates: showTemplates,
+    volumes: loadVolumes,
+    networks: loadNetworks,
+    compose: showCompose,
+    system: loadSystem,
+  };
   (pages[page] || loadContainers)();
 }
 
@@ -514,8 +523,10 @@ function showPage(page) {
 // a new page is added.
 (function registerPages() {
   [
+    { id: 'dashboard',  label: 'Dashboard',  order: 5,  keywords: ['home', 'overview'] },
     { id: 'containers', label: 'Containers', order: 10, keywords: ['ps', 'ls'] },
     { id: 'images',     label: 'Images',     order: 20, keywords: ['pull', 'image'] },
+    { id: 'templates',  label: 'Templates',  order: 25, keywords: ['quick-start', 'app', 'deploy'] },
     { id: 'volumes',    label: 'Volumes',    order: 30, keywords: ['mount'] },
     { id: 'networks',   label: 'Networks',   order: 40, keywords: ['net'] },
     { id: 'compose',    label: 'Compose',    order: 50, keywords: ['stack'] },
@@ -803,6 +814,51 @@ async function loadContainers() {
 }
 
 var _containerSearch = '';
+
+// Open a modal to commit a running/exited container to a new image.
+// Backed by POST /api/containers/{id}/commit.
+function _showCommitModal(c) {
+  UI.formModal({
+    title: 'Commit "' + c.name + '" to image',
+    fields: [
+      {
+        name: 'repository', label: 'Image repository',
+        required: true,
+        value: 'local/' + (c.name || 'commit'),
+        help: 'Lowercase, with optional `user/` or `host/` prefix. The resulting image is LOCAL only — push it separately via the Images page.',
+      },
+      {
+        name: 'tag', label: 'Tag', value: 'latest',
+        help: 'Docker tag grammar: letters, digits, `.`, `-`, `_`.',
+      },
+      {
+        name: 'message', label: 'Commit message (optional)',
+        placeholder: 'installed vim',
+        help: 'Appears in the image history.',
+      },
+      {
+        name: 'author', label: 'Author (optional)',
+        placeholder: 'jane@example.com',
+      },
+    ],
+    submitLabel: 'Commit',
+    onSubmit: function(values) {
+      var params = new URLSearchParams({
+        repository: values.repository,
+        tag: values.tag || 'latest',
+      });
+      if (values.message) params.set('message', values.message);
+      if (values.author) params.set('author', values.author);
+      return apiFetch(API + '/containers/' + c.id + '/commit?' + params.toString(),
+                      { method: 'POST' }).then(function(r) {
+        toast('Committed ' + c.name + ' → ' + r.repository + ':' + r.tag, 'success');
+      });
+    },
+  });
+}
+// Bulk-selection state for the containers page. Cleared on page switch
+// via showPage(), replaced when the user clicks the "select all" header.
+var _bulkSelected = new Set();
 var _containerSort = 'name';
 var _containerSortDir = 1;
 function sortContainers(arr, key, dir) {
@@ -854,9 +910,69 @@ function renderContainers(containers) {
 
   filtered = sortContainers(filtered, _containerSort, _containerSortDir);
 
+  // Bulk action bar — renders above the table when any row is selected.
+  // Lets the operator stop/start/restart/delete N containers in one action,
+  // parity with Portainer's multi-select table pattern.
+  function _renderBulkBar(visibleIds) {
+    // Drop any selection that's no longer visible (filtered out) so the
+    // displayed count matches reality.
+    _bulkSelected = new Set([..._bulkSelected].filter(function(id) {
+      return visibleIds.has(id);
+    }));
+    var existing = main.querySelector('.bulk-bar');
+    if (existing) existing.remove();
+    if (!_bulkSelected.size) return;
+    var bar = document.createElement('div');
+    bar.className = 'bulk-bar';
+    bar.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+    var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:13px;font-weight:500';
+    lbl.textContent = _bulkSelected.size + ' selected';
+    bar.appendChild(lbl);
+    function _doBulk(label, path, successVerb) {
+      bar.appendChild(makeActionBtn(label, function() {
+        var ids = [..._bulkSelected];
+        if (!confirm(label + ' ' + ids.length + ' container(s)?')) throw new Error('Cancelled');
+        return Promise.all(ids.map(function(id) {
+          return apiFetch(API + '/containers/' + id + '/' + path, { method: 'POST' }).catch(function() {});
+        })).then(function() {
+          toast(successVerb + ' ' + ids.length + ' container(s)', 'success');
+          _bulkSelected = new Set();
+          loadContainers();
+        });
+      }, 'btn small'));
+    }
+    _doBulk('Start', 'start', 'Started');
+    _doBulk('Stop', 'stop', 'Stopped');
+    _doBulk('Restart', 'restart', 'Restarted');
+    bar.appendChild(makeActionBtn('Delete', function() {
+      var ids = [..._bulkSelected];
+      if (!confirm('Delete ' + ids.length + ' container(s)? Running ones will be force-killed and CANNOT be undone.'))
+        throw new Error('Cancelled');
+      return Promise.all(ids.map(function(id) {
+        return apiFetch(API + '/containers/' + id + '?force=true', { method: 'DELETE' }).catch(function() {});
+      })).then(function() {
+        toast('Deleted ' + ids.length + ' container(s)', 'success');
+        _bulkSelected = new Set();
+        loadContainers();
+      });
+    }, 'btn danger small'));
+    var clearBtn = makeBtn('Clear', function() { _bulkSelected = new Set(); renderContainers(_lastContainers); }, 'btn small');
+    bar.appendChild(clearBtn);
+    main.insertBefore(bar, main.querySelector('table'));
+  }
+
   var table = document.createElement('table');
   var thead = document.createElement('thead');
   var headerRow = document.createElement('tr');
+  // Header checkbox — toggles select-all among visible rows.
+  var thChk = document.createElement('th');
+  thChk.style.cssText = 'width:24px';
+  var headerChk = document.createElement('input');
+  headerChk.type = 'checkbox';
+  headerChk.setAttribute('aria-label', 'Select all containers');
+  headerChk.title = 'Select all visible';
+  thChk.appendChild(headerChk);
+  headerRow.appendChild(thChk);
   [['Name','name'],['Image','image'],['Status','state'],['Ports',null],['Created','created'],['Actions',null]].forEach(function(col) {
     var th = document.createElement('th');
     th.textContent = col[0];
@@ -874,8 +990,91 @@ function renderContainers(containers) {
   thead.appendChild(headerRow);
   table.appendChild(thead);
   var tbody = document.createElement('tbody');
+  var visibleIds = new Set(filtered.map(function(c) { return c.id; }));
+  // Context menu — right-click a row to mirror the action buttons. Same
+  // verbs as the btn-group, but reachable without scrolling the row into
+  // view. Closed on outside click or Esc.
+  function _showCtxMenu(ev, c) {
+    ev.preventDefault();
+    var existing = document.querySelector('.ctx-menu');
+    if (existing) existing.remove();
+    var menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    menu.setAttribute('data-testid', 'container-ctx-menu');
+    function _item(label, fn, cls) {
+      var b = document.createElement('button');
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.onclick = function() { menu.remove(); fn(); };
+      menu.appendChild(b);
+    }
+    _item('Inspect', function() { showDetail(c.id, c.name, 'inspect'); });
+    _item('Logs', function() { showDetail(c.id, c.name, 'logs'); });
+    _item('Terminal', function() { showDetail(c.id, c.name, 'terminal'); });
+    _item('Stats', function() { showDetail(c.id, c.name, 'stats'); });
+    if (c.state === 'running') {
+      _item('Stop', function() {
+        apiFetch(API + '/containers/' + c.id + '/stop', { method: 'POST' })
+          .then(function() { toast(c.name + ' stopped', 'info'); loadContainers(); });
+      });
+      _item('Restart', function() {
+        apiFetch(API + '/containers/' + c.id + '/restart', { method: 'POST' })
+          .then(function() { toast(c.name + ' restarted', 'success'); loadContainers(); });
+      });
+      _item('Pause', function() {
+        apiFetch(API + '/containers/' + c.id + '/pause', { method: 'POST' })
+          .then(function() { loadContainers(); });
+      });
+    } else {
+      _item('Start', function() {
+        apiFetch(API + '/containers/' + c.id + '/start', { method: 'POST' })
+          .then(function() { toast(c.name + ' started', 'success'); loadContainers(); });
+      });
+    }
+    _item('Commit to image\u2026', function() { _showCommitModal(c); });
+    _item('Delete', function() {
+      var needsForce = c.state === 'running' || c.state === 'paused';
+      var q = needsForce ? '?force=true' : '';
+      if (!confirm('Delete "' + c.name + '"?')) return;
+      undoableDelete(API + '/containers/' + c.id + q, c.name, loadContainers);
+    }, 'danger');
+    menu.style.left = Math.min(ev.clientX, window.innerWidth - 180) + 'px';
+    menu.style.top = Math.min(ev.clientY, window.innerHeight - 200) + 'px';
+    document.body.appendChild(menu);
+    function _off(e) {
+      if (menu.contains(e.target)) return;
+      menu.remove(); document.removeEventListener('click', _off); document.removeEventListener('contextmenu', _off);
+    }
+    setTimeout(function() {
+      document.addEventListener('click', _off);
+      document.addEventListener('contextmenu', _off);
+    }, 0);
+  }
+
+  headerChk.checked = filtered.length > 0 && filtered.every(function(c) { return _bulkSelected.has(c.id); });
+  headerChk.onchange = function() {
+    if (headerChk.checked) {
+      filtered.forEach(function(c) { _bulkSelected.add(c.id); });
+    } else {
+      filtered.forEach(function(c) { _bulkSelected.delete(c.id); });
+    }
+    renderContainers(_lastContainers);
+  };
   filtered.forEach(function(c) {
     var tr = document.createElement('tr');
+    tr.oncontextmenu = function(ev) { _showCtxMenu(ev, c); };
+    var tdChk = document.createElement('td'); tdChk.style.cssText = 'width:24px';
+    var rowChk = document.createElement('input');
+    rowChk.type = 'checkbox';
+    rowChk.setAttribute('aria-label', 'Select ' + c.name);
+    rowChk.checked = _bulkSelected.has(c.id);
+    rowChk.onchange = function() {
+      if (rowChk.checked) _bulkSelected.add(c.id);
+      else _bulkSelected.delete(c.id);
+      _renderBulkBar(visibleIds);
+    };
+    tdChk.appendChild(rowChk);
+    tr.appendChild(tdChk);
     var tdName = document.createElement('td');
     var nd = document.createElement('div'); nd.className = 'container-name'; nd.textContent = c.name;
     var id = document.createElement('div'); id.className = 'container-id'; id.textContent = c.id;
@@ -948,17 +1147,29 @@ function renderContainers(containers) {
       );
     }
     bg.appendChild(makeActionBtn('Delete', function() {
-      if (!confirm('Delete container "' + c.name + '"?')) throw new Error('Cancelled');
+      // Backend short-circuits the undo queue when `force=true` is set
+      // (see containers.py::delete_container). Only pass force for
+      // running/paused containers where Docker requires it; stopped
+      // containers take the normal undoable delete path with the toast.
+      var needsForce = c.state === 'running' || c.state === 'paused';
+      var prompt = needsForce
+        ? 'Container "' + c.name + '" is ' + c.state + '. Force-delete now? This cannot be undone.'
+        : 'Delete container "' + c.name + '"?';
+      if (!confirm(prompt)) throw new Error('Cancelled');
       return guardedAction('del-c-' + c.id, function() {
-        return undoableDelete(API + '/containers/' + c.id + '?force=true', c.name, loadContainers);
+        var q = needsForce ? '?force=true' : '';
+        return undoableDelete(API + '/containers/' + c.id + q, c.name, loadContainers);
       });
     }, 'btn danger'));
     tdActions.appendChild(bg);
+    // Leading checkbox column was pushed into the row earlier; name →
+    // actions come next in the stable column order.
     tr.append(tdName, tdImage, tdStatus, tdPorts, tdCreated, tdActions);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
   main.appendChild(table);
+  _renderBulkBar(visibleIds);
 }
 
 // ── Detail view ──
@@ -973,7 +1184,19 @@ function showDetail(id, name, tab) {
   // stats grid every 3 seconds).
   clearAllIntervals();
   var main = document.getElementById('main');
-  if (main._ws) { try { main._ws.close(); } catch(e) {} main._ws = null; }
+  // `main._ws` holds the CURRENT tab's WS. For logs we always close
+  // on tab-switch (a fresh tail starts on re-entry). For the terminal
+  // we DON'T close — the session is cached via `_termCache[id]` and
+  // must survive tab switches so the user's shell + scrollback stay.
+  // Detect the case by checking cache membership before closing.
+  if (main._ws) {
+    var keepAlive = window._termCache && window._termCache[id] &&
+                    window._termCache[id].ws === main._ws;
+    if (!keepAlive) {
+      try { main._ws.close(); } catch(e) {}
+    }
+    main._ws = null;
+  }
   main.innerHTML = '';
   var header = document.createElement('div'); header.className = 'page-header';
   var h2 = document.createElement('h2'); h2.textContent = name;
@@ -1080,7 +1303,17 @@ function connectLogsWS(id, attempt, allLines, viewer) {
   if (viewer._ws) { try { viewer._ws.close(1000, 'reconnecting'); } catch(e) {} }
   var ws = registerWS(new WebSocket(wsUrl('/ws/logs/' + id)));
   viewer._ws = ws;
-  ws.onopen = function() { wsAuthOnOpen(ws); if (attempt > 0) { allLines.push('\n[Reconnected]\n'); viewer.textContent = allLines.join(''); } };
+  ws.onopen = function() {
+    wsAuthOnOpen(ws);
+    // First connect: replace the "Connecting..." placeholder with the
+    // current (possibly empty) buffer. Without this, a quiet container
+    // (no stdout yet) leaves "Connecting..." on screen forever even
+    // though the WS is open and waiting for data.
+    if (attempt === 0 && viewer.textContent === 'Connecting...') {
+      viewer.textContent = allLines.join('');
+    }
+    if (attempt > 0) { allLines.push('\n[Reconnected]\n'); viewer.textContent = allLines.join(''); }
+  };
   ws.onmessage = function(e) {
     if (ws !== viewer._ws) return;  // discard messages from stale sockets
     allLines.push(e.data);
@@ -1129,68 +1362,179 @@ function _surfaceWsLockout(evt) {
 }
 
 // ── Terminal ──
+//
+// Uses xterm.js (vendored under /static/xterm/) as the PTY renderer.
+// Pre-xterm the terminal was a `<input>` + scrolling `<div>` — that
+// limped through line-based commands but couldn't render ANSI colours,
+// readline sequences (arrow-key history, Ctrl-A/E/K/W), Tab completion,
+// or any TUI program (vim, htop, less). xterm.js is the de-facto web-
+// terminal — VS Code's integrated terminal, GitHub Codespaces, and
+// every Portainer-class tool use it. The SKIFF server already emits
+// PTY-raw bytes over the WS; xterm.js just needs to render them.
 var MAX_EXEC_RECONNECTS = 5;
+// Per-container terminal-session cache. Users regularly switch between
+// Terminal → Logs → Inspect → Terminal and expect their shell + scroll
+// buffer to survive. The previous implementation blew the session away
+// on every tab switch because showDetail() does `main.innerHTML = ''`.
+// We now park the xterm DOM + WS under this cache when leaving Terminal
+// and reattach on re-entry.
+if (!window._termCache) window._termCache = {};
+function _termCacheEntry(id) { return window._termCache[id] || null; }
+function _termCacheClose(id) {
+  // Hard-close: drop the cached session (called when user clicks
+  // Disconnect or navigates fully back to the list).
+  var c = window._termCache[id];
+  if (!c) return;
+  try { if (c.ws) c.ws.close(1000, 'session closed'); } catch (e) {}
+  try { if (c.term) c.term.dispose(); } catch (e) {}
+  delete window._termCache[id];
+}
 function showShellContent(id) {
   var el = document.getElementById('detail-content'); el.innerHTML = '';
-  var term = document.createElement('div'); term.className = 'terminal'; term.id = 'term-output';
-  var input = document.createElement('input'); input.className = 'terminal-input'; input.placeholder = 'Type command...';
-  el.append(term, input);
-  var _execClosed = false;
-  var disconnectBtn = makeBtn('Disconnect', function() { _execClosed = true; if (document.getElementById('main')._ws) { try { document.getElementById('main')._ws.close(1000, 'user disconnect'); } catch(e) {} document.getElementById('main')._ws = null; } term.textContent += '\r\n[Disconnected]'; }, 'btn small danger');
-  disconnectBtn.style.cssText = 'position:absolute;top:8px;right:8px';
+  // Reattach a cached terminal if this container already has a live
+  // session from an earlier tab visit. The WS stays open across tab
+  // switches; only Disconnect or leaving the detail view closes it.
+  var cached = _termCacheEntry(id);
+  if (cached && cached.termWrap && cached.ws && cached.ws.readyState === 1) {
+    el.appendChild(cached.termWrap);
+    if (cached.fit) { try { cached.fit.fit(); } catch (e) {} }
+    if (cached.term) { try { cached.term.focus(); } catch (e) {} }
+    // Re-add the disconnect button (lives outside termWrap).
+    var reDisc = makeBtn('Disconnect', function() {
+      _termCacheClose(id);
+      if (cached.term) cached.term.write('\r\n[Disconnected]\r\n');
+    }, 'btn small danger');
+    reDisc.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2';
+    el.style.position = 'relative';
+    el.appendChild(reDisc);
+    return;
+  }
+  // Container retains id="term-output" for test compat — many e2e
+  // assertions look up the terminal by this id. The DOM class is
+  // .terminal so the dark background + padding from styles.css still
+  // applies while xterm.js paints its own cells on top.
+  var termWrap = document.createElement('div');
+  termWrap.className = 'terminal';
+  termWrap.id = 'term-output';
+  termWrap.style.padding = '0';  // xterm.js supplies its own padding
+  el.append(termWrap);
   el.style.position = 'relative';
+  var _execClosed = false;
+  var term = null;
+  if (window.Terminal) {
+    term = new window.Terminal({
+      cursorBlink: true,
+      fontFamily: '"DejaVu Sans Mono","Liberation Mono","Noto Sans Mono","Courier New",monospace',
+      fontSize: 13,
+      theme: {
+        background: '#0d1117',
+        foreground: '#e6edf3',
+        cursor: '#e6edf3',
+      },
+      scrollback: 10000,
+      convertEol: true,  // shells emit \n; without this long output lacks \r
+    });
+    var fit = null;
+    if (window.FitAddon && window.FitAddon.FitAddon) {
+      fit = new window.FitAddon.FitAddon();
+      term.loadAddon(fit);
+    }
+    term.open(termWrap);
+    if (fit) { try { fit.fit(); } catch (e) {} }
+    // Exposed so the disconnect handler + resize logic in connectExecWS
+    // can reach the live Terminal / FitAddon instances.
+    termWrap._term = term;
+    termWrap._fit = fit;
+  } else {
+    // Fallback: xterm.js script didn't load. Fall back to the legacy
+    // div+input shape so the UI still works in degraded form.
+    termWrap.className = 'terminal';
+    var input = document.createElement('input');
+    input.className = 'terminal-input';
+    input.placeholder = 'Type command... (xterm.js failed to load — degraded mode)';
+    el.appendChild(input);
+    termWrap._legacyInput = input;
+  }
+  var disconnectBtn = makeBtn('Disconnect', function() {
+    _execClosed = true;
+    _termCacheClose(id);
+    if (term) { term.write('\r\n[Disconnected]\r\n'); }
+    else if (termWrap._legacyInput) { termWrap.textContent += '\r\n[Disconnected]'; }
+  }, 'btn small danger');
+  disconnectBtn.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2';
   el.appendChild(disconnectBtn);
-  connectExecWS(id, 0, term, input, el, function() { return _execClosed; }, function(v) { _execClosed = v; });
-  input.focus();
+  connectExecWS(id, 0, termWrap, term, el, function() { return _execClosed; }, function(v) { _execClosed = v; });
+  // Cache the session so Terminal → Logs → Terminal re-mounts the same
+  // xterm with the same WS and scrollback. Populated AFTER the WS is
+  // constructed inside connectExecWS (where `main._ws` is set); we store
+  // a reference to the wrap here and the WS will be picked up by the
+  // cache-lookup branch on re-entry via `cached.ws`.
+  var _bindCache = function() {
+    var ws = document.getElementById('main') && document.getElementById('main')._ws;
+    window._termCache[id] = { termWrap: termWrap, ws: ws, term: term, fit: termWrap._fit };
+  };
+  // connectExecWS kicks async WS construction; register the cache after
+  // a microtask so `main._ws` is populated.
+  setTimeout(_bindCache, 0);
+  if (term) term.focus(); else if (termWrap._legacyInput) termWrap._legacyInput.focus();
 }
 
 /**
- * Open a WebSocket for an interactive exec shell inside a container. Sends keyboard
- * input from `input` textarea to the shell and streams output into `term`. Reconnects
- * on unexpected close up to MAX_EXEC_RECONNECTS times.
+ * Open an interactive exec WebSocket and wire it to an xterm.js
+ * Terminal (or the legacy input-fallback when xterm.js failed to
+ * load). Reconnects on unexpected close up to MAX_EXEC_RECONNECTS.
  * @param {string} id - Container short ID
  * @param {number} attempt - Current reconnect attempt count
- * @param {HTMLElement} term - Terminal output element
- * @param {HTMLTextAreaElement} input - Keyboard input element
- * @param {HTMLElement} el - Container element (used to check if still visible)
- * @param {Function} isClosed - Returns true if the user has closed the panel
- * @param {Function} setClosed - Call to mark the session as closed
+ * @param {HTMLElement} termWrap - Div hosting the Terminal (has id="term-output")
+ * @param {Terminal|null} term - xterm.js Terminal instance, or null (legacy mode)
+ * @param {HTMLElement} el - Wrapping container (used to mount error buttons)
+ * @param {Function} isClosed - Returns true if the user disconnected
+ * @param {Function} setClosed - Call to mark the session closed
  */
-function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
+function connectExecWS(id, attempt, termWrap, term, el, isClosed, setClosed) {
   if (isClosed()) return;
+  // Shorthand: write a status line to the terminal in either xterm or
+  // legacy-fallback mode without branching at every call site.
+  function writeStatus(msg) {
+    if (term) { term.write('\r\n' + msg + '\r\n'); }
+    else { termWrap.textContent += '\r\n' + msg; }
+  }
   if (attempt >= MAX_EXEC_RECONNECTS) {
-    term.textContent += '\r\n[Max reconnect attempts reached]';
-    var btn = makeBtn('Reconnect shell', function() { setClosed(false); connectExecWS(id, 0, term, input, el, isClosed, setClosed); }, 'btn primary');
+    writeStatus('[Max reconnect attempts reached]');
+    var btn = makeBtn('Reconnect shell', function() {
+      setClosed(false);
+      connectExecWS(id, 0, termWrap, term, el, isClosed, setClosed);
+    }, 'btn primary');
     btn.style.marginTop = '8px';
     el.appendChild(btn);
     return;
   }
   var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
-  // Close any previous WS to avoid duplicate connections
   var prevWs = document.getElementById('main') && document.getElementById('main')._ws;
   if (prevWs && prevWs.readyState < WebSocket.CLOSING) {
     try { prevWs.close(1000, 'reconnecting'); } catch(e) {}
   }
   var ws = registerWS(new WebSocket(wsUrl('/ws/exec/' + id)));
   document.getElementById('main')._ws = ws;
-  // Estimate PTY cols/rows from the terminal div's pixel size and a
-  // representative monospace glyph. The server consumes the
+  // Resize: xterm.js + FitAddon computes the exact cols/rows that fit
+  // the current container size. The server honours the
   // {"type":"resize","cols":N,"rows":M} frame via exec_resize; without
-  // it the shell stays at 80×24 and long output wraps visibly inside
-  // a wide browser window. Not pixel-perfect, but close enough that
-  // TUI apps (htop, vim, less) render without broken line-wrap.
+  // it the shell stays pinned at 80×24 and TUI apps (vim, htop, less)
+  // wrap badly. Legacy fallback keeps the old pixel-estimate shape.
   function _sendTerminalResize() {
     if (ws.readyState !== WebSocket.OPEN) return;
-    var rect = term.getBoundingClientRect();
-    // Approximate ch width / line-height for our terminal font stack
-    // (~8 px × 16 px in the default theme). Clamp to sane bounds so a
-    // collapsed pane can't send {cols:0, rows:0}.
-    var cols = Math.max(20, Math.floor((rect.width || 640) / 8));
-    var rows = Math.max(6, Math.floor((rect.height || 400) / 16));
+    var cols, rows;
+    if (term && termWrap._fit) {
+      try { termWrap._fit.fit(); } catch (e) {}
+      cols = term.cols;
+      rows = term.rows;
+    } else {
+      var rect = termWrap.getBoundingClientRect();
+      cols = Math.max(20, Math.floor((rect.width || 640) / 8));
+      rows = Math.max(6, Math.floor((rect.height || 400) / 16));
+    }
     try { ws.send(JSON.stringify({type: 'resize', cols: cols, rows: rows})); } catch (e) {}
   }
-  // Debounced window-resize listener — clear prior timer so rapid drags
-  // coalesce into one server-side exec_resize call.
   var _resizeTimer = null;
   function _onWindowResize() {
     if (_resizeTimer) clearTimeout(_resizeTimer);
@@ -1200,31 +1544,44 @@ function connectExecWS(id, attempt, term, input, el, isClosed, setClosed) {
   ws.addEventListener('close', function() { window.removeEventListener('resize', _onWindowResize); });
   ws.onopen = function() {
     wsAuthOnOpen(ws);
-    if (attempt > 0) { term.textContent += '\r\n[Reconnected]\r\n'; }
-    // Send the initial size once auth completes so the shell opens
-    // at the operator's actual viewport, not the 80×24 PTY default.
+    if (attempt > 0) { writeStatus('[Reconnected]'); }
     setTimeout(_sendTerminalResize, 100);
   };
   ws.onmessage = function(e) {
     if (isClosed()) return;
-    term.textContent += e.data; term.scrollTop = term.scrollHeight;
+    if (term) { term.write(e.data); }
+    else { termWrap.textContent += e.data; termWrap.scrollTop = termWrap.scrollHeight; }
   };
-  ws.onerror = function() { term.textContent += '\r\n[Connection error]'; };
+  ws.onerror = function() { writeStatus('[Connection error]'); };
   ws.onclose = function(evt) {
-    if (isClosed()) { term.textContent += '\r\n[Session ended]'; return; }
-    if (evt.code === 1000) return;  // clean close
-    if (evt.code === 4003) {        // session expired — do not reconnect
+    if (isClosed()) { writeStatus('[Session ended]'); return; }
+    if (evt.code === 1000) return;
+    if (evt.code === 4003) {
       _surfaceWsLockout(evt);
-      term.textContent += '\r\n[Session expired — please log in again]';
+      writeStatus('[Session expired — please log in again]');
       toast('Session expired — please log in again', 'error');
       return;
     }
     if (document.getElementById('term-output')) {
-      term.textContent += '\r\n[Reconnecting in ' + (delay / 1000) + 's...]\r\n';
-      setTimeout(function() { connectExecWS(id, attempt + 1, term, input, el, isClosed, setClosed); }, delay);
+      writeStatus('[Reconnecting in ' + (delay / 1000) + 's...]');
+      setTimeout(function() { connectExecWS(id, attempt + 1, termWrap, term, el, isClosed, setClosed); }, delay);
     }
   };
-  input.onkeydown = function(e) { if (e.key === 'Enter') { if (ws.readyState === WebSocket.OPEN) { ws.send(input.value + '\n'); } input.value = ''; } };
+  // Keystroke wiring: xterm.js emits raw PTY bytes (arrow keys as ANSI
+  // escapes, Ctrl-C as \x03, Tab as \t, readline chords — all handled
+  // by the shell, not us). Legacy fallback ships line-at-a-time on Enter.
+  if (term) {
+    term.onData(function(data) {
+      if (ws.readyState === WebSocket.OPEN) { try { ws.send(data); } catch(e) {} }
+    });
+  } else if (termWrap._legacyInput) {
+    termWrap._legacyInput.onkeydown = function(e) {
+      if (e.key === 'Enter') {
+        if (ws.readyState === WebSocket.OPEN) { ws.send(termWrap._legacyInput.value + '\n'); }
+        termWrap._legacyInput.value = '';
+      }
+    };
+  }
 }
 
 // ── Inspect ──
@@ -1582,15 +1939,254 @@ async function showProcessesContent(id) {
   }, 3000);
 }
 
-// ── Files (docker diff) ──
+// ── Files (docker cp / docker diff) ──
+//
+// The Files tab now has two sub-views:
+//   1. **Browser** — navigate the container's live filesystem. Backed
+//      by /api/containers/{id}/ls. Click a dir to enter, click a file
+//      to download it, drag-drop to upload into the current dir.
+//   2. **Changes** — the original `docker diff` output (paths added,
+//      modified, or deleted since the image).
+// A pair of tabs at the top switches between them.
+
+// Persist the current browsed path per container so re-entering the
+// Files tab lands back where the user was (common flow: edit file
+// locally, re-upload to same path).
+var _filesPath = {};
+
 async function showFilesContent(id) {
   var el = document.getElementById('detail-content');
-  el.innerHTML = '<div class="refreshing">Loading filesystem changes...</div>';
+  el.innerHTML = '';
+  var tabBar = document.createElement('div');
+  tabBar.className = 'detail-subtabs';
+  tabBar.style.cssText = 'display:flex;gap:6px;margin-bottom:12px';
+  var browserPanel = document.createElement('div');
+  var changesPanel = document.createElement('div');
+  changesPanel.style.display = 'none';
+  function _mkSubTab(label, panel, onActivate) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn small';
+    b.textContent = label;
+    b.onclick = function() {
+      [browserPanel, changesPanel].forEach(function(p) { p.style.display = 'none'; });
+      tabBar.querySelectorAll('button').forEach(function(x) { x.classList.remove('primary'); });
+      b.classList.add('primary');
+      panel.style.display = '';
+      if (onActivate) onActivate();
+    };
+    return b;
+  }
+  var browseBtn = _mkSubTab('Browse', browserPanel, function() { _renderFileBrowser(id, browserPanel); });
+  var diffBtn = _mkSubTab('Changes (docker diff)', changesPanel, function() { _renderDiff(id, changesPanel); });
+  tabBar.append(browseBtn, diffBtn);
+  el.append(tabBar, browserPanel, changesPanel);
+  browseBtn.click();  // default view
+}
+
+
+async function _renderFileBrowser(id, panel) {
+  panel.innerHTML = '<div class="refreshing">Loading\u2026</div>';
+  var path = _filesPath[id] || '/';
+
+  // Header: breadcrumb, Refresh, Upload, New folder is not supported
+  // (docker has no mkdir primitive over cp — require the user to exec).
+  var header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+  var breadcrumb = document.createElement('div');
+  breadcrumb.style.cssText = 'flex:1;font-size:13px;font-family:monospace';
+  function _paintBreadcrumb(p) {
+    breadcrumb.innerHTML = '';
+    var parts = p.split('/').filter(Boolean);
+    function _crumbLink(label, navPath) {
+      var a = document.createElement('a');
+      a.href = '#'; a.textContent = label;
+      a.style.cssText = 'color:var(--accent,#0d9488);text-decoration:none;cursor:pointer';
+      a.onclick = function(ev) { ev.preventDefault(); _filesPath[id] = navPath; _renderFileBrowser(id, panel); };
+      return a;
+    }
+    breadcrumb.appendChild(_crumbLink('/', '/'));
+    var acc = '';
+    parts.forEach(function(p2, i) {
+      acc += '/' + p2;
+      breadcrumb.appendChild(document.createTextNode(i === 0 ? '' : ' / '));
+      breadcrumb.appendChild(_crumbLink(p2, acc));
+    });
+  }
+  _paintBreadcrumb(path);
+  var refreshBtn = makeBtn('Refresh', function() { _renderFileBrowser(id, panel); }, 'btn small');
+  var uploadBtn = makeBtn('Upload file', function() { _uploadPrompt(id, path, panel); }, 'btn small primary');
+  header.append(breadcrumb, refreshBtn, uploadBtn);
+
+  var table = document.createElement('table');
+  table.innerHTML = '<thead><tr><th style="width:24px"></th><th>Name</th><th>Size</th><th>Mode</th><th>Actions</th></tr></thead>';
+  var tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+
   try {
-    var data = await apiFetch(API+'/containers/'+id+'/diff');
-    el.innerHTML = '';
+    var data = await apiFetch(API + '/containers/' + id + '/ls?path=' + encodeURIComponent(path));
+    panel.innerHTML = '';
+    panel.appendChild(header);
+
+    // Parent-directory hop (unless we're at /).
+    if (path !== '/') {
+      var parent = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+      var upTr = document.createElement('tr');
+      upTr.style.cursor = 'pointer';
+      upTr.onclick = function() { _filesPath[id] = parent; _renderFileBrowser(id, panel); };
+      upTr.innerHTML = '<td>\u21B0</td><td colspan="4" style="color:var(--muted)">.. (up to ' + esc(parent) + ')</td>';
+      tbody.appendChild(upTr);
+    }
+
+    var entries = data.entries || [];
+    if (!entries.length) {
+      var em = document.createElement('tr');
+      em.innerHTML = '<td></td><td colspan="4" style="color:var(--muted);padding:12px 0">(empty directory)</td>';
+      tbody.appendChild(em);
+    } else {
+      entries.forEach(function(e) {
+        var tr = document.createElement('tr');
+        var tdIcon = document.createElement('td');
+        tdIcon.textContent = e.type === 'dir' ? '\ud83d\udcc1'
+                            : e.type === 'link' ? '\ud83d\udd17'
+                            : '\ud83d\udcc4';
+        var tdName = document.createElement('td');
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = e.name + (e.type === 'link' && e.target ? ' \u2192 ' + e.target : '');
+        if (e.type === 'dir' || e.type === 'link') {
+          nameSpan.style.cssText = 'color:var(--accent,#0d9488);cursor:pointer';
+          nameSpan.onclick = function() {
+            var next = path.replace(/\/+$/, '') + '/' + e.name;
+            _filesPath[id] = next;
+            _renderFileBrowser(id, panel);
+          };
+        }
+        tdName.appendChild(nameSpan);
+        var tdSize = document.createElement('td');
+        tdSize.textContent = e.type === 'file' ? _formatBytes(e.size) : '';
+        tdSize.style.cssText = 'font-family:monospace;color:var(--muted);font-size:12px';
+        var tdMode = document.createElement('td');
+        tdMode.style.cssText = 'font-family:monospace;font-size:11px;color:var(--muted)';
+        tdMode.textContent = e.mode || '';
+        var tdAct = document.createElement('td');
+        if (e.type === 'file' || e.type === 'link') {
+          var dlBtn = makeBtn('Download', (function(n) {
+            return function() {
+              var fullPath = path.replace(/\/+$/, '') + '/' + n;
+              // apiFetch sends Authorization; we need raw fetch + download.
+              fetch(API + '/containers/' + id + '/files?path=' + encodeURIComponent(fullPath),
+                    { headers: { 'Authorization': 'Bearer ' + getToken(),
+                                 'X-Requested-With': 'ContainerManager' } })
+                .then(function(r) {
+                  if (!r.ok) throw new Error('Download failed: ' + r.status);
+                  return r.blob();
+                })
+                .then(function(blob) {
+                  var url = URL.createObjectURL(blob);
+                  var a = document.createElement('a');
+                  a.href = url;
+                  a.download = n + '.tar';
+                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                  setTimeout(function() { URL.revokeObjectURL(url); }, 500);
+                  toast('Downloaded ' + n, 'success');
+                })
+                .catch(function(err) { toast(err.message, 'error'); });
+            };
+          })(e.name), 'btn small');
+          tdAct.appendChild(dlBtn);
+        }
+        tr.append(tdIcon, tdName, tdSize, tdMode, tdAct);
+        tbody.appendChild(tr);
+      });
+    }
+    if (data.truncated) {
+      var note = document.createElement('p');
+      note.style.cssText = 'font-size:11px;color:var(--amber,#f59e0b);margin-top:8px';
+      note.textContent = 'Directory truncated at ' + entries.length + ' entries. Raise CONTAINER_LS_MAX_ENTRIES on the server to see more.';
+      panel.appendChild(note);
+    }
+    panel.appendChild(table);
+
+    // Drag-and-drop upload target.
+    panel.ondragover = function(ev) { ev.preventDefault(); panel.style.outline = '2px dashed var(--accent,#0d9488)'; };
+    panel.ondragleave = function() { panel.style.outline = ''; };
+    panel.ondrop = function(ev) {
+      ev.preventDefault();
+      panel.style.outline = '';
+      var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+      if (f) _doUpload(id, path, f, panel);
+    };
+  } catch (e) {
+    panel.innerHTML = '';
+    panel.appendChild(header);
+    var errP = document.createElement('p');
+    errP.style.color = 'var(--red)';
+    errP.textContent = 'Cannot list ' + path + ': ' + e.message;
+    panel.appendChild(errP);
+  }
+}
+
+
+function _uploadPrompt(id, path, panel) {
+  var inp = document.createElement('input');
+  inp.type = 'file';
+  inp.onchange = function() {
+    var f = inp.files && inp.files[0];
+    if (f) _doUpload(id, path, f, panel);
+  };
+  inp.click();
+}
+
+
+function _doUpload(id, path, file, panel) {
+  var fd = new FormData();
+  fd.append('file', file);
+  toast('Uploading ' + file.name + '\u2026', 'info');
+  fetch(API + '/containers/' + id + '/upload?path=' + encodeURIComponent(path), {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + getToken(),
+      'X-Requested-With': 'ContainerManager',
+    },
+    body: fd,
+  })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(body) {
+        var msg = (body && body.detail && body.detail.message) || ('HTTP ' + r.status);
+        throw new Error(msg);
+      });
+      return r.json();
+    })
+    .then(function() {
+      toast('Uploaded ' + file.name, 'success');
+      _renderFileBrowser(id, panel);
+    })
+    .catch(function(err) { toast('Upload failed: ' + err.message, 'error'); });
+}
+
+
+function _formatBytes(n) {
+  if (!n || n < 0) return '0 B';
+  var units = ['B', 'KB', 'MB', 'GB'];
+  var i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? String(n) : n.toFixed(1)) + ' ' + units[i];
+}
+
+
+async function _renderDiff(id, panel) {
+  panel.innerHTML = '<div class="refreshing">Loading filesystem changes\u2026</div>';
+  try {
+    var data = await apiFetch(API + '/containers/' + id + '/diff');
+    panel.innerHTML = '';
     if (!data || data.length === 0) {
-      el.innerHTML = '<div class="empty-state"><p>No filesystem changes detected</p></div>';
+      var empty = document.createElement('div'); empty.className = 'empty-state';
+      var line1 = document.createElement('p'); line1.style.cssText = 'margin-bottom:6px;font-weight:500';
+      line1.textContent = 'No files have changed since this container started.';
+      var line2 = document.createElement('p'); line2.style.cssText = 'font-size:12px;color:var(--muted);margin:0 auto;max-width:520px';
+      line2.textContent = 'This view shows the output of `docker diff` — paths the container has added, modified, or deleted versus its base image. An empty list means the container has only read from its image layers (typical for a read-only service, or a container that has just started).';
+      empty.append(line1, line2);
+      panel.appendChild(empty);
       return;
     }
     var table = document.createElement('table');
@@ -1603,14 +2199,18 @@ async function showFilesContent(id) {
       badge.className = 'status ' + (d.kind === 'Added' ? 'running' : d.kind === 'Deleted' ? 'exited' : 'created');
       badge.textContent = d.kind;
       tdKind.appendChild(badge);
-      var tdPath = document.createElement('td'); tdPath.className = 'mono'; tdPath.style.fontSize='12px'; tdPath.textContent = d.path;
+      var tdPath = document.createElement('td'); tdPath.className = 'mono'; tdPath.style.fontSize = '12px'; tdPath.textContent = d.path;
       tr.append(tdKind, tdPath); tbody.appendChild(tr);
     });
-    table.appendChild(tbody); el.appendChild(table);
+    table.appendChild(tbody); panel.appendChild(table);
     var note = document.createElement('p'); note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px';
     note.textContent = data.length + ' change(s) from base image';
-    el.appendChild(note);
-  } catch (e) { el.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent = e.message; el.appendChild(p); }
+    panel.appendChild(note);
+  } catch (e) {
+    panel.innerHTML = '';
+    var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = e.message;
+    panel.appendChild(p);
+  }
 }
 
 // ── Shared Hub Search builder ──
@@ -1661,21 +2261,90 @@ function buildHubSearch(onSelect) {
         back.innerHTML = '&#8592; Back to search';
         back.onclick = function() { results.innerHTML = ''; };
         results.appendChild(back);
-        var nameRow = document.createElement('div');
-        nameRow.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border)';
-        nameRow.textContent = imageName + ' — pick a tag:';
-        results.appendChild(nameRow);
         var tags = data.tags || [];
-        if (!tags.length) { results.innerHTML += '<span style="font-size:12px;color:var(--muted)">No tags found.</span>'; return; }
-        tags.forEach(function(tag) {
-          var full = imageName + ':' + tag;
-          var t = document.createElement('div');
-          t.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; t.setAttribute('data-testid','hub-tag-row');
-          t.innerHTML = '<span style="font-size:13px;font-family:monospace">' + esc(tag) + '</span>' +
-            '<span style="font-size:11px;color:var(--accent,#0d9488)">Select ↵</span>';
-          t.onclick = function() { onSelect(full); results.innerHTML = ''; hubInp.value = ''; };
-          results.appendChild(t);
-        });
+        var header = document.createElement('div');
+        header.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;gap:8px';
+        var nameSpan = document.createElement('span'); nameSpan.textContent = imageName + ' — pick a tag:';
+        var count = document.createElement('span'); count.style.cssText = 'font-size:11px;font-weight:400;color:var(--muted)';
+        count.textContent = tags.length + (tags.length >= 100 ? '+ tags (scroll to see all)' : ' tags');
+        header.append(nameSpan, count);
+        results.appendChild(header);
+        if (!tags.length) {
+          results.innerHTML += '<span style="font-size:12px;color:var(--muted)">No tags found.</span>';
+          return;
+        }
+        // Filter box — Docker Hub returns up to 100 tags ordered by last_updated;
+        // common pinned tags (3.12-slim, 3.11-alpine, etc.) can be buried below
+        // rolling "latest" pushes. A client-side filter lets the user type
+        // "3.12-slim" and jump straight to it.
+        var filter = document.createElement('input');
+        filter.type = 'search';
+        filter.placeholder = 'Filter tags (e.g. 3.12-slim)';
+        filter.setAttribute('data-testid', 'hub-tag-filter');
+        filter.style.cssText = 'width:100%;padding:4px 8px;font-size:12px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)';
+        results.appendChild(filter);
+        var tagList = document.createElement('div');
+        tagList.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+        results.appendChild(tagList);
+        // `tags` is the recent-100 list. When the user types a filter with
+        // no local match (stable tags like `3.12-slim` often aren't in the
+        // last 100 most-recently-updated tags), fall back to a server-side
+        // query — /api/registry/tags?name=… asks Hub to filter by tag-name
+        // substring, which reaches tags outside the recent window.
+        var serverMatches = null; // set to array after a remote fetch
+        var serverFetchPending = false;
+        function _renderInto(container, list, needle) {
+          container.innerHTML = '';
+          list.forEach(function(tag) {
+            var full = imageName + ':' + tag;
+            var t = document.createElement('div');
+            t.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; t.setAttribute('data-testid','hub-tag-row');
+            t.innerHTML = '<span style="font-size:13px;font-family:monospace">' + esc(tag) + '</span>' +
+              '<span style="font-size:11px;color:var(--accent,#0d9488)">Select ↵</span>';
+            t.onclick = function() { onSelect(full); results.innerHTML = ''; hubInp.value = ''; };
+            container.appendChild(t);
+          });
+        }
+        function renderTags(q) {
+          var needle = (q || '').toLowerCase();
+          if (!needle) {
+            _renderInto(tagList, tags, needle);
+            return;
+          }
+          var localMatches = tags.filter(function(tag) { return tag.toLowerCase().indexOf(needle) !== -1; });
+          if (localMatches.length) {
+            _renderInto(tagList, localMatches, needle);
+            return;
+          }
+          // No local match — try Hub's name filter. Guard with a minimum
+          // query length to avoid hammering Hub on every keystroke, and
+          // constrain to the same tag grammar the server enforces.
+          if (needle.length < 2 || !/^[A-Za-z0-9_][A-Za-z0-9_.\-]*$/.test(q)) {
+            tagList.innerHTML = '<span style="font-size:12px;color:var(--muted)">No tags match ' + esc(q) + ' in the latest ' + tags.length + '.</span>';
+            return;
+          }
+          if (serverFetchPending) return;
+          serverFetchPending = true;
+          tagList.innerHTML = '<span style="font-size:12px;color:var(--muted)">Searching all tags for ' + esc(q) + '…</span>';
+          apiFetch(API+'/registry/tags?image=' + encodeURIComponent(imageName) + '&name=' + encodeURIComponent(q))
+            .then(function(d2) {
+              serverFetchPending = false;
+              var remote = d2.tags || [];
+              // If the user has kept typing, re-run with the current value.
+              if (filter.value !== q) { renderTags(filter.value); return; }
+              if (!remote.length) {
+                tagList.innerHTML = '<span style="font-size:12px;color:var(--muted)">No tags on Docker Hub match ' + esc(q) + '.</span>';
+                return;
+              }
+              _renderInto(tagList, remote, needle);
+            })
+            .catch(function() {
+              serverFetchPending = false;
+              tagList.innerHTML = '<span style="font-size:12px;color:var(--red,#ef4444)">Tag search failed.</span>';
+            });
+        }
+        filter.addEventListener('input', function() { renderTags(filter.value); });
+        renderTags('');
       })
       .catch(function() { results.innerHTML = '<span style="font-size:12px;color:var(--red,#ef4444)">Failed to load tags.</span>'; });
   }

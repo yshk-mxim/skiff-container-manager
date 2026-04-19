@@ -245,14 +245,14 @@ def test_c4_reload_during_ws_cleans_up_server_side(page, live_server, docker_cli
         page.wait_for_selector("#term-output", timeout=SHORT)
         # If we reach this line, the new WS attached cleanly — no zombie
         # blocking the slot. Type a command to prove the PTY is live.
-        term_input = page.locator("input.terminal-input")
-        term_input.wait_for(state="visible", timeout=SHORT)
+        from tests.e2e_helpers import term_read, term_send
+
+        page.wait_for_selector(".xterm-helper-textarea, .xterm", timeout=SHORT)
         page.wait_for_timeout(600)
-        term_input.fill("echo C4OKRELOAD")
-        page.keyboard.press("Enter")
+        term_send(page, "echo C4OKRELOAD\r")
         deadline = time.time() + 5
         while time.time() < deadline:
-            if "C4OKRELOAD" in page.locator("#term-output").inner_text():
+            if "C4OKRELOAD" in term_read(page):
                 break
             page.wait_for_timeout(200)
         else:

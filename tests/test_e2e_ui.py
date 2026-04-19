@@ -1595,16 +1595,13 @@ def test_container_terminal_tab_renders(page, live_server, docker_client):
     active_tab = page.locator(".detail-tab.active")
     assert "Terminal" in active_tab.text_content()
 
-    # The terminal output div and input should be rendered
+    # Terminal is rendered by xterm.js inside #term-output. The xterm
+    # widget creates .xterm-helper-textarea as its keystroke accepter
+    # (the legacy .terminal-input is only used if xterm.js fails to
+    # load — see showShellContent fallback in app.js).
     page.wait_for_selector("#term-output", timeout=SHORT)
-    page.wait_for_selector("input.terminal-input", timeout=SHORT)
-
+    page.wait_for_selector(".xterm-helper-textarea, input.terminal-input", timeout=SHORT)
     assert page.locator("#term-output").count() > 0
-    assert page.locator("input.terminal-input").count() > 0
-
-    # The input should have the placeholder 'Type command...'
-    placeholder = page.locator("input.terminal-input").get_attribute("placeholder")
-    assert placeholder and "command" in placeholder.lower()
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -1626,23 +1623,23 @@ def test_container_terminal_send_command(page, live_server, docker_client):
     page.wait_for_selector(f"text={container_name}", timeout=MEDIUM)
     page.locator(f"tr:has-text('{container_name}')").locator("button:has-text('Terminal')").click()
     page.wait_for_selector("#term-output", timeout=MEDIUM)
-    page.wait_for_selector("input.terminal-input", timeout=SHORT)
+    page.wait_for_selector(".xterm-helper-textarea, input.terminal-input", timeout=SHORT)
 
-    # Wait a moment for the WebSocket to connect (if it does)
+    # Wait a moment for the WS to connect + PTY to warm up.
     page.wait_for_timeout(2000)
 
-    term_input = page.locator("input.terminal-input")
-    term_input.click()
-    term_input.fill("echo e2e-term-marker")
-    term_input.press("Enter")
+    # xterm.js: type into the focused Terminal and send CR to execute.
+    from tests.e2e_helpers import term_read
 
-    # Wait up to MEDIUM for the command echo or any output in term-output
-    # (In a live environment the exec WS responds; in CI the WS may fail gracefully)
+    page.locator(".xterm-helper-textarea, .xterm").first.focus()
+    page.keyboard.type("echo e2e-term-marker\r")
     page.wait_for_timeout(3000)
 
-    term_text = page.locator("#term-output").text_content()
-    # Either the output appeared, or the WS closed with a reconnect message
-    assert len(term_text) > 0, "Expected some content in the terminal output element"
+    # Terminal buffer should contain something — the typed command or
+    # the echoed output or a WS status line. Zero-length means the
+    # terminal didn't attach at all.
+    term_text = term_read(page) or page.locator("#term-output").text_content() or ""
+    assert len(term_text) > 0, "Expected some content in the terminal buffer"
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -2747,8 +2744,13 @@ def test_terminal_disconnect_button(page, live_server, docker_client):
     disconnect_btn.click()
     page.wait_for_timeout(1000)
 
-    # After disconnecting, the terminal should show [Disconnected]
-    term_text = page.locator("#term-output").text_content()
+    # After disconnecting, the terminal should show [Disconnected].
+    # xterm.js writes to its internal buffer, which `term_read` returns
+    # verbatim; text_content() on the host div also works because
+    # xterm renders to child DOM rows. Check both sources to be robust.
+    from tests.e2e_helpers import term_read
+
+    term_text = (term_read(page) or "") + " " + (page.locator("#term-output").text_content() or "")
     assert "Disconnected" in term_text or "Session ended" in term_text
 
     if docker_client:
@@ -2787,7 +2789,8 @@ def test_terminal_tab_switch_closes_ws(page, live_server, docker_client):
     page.locator(".detail-tab:has-text('Terminal')").click()
     page.wait_for_selector("#term-output", timeout=MEDIUM)
     assert page.locator("#term-output").count() > 0
-    assert page.locator("input.terminal-input").count() > 0
+    # Either xterm.js (primary) or legacy input fallback renders.
+    assert page.locator(".xterm-helper-textarea, input.terminal-input").count() > 0
 
     if docker_client:
         for c in docker_client.containers.list(all=True):

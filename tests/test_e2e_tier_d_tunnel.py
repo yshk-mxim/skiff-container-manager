@@ -33,7 +33,7 @@ pytest.importorskip(
 pytestmark = pytest.mark.e2e
 
 # Configurable target — no personal hostname committed. Callers set
-# E2E_SSH_TUNNEL_TARGET=yshkolni@main3.local (or equivalent) to run
+# E2E_SSH_TUNNEL_TARGET=user@remote-host.local (or equivalent) to run
 # these tests. Anything falsy → skip.
 _TUNNEL_TARGET = os.environ.get("E2E_SSH_TUNNEL_TARGET", "").strip()
 

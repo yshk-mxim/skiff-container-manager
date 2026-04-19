@@ -926,7 +926,7 @@ def _iter_text_files_for_archaeology(root: pathlib.Path) -> list[pathlib.Path]:
     # They're minified and carry their own upstream comment style that trips
     # AP012 — we don't own or edit those files, so they're excluded from
     # project-level anti-pattern scans. Treated like a vendored `node_modules`.
-    skip_dirs = (".git", "__pycache__", "node_modules", ".venv", "swagger-ui")
+    skip_dirs = (".git", "__pycache__", "node_modules", ".venv", "swagger-ui", "xterm")
     seen: set[pathlib.Path] = set()
     for pat in patterns:
         for p in root.rglob(pat):

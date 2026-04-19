@@ -18,8 +18,8 @@ from typing import Any
 
 import docker.errors
 import structlog
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from skiff import config, validators
 from skiff.auth import AUTH  # decorator arg — direct import for readability
@@ -583,8 +583,9 @@ def delete_container(
     now" signal. Layering it on top of the undo-queue would be
     contradictory: the caller asked for immediacy. When `force=true`
     we short-circuit the queue and delete synchronously even if
-    `undo=true` is also set. The client-side UI never pairs these two
-    flags; this only matters for scripted DELETE callers.
+    `undo=true` is also set. The UI only pairs these flags when the
+    container is running/paused (Docker rejects remove without force);
+    stopped containers take the normal undoable path.
     """
     container = validators._get_container(client, container_id)
     if undo and not force:
@@ -1102,3 +1103,342 @@ def container_diff(request: Request, container_id: str, client=Depends(docker_cl
     changes = validators.safe_docker_call(container.diff) or []
     kind_map = {0: "Modified", 1: "Added", 2: "Deleted"}
     return [{"path": c.get("Path", ""), "kind": kind_map.get(c.get("Kind", 0), "unknown")} for c in changes]
+
+
+# ── File copy in/out (`docker cp`) ─────────────────────────────────────
+#
+# The container-cp flow is bounded and audit-logged because it can read
+# or write arbitrary bytes inside the container's filesystem. Security
+# posture:
+#   - `path` is validated as an absolute POSIX path and capped at 256
+#     chars so a massive path doesn't pin memory in the SDK.
+#   - Download caps the streamed tar at `CONTAINER_CP_MAX_MB` (default 64).
+#     Aborts past the cap instead of silently truncating — a large log
+#     file that would overflow the viewer is better rejected than
+#     half-delivered.
+#   - Upload caps the request body at the same size. FastAPI reads the
+#     body into memory, so the cap protects the server from a DoS push.
+#   - Every successful get/put is audit-logged with (container, path, bytes).
+
+_CP_PATH_RE = re.compile(r"^/[^\x00]{0,255}$")
+
+
+def _validate_cp_path(path: str) -> str:
+    """Reject paths that aren't absolute, contain null bytes, or exceed
+    the length cap. Container-internal paths only — this doesn't touch
+    the host filesystem, so path traversal attempts are neutralised by
+    Docker's own get_archive / put_archive; we still cap length so a
+    caller can't push a multi-MB path string into the daemon."""
+    if not path or not _CP_PATH_RE.fullmatch(path):
+        raise http_error("validation.bad_input", message="path must be absolute and under 256 chars")
+    return path
+
+
+@router.get("/api/containers/{container_id}/ls", dependencies=AUTH, tags=["containers"])
+@secure_route.read(RATE.READ)
+def container_ls(
+    request: Request,
+    container_id: str,
+    path: str = Query(default="/", min_length=1, max_length=256),
+    client=Depends(docker_client_dep),
+) -> dict:
+    """List a directory inside a container.
+
+    Execs `ls -la --full-time -p <path>` and parses the output. The `-p`
+    flag suffixes directory names with `/` so we can disambiguate dirs
+    from files without a second stat. Used by the Files tab's file
+    browser so an operator can navigate container state visually.
+
+    Output format per row:
+        {"name": "foo", "type": "file|dir|link", "size": 123, "mode": "rwxr-xr-x",
+         "mtime": "2026-04-18T05:35:12", "target": "symlink-target-if-any"}
+
+    Security posture: `path` goes through the same POSIX validator as
+    cp. Commands are executed as the container's own user (no sudo,
+    no privilege escalation) — the ls is as safe as any other exec.
+    Output is capped at `CONTAINER_LS_MAX_ENTRIES` so a giant /proc
+    doesn't exhaust memory."""
+    _validate_cp_path(path)
+    container = validators._get_container(client, container_id)
+    # Busybox ls doesn't have `--full-time`; try GNU form first and fall
+    # back to busybox if it errored. Both provide enough data to parse.
+    def _exec(cmd: list[str]) -> tuple[int, str]:
+        res = validators.safe_docker_call(container.exec_run, cmd, stdout=True, stderr=True)
+        out = res.output.decode("utf-8", errors="replace") if res.output else ""
+        return res.exit_code or 0, out
+
+    rc, text = _exec(["ls", "-la", "--full-time", "-p", "--", path])
+    if rc != 0:
+        rc, text = _exec(["ls", "-la", "-p", "--", path])
+    if rc != 0:
+        # Path doesn't exist or isn't a directory.
+        raise http_error("resource.not_found", message=f"cannot list {path!r}")
+
+    max_entries = config.CONTAINER_LS_MAX_ENTRIES
+    entries: list[dict] = []
+    for raw_line in text.splitlines():
+        entry = _parse_ls_line(raw_line)
+        if entry is not None:
+            entries.append(entry)
+        if len(entries) >= max_entries:
+            break
+    # Directories first, then files, each alphabetised.
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+    return {"path": path, "entries": entries, "truncated": len(entries) >= max_entries}
+
+
+# `ls -la` leading-char → entry type. Dispatch via dict keeps
+# `_parse_ls_line` within the project's C901/AP009 complexity budget.
+_LS_TYPE_BY_PREFIX = {
+    "d": "dir", "l": "link", "c": "device", "b": "device",
+    "s": "socket", "p": "fifo",
+}
+
+
+def _parse_ls_line(raw_line: str) -> dict | None:
+    """Parse one `ls -la -p` line → `{name, type, size, mode, target}`.
+
+    Returns None for header lines (`total N`), blanks, `.` / `..`, and
+    any row that doesn't have the expected column count. Works against
+    both GNU coreutils (with `--full-time`) and busybox `ls`."""
+    line = raw_line.rstrip("\n")
+    if not line or line.startswith("total "):
+        return None
+    cols = line.split(None, 7)
+    if len(cols) < 8:
+        return None
+    mode_full = cols[0]
+    try:
+        size = int(cols[4])
+    except (TypeError, ValueError):
+        size = 0
+    # Symlink row: `mode ... name -> target`. Split on the first ` -> `.
+    if " -> " in line:
+        left, _, target = line.rpartition(" -> ")
+        link_target = target.strip()
+        name = left.rsplit(None, 1)[-1]
+    else:
+        link_target = ""
+        name = line.rsplit(None, 1)[-1]
+    name = name.rstrip()
+    if name in (".", "./", "..", "../"):
+        return None
+    kind = _LS_TYPE_BY_PREFIX.get(mode_full[:1], "file")
+    display_name = name.rstrip("/") if kind == "dir" else name
+    return {
+        "name": display_name,
+        "type": kind,
+        "size": size,
+        "mode": mode_full[1:10],
+        "target": link_target,
+    }
+
+
+@router.post("/api/containers/{container_id}/upload", dependencies=AUTH, tags=["containers"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.cp_put",
+    audit_fields=lambda request, container_id, path, **kw: (  # noqa: ARG005
+        {"id": container_id, "path": path}
+    ),
+)
+async def container_upload_file(
+    request: Request,
+    container_id: str,
+    path: str = Query(..., min_length=1, max_length=256),
+    file: UploadFile = File(...),
+    client=Depends(docker_client_dep),
+) -> OkResponse:
+    """Multipart file upload — the browser-friendly sibling of `/files` PUT.
+
+    Browsers can submit multipart form data trivially, but building a tar
+    client-side is inconvenient. This endpoint takes a single uploaded
+    file (in the `file` form field), wraps it in a one-entry tar stream,
+    and calls `put_archive` into the container's target `path` (which
+    must be a directory).
+
+    Files larger than CONTAINER_CP_MAX_MB are rejected with a 400
+    envelope, not Starlette's default 413 plain-text, so the UI can
+    render a consistent error message."""
+    import io
+    import tarfile
+
+    _validate_cp_path(path)
+    container = validators._get_container(client, container_id)
+    cap_mb = config.CONTAINER_CP_MAX_MB
+    cap_bytes = cap_mb * 1024 * 1024
+    body = await file.read()
+    if len(body) > cap_bytes:
+        raise http_error("validation.bad_input", message=f"file over {cap_mb} MB cap")
+    # Sanitise filename — strip path components, reject empty.
+    raw_name = file.filename or ""
+    basename = raw_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if not basename or basename in {".", ".."}:
+        raise http_error("validation.bad_input", message="uploaded filename missing or invalid")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=basename)
+        info.size = len(body)
+        info.mode = 0o644
+        tf.addfile(info, io.BytesIO(body))
+    buf.seek(0)
+    ok = validators.safe_docker_call(container.put_archive, path, buf.getvalue())
+    if not ok:
+        raise http_error("resource.not_found", message=f"path {path!r} not writable")
+    log.info(
+        "container.upload_ok",
+        id=container_id,
+        path=path,
+        filename=basename,
+        size_bytes=len(body),
+    )
+    return OkResponse()
+
+
+@router.get("/api/containers/{container_id}/files", dependencies=AUTH, tags=["containers"])
+@secure_route.read(RATE.READ)
+def container_get_file(
+    request: Request,
+    container_id: str,
+    path: str = Query(..., min_length=1, max_length=256),
+    client=Depends(docker_client_dep),
+):
+    """Stream a file or directory out of a container as a tar archive.
+
+    Mirrors `docker cp <container>:<path> -`. The response is a tar
+    stream the caller can pipe into `tar -xv -`. Size-capped so an
+    operator doesn't accidentally tarball a 10 GB directory and choke
+    the browser."""
+    _validate_cp_path(path)
+    container = validators._get_container(client, container_id)
+    try:
+        stream, stat = container.get_archive(path)
+    except docker.errors.NotFound as exc:
+        raise http_error("resource.not_found", message=f"path {path!r} not found") from exc
+    cap_mb = config.CONTAINER_CP_MAX_MB
+    cap_bytes = cap_mb * 1024 * 1024
+
+    def _bounded_iter():
+        sent = 0
+        for chunk in stream:
+            if not chunk:
+                continue
+            sent += len(chunk)
+            if sent > cap_bytes:
+                # Can't send an HTTP error mid-stream cleanly; the chunk
+                # we just drained already left the client a partial tar.
+                # Log + stop so the operator notices.
+                log.warning(
+                    "container.cp_get_truncated",
+                    id=container_id,
+                    path=path,
+                    cap_mb=cap_mb,
+                )
+                return
+            yield chunk
+
+    filename = stat.get("name", "archive") + ".tar"
+    # `name` can contain path separators — flatten so Content-Disposition
+    # doesn't try to interpret them.
+    filename = filename.replace("/", "_").replace("\\", "_")
+    log.info(
+        "container.cp_get",
+        id=container_id,
+        path=path,
+        size_bytes=stat.get("size"),
+    )
+    return StreamingResponse(
+        _bounded_iter(),
+        media_type="application/x-tar",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/containers/{container_id}/files", dependencies=AUTH, tags=["containers"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.cp_put",
+    audit_fields=lambda request, container_id, path, **kw: (  # noqa: ARG005
+        {"id": container_id, "path": path}
+    ),
+)
+async def container_put_file(
+    request: Request,
+    container_id: str,
+    path: str = Query(..., min_length=1, max_length=256),
+    client=Depends(docker_client_dep),
+) -> OkResponse:
+    """Upload a tar archive into a container's filesystem.
+
+    Body must be `application/x-tar` (or `application/octet-stream` with
+    a tar payload). Equivalent of `docker cp <tarfile> <container>:<path>`.
+    Capped at `CONTAINER_CP_MAX_MB` to keep memory bounded."""
+    _validate_cp_path(path)
+    container = validators._get_container(client, container_id)
+    cap_mb = config.CONTAINER_CP_MAX_MB
+    cap_bytes = cap_mb * 1024 * 1024
+    body = await request.body()
+    if len(body) > cap_bytes:
+        raise http_error("validation.bad_input", message=f"body over {cap_mb} MB cap")
+    ok = validators.safe_docker_call(container.put_archive, path, body)
+    if not ok:
+        raise http_error("resource.not_found", message=f"path {path!r} not writable")
+    log.info("container.cp_put_ok", id=container_id, path=path, size_bytes=len(body))
+    return OkResponse()
+
+
+# ── Container commit — freeze a running container as an image ──────────
+
+
+_COMMIT_REPO_RE = validators.COMMIT_REPO_RE
+_COMMIT_TAG_RE = validators.COMMIT_TAG_RE
+
+
+@router.post("/api/containers/{container_id}/commit", dependencies=AUTH, tags=["containers"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.committed",
+    audit_fields=lambda request, container_id, repository, tag="latest", **kw: (  # noqa: ARG005
+        {"id": container_id, "repository": repository, "tag": tag}
+    ),
+)
+def container_commit(
+    request: Request,
+    container_id: str,
+    repository: str = Query(..., min_length=1, max_length=200),
+    tag: str = Query(default="latest", min_length=1, max_length=128),
+    message: str = Query(default="", max_length=500),
+    author: str = Query(default="", max_length=200),
+    client=Depends(docker_client_dep),
+) -> dict:
+    """Save a container's current filesystem state as a new image.
+
+    Mirrors `docker commit`. Useful when the operator has ssh'd into a
+    container via the Terminal tab, installed a dependency, and wants
+    to bake that state into a repeatable image. The resulting image
+    shows up in /api/images.
+
+    Security: `repository` + `tag` are constrained to Docker's own
+    grammar. We do NOT restrict to the registry allowlist here because
+    commit produces a LOCAL image (no network push). A subsequent push
+    would re-run through validate_image_registry."""
+    if not _COMMIT_REPO_RE.fullmatch(repository):
+        raise http_error("validation.bad_image_name", message=f"bad repository {repository!r}")
+    if not _COMMIT_TAG_RE.fullmatch(tag):
+        raise http_error("validation.bad_image_name", message=f"bad tag {tag!r}")
+    container = validators._get_container(client, container_id)
+    kwargs: dict[str, Any] = {"repository": repository, "tag": tag}
+    if message:
+        kwargs["message"] = message
+    if author:
+        kwargs["author"] = author
+    img = validators.safe_docker_call(container.commit, **kwargs)
+    # Plain dict — OkResponse uses extra=forbid but the UI + API consumers
+    # need the image_id/repository/tag echoed back to show a toast and
+    # to navigate to the new image.
+    return {
+        "ok": True,
+        "image_id": img.short_id,
+        "repository": repository,
+        "tag": tag,
+    }

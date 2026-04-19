@@ -156,17 +156,17 @@ def test_a3_exec_terminal_roundtrip(page, live_server, docker_client):
         # armed, so we have ~5s of grace to click + navigate to detail.
         row.locator("button:has-text('Terminal')").first.click()
         page.wait_for_selector("#term-output", timeout=SHORT)
-        # Terminal input uses class .terminal-input (placeholder "Type command…").
-        # Wait an extra beat for the WS to hand over the shell prompt
-        # before typing — PTY may still be warming up.
-        term_input = page.locator("input.terminal-input")
-        term_input.wait_for(state="visible", timeout=SHORT)
+        # xterm.js mounts inside #term-output — wait for its hidden
+        # textarea (keystroke accepter) before typing. PTY + shell prompt
+        # need a beat to warm up.
+        page.wait_for_selector(".xterm-helper-textarea, .xterm", timeout=SHORT)
         page.wait_for_timeout(800)
-        term_input.fill("echo A3OKSENTINEL")
-        page.keyboard.press("Enter")
+        from tests.e2e_helpers import term_read, term_send
+
+        term_send(page, "echo A3OKSENTINEL\r")
         deadline = time.time() + 5
         while time.time() < deadline:
-            out = page.locator("#term-output").inner_text()
+            out = term_read(page)
             if "A3OKSENTINEL" in out:
                 break
             page.wait_for_timeout(200)
