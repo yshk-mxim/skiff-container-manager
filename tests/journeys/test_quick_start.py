@@ -64,7 +64,7 @@ def test_journey_template_opens_run_modal_nginx(audited_page, live_server, audit
 
     with step("step_3_image_prefilled"):
         # Image input is prefilled with nginx:alpine — no free-text typing required.
-        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        img_input = page.locator("#run-image").first
         val = img_input.input_value() if img_input.count() > 0 else ""
         assert "nginx" in val, f"image not prefilled with nginx (got {val!r})"
 
@@ -99,11 +99,12 @@ def test_journey_template_postgres_shows_required_password(audited_page, live_se
 
     with step("step_3_password_env_visible"):
         # The env-var row for POSTGRES_PASSWORD should be present in the modal
-        # (the template declares required=True + help text).
-        body = page.locator(".modal, dialog, form").first
-        # Any of: key chip, input name, or label should mention POSTGRES_PASSWORD
-        assert body.locator("text=POSTGRES_PASSWORD").count() > 0, (
-            "postgres template modal missing POSTGRES_PASSWORD env row"
+        # (the template declares required=True + help text). Prefilled
+        # env lands in the run-env textarea as KEY=VALUE lines.
+        env_text = page.locator("#run-env").first.input_value()
+        assert "POSTGRES_PASSWORD" in env_text, (
+            f"postgres template modal missing POSTGRES_PASSWORD env row "
+            f"(got {env_text!r})"
         )
 
     with step("step_4_close_without_submit"):
@@ -262,7 +263,7 @@ def test_journey_template_python_dev_opens_modal(audited_page, live_server, audi
     with step("step_2_open_python_template"):
         _open_template(page, "python", SHORT)
     with step("step_3_image_is_python"):
-        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        img_input = page.locator("#run-image").first
         val = img_input.input_value() if img_input.count() > 0 else ""
         assert "python" in val.lower(), f"image not python: {val!r}"
 
@@ -283,7 +284,7 @@ def test_journey_template_node_dev_opens_modal(audited_page, live_server, audit_
     with step("step_2_open_node_template"):
         _open_template(page, "node", SHORT)
     with step("step_3_image_is_node"):
-        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        img_input = page.locator("#run-image").first
         val = img_input.input_value() if img_input.count() > 0 else ""
         assert "node" in val.lower(), f"image not node: {val!r}"
 

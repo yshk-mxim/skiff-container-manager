@@ -286,7 +286,7 @@ def test_journey_rename_persists(audited_page, live_server, audit_observer, pers
         with step("step_2_rename_via_api"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/{name}/rename",
-                params={"new_name": new_name},
+                params={"name": new_name},
                 headers=auth_headers(),
                 timeout=30,
             )
@@ -392,11 +392,11 @@ def test_journey_delete_emits_undo_toast(audited_page, live_server, audit_observ
             delete_btn.click()
 
         with step("step_4_undo_toast_appears"):
-            # Toast with an Undo button should be visible within a few seconds.
-            # Check both common toast classes.
+            # Toast with an Undo link should be visible within a few seconds.
+            # Implementation uses span.undo-link (not a button).
             try:
                 page.wait_for_selector(
-                    ".toast button:has-text('Undo'), .notification button:has-text('Undo')",
+                    ".toast-undo .undo-link, .toast .undo-link, span.undo-link",
                     timeout=MEDIUM,
                 )
             except Exception:
@@ -436,7 +436,7 @@ def test_journey_commit_container_to_image(audited_page, live_server, audit_obse
         with step("step_2_commit_via_api"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/{name}/commit",
-                params={"repo": tag.split(":", 1)[0], "tag": "latest"},
+                params={"repository": tag.split(":", 1)[0], "tag": "latest"},
                 headers=auth_headers(),
                 timeout=60,
             )

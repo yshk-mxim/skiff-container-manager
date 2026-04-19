@@ -2393,6 +2393,15 @@ function buildHubSearch(onSelect) {
 // replace_id pair is sent on submit so the server can preserve env values
 // without exposing them to the client (zero-trust clone).
 function showRunModal(prefillImage, prefillSource) {
+  // `prefillImage` accepts either a string image ref (legacy) or a
+  // template object `{image, name, command, ports, env, volumes}` from
+  // pages/templates.js _deployTemplate. Previously the type check below
+  // discarded the template object silently, opening an empty modal.
+  var prefillTemplate = null;
+  if (prefillImage && typeof prefillImage === 'object' && !Array.isArray(prefillImage)) {
+    prefillTemplate = prefillImage;
+    prefillImage = prefillTemplate.image || '';
+  }
   if (typeof prefillImage !== 'string') prefillImage = '';
   if (prefillSource && typeof prefillSource !== 'object') prefillSource = null;
   if (document.querySelector('.modal-bg')) return;
@@ -2469,6 +2478,30 @@ function showRunModal(prefillImage, prefillSource) {
       if (srcNet && srcNet !== 'bridge') selNet.value = srcNet;
     }
   }).catch(function(){});
+
+  // Template prefills ───────────────────────────────────────────────────────
+  // When opened from pages/templates.js the template object carries
+  // name_hint, ports, env, volumes, command. Populate each field so a
+  // novice can review + click Deploy without typing anything.
+  if (prefillTemplate) {
+    if (prefillTemplate.name) nameInp.value = prefillTemplate.name;
+    if (prefillTemplate.command) cmdInp.value = prefillTemplate.command;
+    if (Array.isArray(prefillTemplate.ports) && prefillTemplate.ports.length) {
+      portsInp.value = prefillTemplate.ports.map(function(p) {
+        return (p.host + ':' + p.container);
+      }).join(', ');
+    }
+    if (Array.isArray(prefillTemplate.env) && prefillTemplate.env.length) {
+      envInp.value = prefillTemplate.env.map(function(e) {
+        return e.key + '=' + (e.value || '');
+      }).join('\n');
+    }
+    if (Array.isArray(prefillTemplate.volumes) && prefillTemplate.volumes.length) {
+      volInp.value = prefillTemplate.volumes.map(function(v) {
+        return (v.name_hint || v.name || 'data') + ':' + v.mount;
+      }).join('\n');
+    }
+  }
 
   // Clone-mode prefills ────────────────────────────────────────────────────
   // Immutable create-time fields are pre-populated from prefillSource so the
