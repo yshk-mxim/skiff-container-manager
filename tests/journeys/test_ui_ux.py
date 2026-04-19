@@ -199,18 +199,23 @@ def test_journey_notifications_bell_shows_recent(audited_page, live_server, audi
         bell.click()
         page.wait_for_timeout(300)
         panel = page.locator("[data-testid='notif-panel'], .notif-panel")
-        if panel.count() > 0:
-            # Content must include the emitted toast text.
-            if "pa-audit test toast" not in panel.inner_text(timeout=SHORT):
-                audit_observer.emit(
-                    step="step_4_bell_panel_contains_toast",
-                    severity="medium",
-                    category="behaviour",
-                    title="Notifications panel missing recent toast",
-                    expected="Emitted toast appears in panel within 400ms",
-                    observed=f"panel text: {panel.inner_text()[:200]!r}",
-                    covers_historical="hb-no-notifications-history",
-                )
+        assert panel.count() > 0, (
+            "notif-panel didn't render after bell click "
+            "(hb-no-notifications-history regression)"
+        )
+        panel_text = panel.inner_text(timeout=SHORT)
+        if "pa-audit test toast" not in panel_text:
+            audit_observer.emit(
+                step="step_4_bell_panel_contains_toast",
+                severity="medium", category="behaviour",
+                title="Notifications panel missing recent toast",
+                expected="Emitted toast appears in panel within 400ms",
+                observed=f"panel text: {panel_text[:200]!r}",
+                covers_historical="hb-no-notifications-history",
+            )
+            pytest.fail(
+                f"notifications panel missing emitted toast: {panel_text[:200]!r}"
+            )
 
 
 @journey(

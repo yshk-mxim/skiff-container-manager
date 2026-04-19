@@ -308,7 +308,7 @@ def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audi
     with step("step_1_pull_image"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/images/pull",
-            params={"ref": ref},
+            params={"image": ref},
             headers=auth_headers(), timeout=300,
         )
         # 200 or 202 (background task) both acceptable.

@@ -174,21 +174,35 @@ def test_journey_compose_scale_service(audited_page, live_server, audit_observer
         with step("step_1_scale_to_3"):
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/compose/{project}/scale",
-                params={"service": "worker", "replicas": 3},
+                params={"service_name": "worker", "replicas": 3},
                 headers=auth_headers(), timeout=120,
             )
-            # Scale may return 200 or 500 if daemon lacks capacity.
-            # 500 is still valuable data — emit a finding not a pass.
-            if r.status_code != 200:
-                audit_observer.emit(
-                    step="step_1_scale_to_3",
-                    severity="medium",
-                    category="contract",
-                    title=f"compose scale returned {r.status_code}",
-                    expected="200 OK with replica count updated",
-                    observed=f"{r.status_code}: {r.text[:200]}",
-                    covers_historical="hb-compose-no-pull-or-scale",
-                )
+            assert r.status_code == 200, (
+                f"compose scale returned {r.status_code}: {r.text[:200]}"
+            )
+        with step("step_2_verify_three_replicas"):
+            # After scale, /api/containers must show 3 containers tagged
+            # with this compose project. Go through the live server
+            # rather than docker.from_env() — the latter fails when
+            # DOCKER_HOST is pointed elsewhere in the test env.
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers",
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200, f"list failed: {r.status_code}"
+            containers = r.json()
+            # ContainerSummary carries compose_project + compose_service
+            # as first-class fields (labels aren't serialised on the list).
+            workers = [
+                c for c in containers
+                if c.get("compose_project") == project
+                and c.get("compose_service") == "worker"
+            ]
+            assert len(workers) == 3, (
+                f"expected 3 worker containers after scale; found {len(workers)} "
+                f"(seen compose_projects: "
+                f"{ {c.get('compose_project') for c in containers} })"
+            )
     finally:
         _down(live_server, project)
 
@@ -387,15 +401,9 @@ def test_journey_compose_explicit_tear_down(audited_page, live_server, audit_obs
             # /api/compose/stacks returns a list directly.
             stacks = body if isinstance(body, list) else body.get("stacks", [])
             names = {s.get("name") or s.get("project_name") for s in stacks}
-            if project in names:
-                audit_observer.emit(
-                    step="step_3_stack_absent_from_list",
-                    severity="medium",
-                    category="behaviour",
-                    title="Stack still listed after down",
-                    expected=f"{project} absent from /api/compose/stacks",
-                    observed=f"names: {names}",
-                )
+            assert project not in names, (
+                f"stack {project} still listed after down; names: {names}"
+            )
         with step("step_4_up_again_from_clean"):
             _deploy(live_server, project, _MINIMAL_YAML)
     finally:
@@ -497,17 +505,12 @@ def test_journey_compose_failed_service_triage_via_logs(audited_page, live_serve
             )
             assert r.status_code == 200, f"logs failed: {r.status_code}"
             body = r.text.lower()
-            # The crasher errored on a missing binary — SRE should see
-            # the hint somewhere in the aggregated log.
-            if "no such" not in body and "not found" not in body and "executable" not in body:
-                audit_observer.emit(
-                    step="step_1_fetch_logs_for_failed_service",
-                    severity="medium",
-                    category="behaviour",
-                    title="Failed-service logs missing crash hint",
-                    expected="Aggregated logs include 'not found' / 'no such'",
-                    observed=r.text[:300],
-                )
+            # The crasher errored on a missing binary — SRE must see
+            # the reason in the aggregated log to triage.
+            crash_hints = ("no such", "not found", "executable")
+            assert any(h in body for h in crash_hints), (
+                f"failed-service logs missing crash hint: {r.text[:300]!r}"
+            )
     finally:
         _down(live_server, project)
 
@@ -551,12 +554,13 @@ def test_journey_compose_env_secret_not_leaked(audited_page, live_server, audit_
                 params={"tail": 50},
                 headers=auth_headers(), timeout=30,
             )
-            if r.status_code == 200 and secret_value in r.text:
+            assert r.status_code == 200, (
+                f"audit read failed: {r.status_code} {r.text[:200]!r}"
+            )
+            if secret_value in r.text:
                 audit_observer.emit(
                     step="step_2_audit_does_not_leak",
-                    severity="P0",
-                    category="security",
-                    zero_trust=True,
+                    severity="P0", category="security", zero_trust=True,
                     title="Env secret leaked into audit log",
                     expected="Redactor strips MY_PASSWORD values",
                     observed=f"secret marker '{secret_value}' present in audit",

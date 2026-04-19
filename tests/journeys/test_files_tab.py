@@ -145,25 +145,31 @@ def test_journey_files_path_traversal_rejected(audited_page, live_server, audit_
                 params={"path": "/etc/../../../../etc/passwd"},
                 headers=auth_headers(), timeout=30,
             )
-            # Two acceptable outcomes:
-            #  - 400/422: validator rejects the path
-            #  - 200 with canonicalised path that stays inside the
-            #    container (e.g., resolves to /etc/passwd and shows as
-            #    a file listing)
-            # Unacceptable:
-            #  - 500 (raw error from daemon or subprocess)
-            #  - 200 with an ls of the host filesystem
-            if r.status_code == 500:
-                audit_observer.emit(
-                    step="step_1_attempt_traversal_ls",
-                    severity="P0",
-                    category="security",
-                    zero_trust=True,
-                    title="Path-traversal returns 500 — validator boundary broken",
-                    expected="400/422 or canonicalised-safe 200",
-                    observed=f"HTTP 500: {r.text[:200]!r}",
-                )
-                pytest.fail("path traversal raised 500 — zero-trust boundary weak")
+        # Acceptable: 400/422 (validator rejects) OR 200 where the path
+        # canonicalises to a container path (e.g. /etc/passwd INSIDE
+        # the container — never the host).
+        # Unacceptable: 500 (raw error), OR 200 where the listing
+        # includes host-only paths that shouldn't exist in alpine:3.20.
+        if r.status_code == 500:
+            audit_observer.emit(
+                step="step_1_attempt_traversal_ls",
+                severity="P0", category="security", zero_trust=True,
+                title="Path-traversal returns 500 — validator boundary broken",
+                expected="400/422 or canonicalised-safe 200",
+                observed=f"HTTP 500: {r.text[:200]!r}",
+            )
+            pytest.fail("path traversal raised 500 — zero-trust boundary weak")
+        # If 200, verify the response is a listing of a path INSIDE the
+        # container. Alpine containers have /etc/passwd but NOT host
+        # markers like /Users or /home/<realuser>.
+        if r.status_code == 200:
+            import json as _json
+            body_str = _json.dumps(r.json())
+            host_markers = ("/Users/", "/Volumes/", "/private/var/folders")
+            escaped = [m for m in host_markers if m in body_str]
+            assert not escaped, (
+                f"path traversal escaped to host filesystem: {escaped}"
+            )
     finally:
         _teardown(live_server, name)
 
@@ -198,21 +204,30 @@ def test_journey_files_empty_state_explains_what_is_missing(audited_page, live_s
             page.wait_for_timeout(600)
         with step("step_4_empty_state_helpful"):
             body = page.locator("#main").inner_text()
-            # If the page shows an empty state, it should explain what
-            # would show up when populated. "No filesystem changes"
-            # alone is the banned copy.
+            # If the page shows the banned "No filesystem changes" copy
+            # standalone (hb-files-tab-misleading), fail. Accept it only
+            # if surrounding copy adds context (e.g. explains what a
+            # "change" means or offers an action).
             banned_copy = "No filesystem changes detected"
-            if banned_copy in body and "changes" not in body.replace(banned_copy, ""):
-                # Only the banned copy, no extra context nearby.
-                audit_observer.emit(
-                    step="step_4_empty_state_helpful",
-                    severity="medium",
-                    category="copy",
-                    title="Files tab empty state is context-free",
-                    expected="Copy that explains what 'changes' means (diff-from-image)",
-                    observed=f"Only '{banned_copy}' visible",
-                    covers_historical="hb-files-tab-misleading",
+            if banned_copy in body:
+                rest = body.replace(banned_copy, "").strip()
+                # Need at least 30 more chars of context to count as
+                # helpful, or an explicit word like "diff", "modify",
+                # "image", "baseline".
+                has_context = (
+                    len(rest) >= 30
+                    or any(w in rest.lower() for w in ("diff", "modif", "baseline", "image", "browse", "upload"))
                 )
+                if not has_context:
+                    audit_observer.emit(
+                        step="step_4_empty_state_helpful",
+                        severity="medium", category="copy",
+                        title="Files tab empty state is context-free",
+                        expected="Copy that explains what 'changes' means",
+                        observed=f"Only '{banned_copy}' visible",
+                        covers_historical="hb-files-tab-misleading",
+                    )
+                    pytest.fail("files-tab empty state is context-free (hb-files-tab-misleading)")
     finally:
         _teardown(live_server, name)
 
@@ -316,16 +331,9 @@ def test_journey_files_diff_view_lists_changes(audited_page, live_server, audit_
             )
             if r.status_code == 404:
                 pytest.skip("diff endpoint not surfaced under this path")
-            if r.status_code != 200:
-                audit_observer.emit(
-                    step="step_1_fetch_diff",
-                    severity="medium",
-                    category="contract",
-                    title=f"Diff endpoint returned {r.status_code}",
-                    expected="200 with an array of {Path, Kind} entries",
-                    observed=f"{r.status_code}: {r.text[:200]!r}",
-                )
-                return
+            assert r.status_code == 200, (
+                f"diff endpoint returned {r.status_code}: {r.text[:200]!r}"
+            )
             body = r.json()
             # Body is typically a list of dicts from docker-py.
             assert isinstance(body, (list, dict)), f"unexpected shape: {type(body)}"
@@ -410,16 +418,30 @@ def test_journey_files_symlink_navigation_safe(audited_page, live_server, audit_
                 params={"path": "/bin"},  # /bin → /usr/bin on modern alpine
                 headers=auth_headers(), timeout=30,
             )
-            if r.status_code >= 500:
-                audit_observer.emit(
-                    step="step_1_ls_with_symlinks",
-                    severity="high",
-                    category="contract",
-                    title=f"ls on symlink target returned {r.status_code}",
-                    expected="200 or 4xx — never 5xx",
-                    observed=f"{r.status_code}: {r.text[:200]!r}",
-                )
-                pytest.fail("symlink navigation 5xx")
+        # /bin is a symlink to /usr/bin on Alpine. Must either resolve
+        # safely (200 with executable listings) OR refuse with 4xx.
+        # 5xx = validator/subprocess boundary broken.
+        if r.status_code >= 500:
+            audit_observer.emit(
+                step="step_1_ls_with_symlinks",
+                severity="high", category="contract",
+                title=f"ls on symlink target returned {r.status_code}",
+                expected="200 or 4xx — never 5xx",
+                observed=f"{r.status_code}: {r.text[:200]!r}",
+            )
+            pytest.fail("symlink navigation 5xx")
+        assert r.status_code in (200, 400, 403, 404, 422), (
+            f"unexpected status {r.status_code} for symlink ls"
+        )
+        if r.status_code == 200:
+            # Resolved listing must contain at least one expected binary
+            # from /usr/bin — busybox, sh, ls, etc.
+            body = r.json()
+            entries = body.get("entries") or body.get("files") or []
+            names = {e.get("name") for e in entries}
+            assert names & {"busybox", "sh", "ls", "cat"}, (
+                f"symlink resolved but listing empty/unexpected: {list(names)[:10]}"
+            )
     finally:
         _teardown(live_server, name)
 
@@ -452,26 +474,23 @@ def test_journey_files_oversize_upload_rejected(audited_page, live_server, audit
                 files=files,
                 timeout=120,
             )
-            # Acceptable: 413 (too large), 400/422 (validator), 500 is NOT acceptable.
-            if r.status_code == 404:
-                pytest.skip("upload endpoint not present")
-            if 200 <= r.status_code < 300:
-                audit_observer.emit(
-                    step="step_1_upload_oversize",
-                    severity="high",
-                    category="security",
-                    title="50 MiB upload accepted — no size cap",
-                    expected="413 / 400 rejection",
-                    observed=f"{r.status_code} accepted",
-                )
-                audit_observer.emit(
-                    step="step_1_upload_oversize",
-                    severity="P0",
-                    category="security",
-                    zero_trust=True,
-                    title="No upload size cap — disk-exhaustion DoS vector",
-                    expected="4xx rejection on oversized bodies",
-                    observed=f"50 MiB upload returned {r.status_code}",
-                )
+        # Acceptable: 4xx (413 too-large, 400/422 validator). Not
+        # acceptable: 2xx (accepted — DoS vector) or 5xx (crash).
+        if r.status_code == 404:
+            pytest.skip("upload endpoint not present")
+        if 200 <= r.status_code < 300:
+            audit_observer.emit(
+                step="step_1_upload_oversize",
+                severity="P0", category="security", zero_trust=True,
+                title="No upload size cap — disk-exhaustion DoS vector",
+                expected="4xx rejection on oversized bodies",
+                observed=f"50 MiB upload returned {r.status_code}",
+            )
+            pytest.fail(
+                f"50 MiB upload accepted ({r.status_code}) — no size cap",
+            )
+        assert 400 <= r.status_code < 500, (
+            f"expected 4xx for oversize; got {r.status_code}: {r.text[:200]!r}"
+        )
     finally:
         _teardown(live_server, name)

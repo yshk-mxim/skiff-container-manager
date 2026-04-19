@@ -244,18 +244,25 @@ def test_journey_zero_config_wizard_reachable(audited_page, live_server, audit_o
         )
         assert r.status_code == 200, f"setup-state failed: {r.status_code}"
         body = r.json()
-        # Shape: must expose whether setup has completed and whether
-        # the Docker socket is reachable. Missing either means a
-        # novice can't tell what step they're on.
-        for key in ("token_configured", "docker_reachable"):
-            if key not in body and key.replace("_", "") not in {k.replace("_", "") for k in body}:
-                audit_observer.emit(
-                    step="step_1_probe_setup_state",
-                    severity="medium",
-                    category="contract",
-                    title=f"/api/setup-state missing `{key}` field",
-                    expected="Boolean fields a novice-facing wizard can render",
-                    observed=f"keys: {list(body.keys())}",
+        # Actual contract (see skiff/routers/setup.py::setup_state):
+        #   configured, from_env [always]
+        #   window_open, window_expires_in, lockout_remaining_secs
+        #     [when unconfigured]
+        #   tunnel_active, tunnel_socket [when unconfigured + loopback]
+        # A novice needs to know at minimum whether setup is configured.
+        assert "configured" in body, (
+            f"/api/setup-state missing `configured`; keys: {list(body.keys())}"
+        )
+        assert isinstance(body["configured"], bool), (
+            f"`configured` must be bool; got {type(body['configured'])}"
+        )
+        # If unconfigured, wizard needs the window timers. This matters
+        # for the novice's "can I still set up?" read.
+        if not body["configured"]:
+            for k in ("window_open", "window_expires_in"):
+                assert k in body, (
+                    f"unconfigured /api/setup-state missing `{k}`; "
+                    f"keys: {list(body.keys())}"
                 )
 
 

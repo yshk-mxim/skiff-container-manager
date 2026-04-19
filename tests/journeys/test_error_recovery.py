@@ -53,22 +53,39 @@ def test_journey_typo_image_name_returns_actionable_error(audited_page, live_ser
             json={},
             timeout=120,
         )
-        # 4xx with structured envelope, not a 5xx.
+        # Must be 4xx (user error), not 5xx (crash).
         if r.status_code >= 500:
             audit_observer.emit(
                 step="step_1_run_typo",
-                severity="high",
-                category="contract",
+                severity="high", category="contract",
                 title=f"Image-typo returned {r.status_code} instead of 4xx",
                 expected="4xx with user-friendly 'image not found' copy",
                 observed=f"{r.status_code}: {r.text[:200]!r}",
             )
             pytest.fail(f"image typo 5xx: {r.status_code}")
+        assert 400 <= r.status_code < 500, (
+            f"expected 4xx for image typo; got {r.status_code}"
+        )
         try:
             body = r.json()
-            assert isinstance(body, dict), f"body not dict: {body!r}"
         except _json.JSONDecodeError:
-            pytest.fail("error body not JSON")
+            pytest.fail(f"error body not JSON: {r.text[:200]!r}")
+        assert isinstance(body, dict), f"body not dict: {body!r}"
+        # Envelope must be {detail: ...}. No raw traceback.
+        body_str = _json.dumps(body).lower()
+        assert "traceback" not in body_str, (
+            f"traceback leaked: {body_str[:300]}"
+        )
+        # Copy must give the user enough to act — at least ONE of:
+        # the image ref they typed, the words "image"/"pull"/"registry",
+        # or a "not found"/"unreachable" hint.
+        helpful_markers = (
+            "nginz", "image", "pull", "registry", "not found",
+            "manifest", "unauthorized", "unknown",
+        )
+        assert any(m in body_str for m in helpful_markers), (
+            f"error body has no actionable copy: {body_str[:300]}"
+        )
 
 
 @journey(
@@ -111,19 +128,24 @@ def test_journey_port_collision_explains_conflict(audited_page, live_server, aud
                 timeout=60,
             )
             # Must fail with user-friendly error, not a 500 leaking daemon trace.
-            if r.status_code < 400:
-                pytest.fail("port collision did not fail")
+            assert r.status_code >= 400, "port collision did not fail"
             body = r.text.lower()
             if "traceback" in body:
                 audit_observer.emit(
                     step="step_2_attempt_conflict",
-                    severity="high",
-                    category="copy",
+                    severity="high", category="copy",
                     title="Port collision leaks Python traceback",
                     expected="User-readable 'port in use' message",
                     observed=r.text[:300],
                 )
                 pytest.fail("port collision leaks traceback")
+            # Copy must hint at the port conflict; otherwise novice
+            # won't know what went wrong.
+            hint_markers = ("port", "address", "already", "in use",
+                            "bind", "allocat", "conflict")
+            assert any(m in body for m in hint_markers), (
+                f"port-collision error gives no hint: {r.text[:300]!r}"
+            )
     finally:
         for n in (first, second):
             try:
@@ -160,14 +182,31 @@ def test_journey_missing_required_env_var(audited_page, live_server, audit_obser
             # Backend will either refuse (preferred — novice gets early
             # feedback) or run and the container will crashloop. Both
             # are acceptable; a 500 is not.
-            if r.status_code >= 500:
-                audit_observer.emit(
-                    step="step_1_deploy_postgres_no_password",
-                    severity="high",
-                    category="contract",
-                    title=f"Missing env var deploy raised {r.status_code}",
-                    expected="4xx or 200 + visible crashloop in detail view",
-                    observed=f"{r.status_code}: {r.text[:200]!r}",
+            assert r.status_code < 500, (
+                f"missing-env-var deploy raised {r.status_code}: {r.text[:200]!r}"
+            )
+        # If the deploy succeeded, the container will crashloop shortly.
+        # Observe the crash via the logs endpoint so we know the novice
+        # can find out WHY the container died (not just "something failed").
+        if 200 <= r.status_code < 300:
+            import time
+            time.sleep(2)
+            with step("step_2_crash_is_observable"):
+                logs = requests.get(
+                    f"{live_server.rstrip('/')}/api/containers/{name}/logs/download",
+                    params={"tail": 50},
+                    headers=_auth_headers(), timeout=10,
+                )
+                assert logs.status_code == 200, (
+                    f"can't fetch crash logs: {logs.status_code}"
+                )
+                # Postgres emits a specific 'PASSWORD' hint when
+                # POSTGRES_PASSWORD is missing. If absent, the novice
+                # can't diagnose — finding.
+                body = logs.text.lower()
+                assert "password" in body or "postgres_password" in body, (
+                    f"crash logs don't hint at missing password: "
+                    f"{logs.text[:300]!r}"
                 )
     finally:
         try:
@@ -213,15 +252,20 @@ def test_journey_denied_registry_explains_allowlist(audited_page, live_server, a
                 observed=f"{r.status_code} accepted",
             )
             pytest.fail("allowlist bypassed")
+        assert 400 <= r.status_code < 500, (
+            f"denied-registry didn't 4xx: {r.status_code}"
+        )
         body = r.text.lower()
         if not any(k in body for k in ("allowlist", "registry", "allowed")):
             audit_observer.emit(
                 step="step_1_attempt_denied_registry",
-                severity="medium",
-                category="copy",
+                severity="medium", category="copy",
                 title="Registry-denied error does not explain the allowlist",
                 expected="Error body mentions 'allowlist' or 'registry'",
                 observed=r.text[:200],
+            )
+            pytest.fail(
+                f"denied-registry error gave no hint: {r.text[:200]!r}",
             )
 
 
@@ -334,20 +378,31 @@ def test_journey_disk_full_pull_surfaces_error(audited_page, live_server, audit_
     with step("step_1_pull_nonexistent_ref"):
         r = requests.post(
             f"{live_server.rstrip('/')}/api/images/pull",
-            params={"ref": "nonexistent-repo-xyz-abc123/never-existed:999"},
+            params={"image": "nonexistent-repo-xyz-abc123/never-existed:999"},
             headers=_auth_headers(), timeout=60,
+        )
+        # Must be a user-facing 4xx/5xx with structured envelope —
+        # never a 2xx (we pulled something we shouldn't have) and
+        # never a raw traceback.
+        assert r.status_code >= 400, (
+            f"pull of nonexistent ref succeeded: {r.status_code}"
         )
         body = r.text.lower()
         if "traceback" in body:
             audit_observer.emit(
                 step="step_1_pull_nonexistent_ref",
-                severity="high",
-                category="copy",
+                severity="high", category="copy",
                 title="Image pull failure leaks Python traceback",
                 expected="User-readable 'image not found' / 'unreachable'",
                 observed=r.text[:300],
             )
             pytest.fail("pull error leaks traceback")
+        # Copy must hint at the cause — not, notfound, unreach, manifest.
+        hints = ("not found", "notfound", "manifest", "unreach",
+                 "unauthorized", "doesnotexist", "nonexist")
+        assert any(h in body for h in hints), (
+            f"pull error gives no hint: {r.text[:300]!r}"
+        )
 
 
 @journey(

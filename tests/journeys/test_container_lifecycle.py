@@ -627,18 +627,14 @@ def test_journey_exec_roundtrip_writes_file(audited_page, live_server, audit_obs
                 params={"path": "/tmp"},
                 headers=auth_headers(), timeout=30,
             )
-            if r.status_code == 200:
-                body = r.json()
-                names = [e.get("name") for e in (body.get("entries") or body.get("files") or [])]
-                if "pa-mark" not in names:
-                    audit_observer.emit(
-                        step="step_2_ls_tmp_sees_mark",
-                        severity="medium",
-                        category="behaviour",
-                        title="Exec write not visible via ls",
-                        expected="pa-mark in /tmp after exec write",
-                        observed=f"entries: {names[:10]}",
-                    )
+            assert r.status_code == 200, (
+                f"ls /tmp failed: {r.status_code} {r.text[:200]!r}"
+            )
+            body = r.json()
+            names = [e.get("name") for e in (body.get("entries") or body.get("files") or [])]
+            assert "pa-mark" in names, (
+                f"exec write not visible via ls; entries: {names[:10]}"
+            )
     finally:
         _teardown_by_name(live_server, name)
 
@@ -691,27 +687,27 @@ def test_journey_restart_policy_update_surface(audited_page, live_server, audit_
     name = _run_seed_container(live_server, "rp")
     try:
         with step("step_1_update_restart_policy"):
-            # docker-py supports `container.update(restart_policy=...)`.
-            # The UI typically exposes this via a PATCH or POST /update
-            # route. Try both common shapes.
             r = requests.post(
                 f"{live_server.rstrip('/')}/api/containers/{name}/update",
                 headers={**auth_headers(), "Content-Type": "application/json"},
                 json={"restart_policy": {"Name": "on-failure", "MaximumRetryCount": 3}},
                 timeout=30,
             )
-            if r.status_code == 404:
-                audit_observer.emit(
-                    step="step_1_update_restart_policy",
-                    severity="medium",
-                    category="parity",
-                    title="No restart-policy update endpoint",
-                    expected="POST /api/containers/{id}/update supports restart_policy",
-                    observed="404 Not Found — endpoint missing",
-                )
-                return
-            if r.status_code >= 500:
-                pytest.fail(f"update 5xx: {r.status_code}")
+            assert r.status_code == 200, (
+                f"restart-policy update failed: {r.status_code} {r.text[:200]!r}"
+            )
+        with step("step_2_inspect_reflects_policy"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/inspect",
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200
+            import json as _json
+            body_str = _json.dumps(r.json())
+            assert "on-failure" in body_str, (
+                f"restart_policy on-failure not visible after update; "
+                f"body prefix: {body_str[:400]}"
+            )
     finally:
         _teardown_by_name(live_server, name)
 
@@ -765,16 +761,22 @@ def test_journey_rootless_exec_capability_check(audited_page, live_server, audit
                 timeout=30,
             )
             if r.status_code == 404:
-                pytest.skip("REST exec not present")
-            if r.status_code >= 500:
-                audit_observer.emit(
-                    step="step_1_exec_whoami",
-                    severity="medium",
-                    category="contract",
-                    title=f"Rootless exec raised {r.status_code}",
-                    expected="2xx or envelope-formatted 4xx",
-                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                # REST exec isn't surfaced; this is expected and already
+                # captured via the parity finding emitted above. The
+                # WS-only exec path precludes a simple round-trip check.
+                pytest.skip(
+                    "REST exec not wired; WS-exec UID verification deferred",
                 )
-                pytest.fail(f"rootless exec 5xx: {r.status_code}")
+            assert r.status_code < 500, (
+                f"rootless exec 5xx: {r.status_code} {r.text[:200]!r}"
+            )
+            if 200 <= r.status_code < 300:
+                # If the endpoint ever lands, the output of `id` should
+                # include uid=10000 or gid=10000 since the seed set user.
+                body_str = r.text
+                assert "10000" in body_str, (
+                    f"rootless seed configured user=10000 but exec output "
+                    f"doesn't show it: {body_str[:200]!r}"
+                )
     finally:
         _teardown_by_name(live_server, name)

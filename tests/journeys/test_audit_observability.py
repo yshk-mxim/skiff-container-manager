@@ -121,27 +121,18 @@ def test_journey_prometheus_metrics_scrape(audited_page, live_server, audit_obse
     from tests.e2e_helpers import auth_headers
 
     with step("step_1_scrape_metrics"):
+        # SKIFF exposes Prometheus metrics at /api/system/metrics (authed).
         r = requests.get(
-            f"{live_server.rstrip('/')}/metrics",
+            f"{live_server.rstrip('/')}/api/system/metrics",
             headers=auth_headers(), timeout=10,
         )
-        # Either 200 with exposition-format body, or a 404 if metrics
-        # are gated behind a separate port (emit a finding).
-        if r.status_code == 404:
-            audit_observer.emit(
-                step="step_1_scrape_metrics",
-                severity="medium",
-                category="parity",
-                title="/metrics returns 404 — Prometheus parity gap",
-                expected="200 OK with exposition-format text body",
-                observed="404 Not Found",
-            )
-            return
-        assert r.status_code == 200, f"/metrics failed: {r.status_code}"
+        assert r.status_code == 200, (
+            f"metrics failed: {r.status_code} {r.text[:200]!r}"
+        )
         body = r.text
-        # Exposition format starts with '# HELP' or '# TYPE' lines.
-        assert "# HELP" in body or "# TYPE" in body, (
-            f"/metrics body not in exposition format: {body[:200]!r}"
+        # Exposition format: '# HELP' + '# TYPE' lines.
+        assert "# HELP" in body and "# TYPE" in body, (
+            f"metrics body not in exposition format: {body[:200]!r}"
         )
 
 
@@ -175,21 +166,11 @@ def test_journey_audit_log_download_is_jsonl(audited_page, live_server, audit_ob
             params={"download": 1},
             headers=auth_headers(), timeout=30,
         )
-        # 200 with JSONL or 200 with JSON — accept both, but every
-        # non-blank line must parse.
-        if r.status_code != 200:
-            audit_observer.emit(
-                step="step_1_download_audit_jsonl",
-                severity="medium",
-                category="behaviour",
-                title="Audit download endpoint returns non-200",
-                expected="200 OK with parseable entries",
-                observed=f"{r.status_code}: {r.text[:200]!r}",
-            )
-            return
+        assert r.status_code == 200, (
+            f"audit download failed: {r.status_code}: {r.text[:200]!r}"
+        )
         body = r.text.strip()
-        if not body:
-            return  # empty log is acceptable on a fresh server
+        assert body, "audit log download returned empty body"
         # Try parsing as JSON array first, fallback to JSONL.
         try:
             _json.loads(body)
@@ -304,16 +285,24 @@ def test_journey_events_stream_captures_container_lifecycle(audited_page, live_s
             assert r.status_code == 200, f"events failed: {r.status_code}"
             body = r.text
             # The event stream should mention the container name or
-            # at least a `create` or `start` action. If empty, emit a
-            # finding so the SRE rubric tracks parity.
-            if name not in body and "create" not in body.lower() and "start" not in body.lower():
+            # Must mention the container name OR a 'create'/'start'
+            # action — otherwise the SRE can't diagnose what happened
+            # during the deploy window.
+            has_event = (
+                name in body
+                or "create" in body.lower()
+                or "start" in body.lower()
+            )
+            if not has_event:
                 audit_observer.emit(
                     step="step_2_events_contain_deploy",
-                    severity="medium",
-                    category="parity",
+                    severity="medium", category="parity",
                     title="Events stream did not capture deploy action",
                     expected=f"Event mentioning {name} or 'create'/'start'",
                     observed=f"body prefix: {body[:300]!r}",
+                )
+                pytest.fail(
+                    f"events stream missing deploy action: {body[:300]!r}",
                 )
     finally:
         try:
@@ -354,20 +343,19 @@ def test_journey_stderr_audit_ui_correlation(audited_page, live_server, audit_ob
     with step("step_2_audit_has_failure_row"):
         r = requests.get(
             f"{live_server.rstrip('/')}/api/system/audit-log",
-            params={"tail": 20},
+            params={"tail": 100},
             headers=auth_headers(), timeout=30,
         )
-        if r.status_code != 200:
-            pytest.skip(f"audit read failed: {r.status_code}")
-        body = r.text
-        # There should be SOMETHING about a failed container create
-        # in the recent audit — either a 'failed' entry or a '4xx' tag.
-        if "fail" not in body.lower() and "denied" not in body.lower() and "invalid" not in body.lower():
-            audit_observer.emit(
-                step="step_2_audit_has_failure_row",
-                severity="low",
-                category="parity",
-                title="4xx on container create did not produce a visible audit row",
-                expected="Audit tail contains a failure / invalid / denied marker",
-                observed=f"audit tail: {body[-300:]!r}",
-            )
+        assert r.status_code == 200, (
+            f"audit read failed: {r.status_code} {r.text[:200]!r}"
+        )
+        body = r.text.lower()
+        # Audit rows carry `"status":N`; our 4xx must appear as a
+        # 4xx-status entry within the last 100 events.
+        import re as _re
+        statuses = _re.findall(r'"status":\s*(\d+)', body)
+        has_4xx = any(400 <= int(s) < 500 for s in statuses)
+        assert has_4xx, (
+            f"audit log has no 4xx row within last 100 events; "
+            f"statuses seen: {set(statuses)}"
+        )

@@ -146,18 +146,17 @@ def test_journey_network_create_with_subnet_and_labels(audited_page, live_server
                 f"{live_server.rstrip('/')}/api/networks/{name}/inspect",
                 headers=auth_headers(), timeout=30,
             )
+            assert r.status_code == 200, (
+                f"network inspect failed: {r.status_code}"
+            )
             body = r.json()
             import json as _json
             body_str = _json.dumps(body)
-            if subnet not in body_str:
-                audit_observer.emit(
-                    step="step_2_inspect_shows_subnet",
-                    severity="medium",
-                    category="contract",
-                    title="Subnet from create not visible in inspect payload",
-                    expected=f"{subnet} present somewhere in inspect body",
-                    observed=f"body keys: {list(body.keys())[:10]}",
-                )
+            assert subnet in body_str, (
+                f"subnet {subnet!r} not visible in inspect payload "
+                f"(keys: {list(body.keys())[:10]}): "
+                f"{body_str[:400]}"
+            )
     finally:
         _delete_network(live_server, name)
 
@@ -436,19 +435,32 @@ def test_journey_volume_nfs_driver_surface(audited_page, live_server, audit_obse
                 headers=auth_headers(),
                 timeout=30,
             )
-            # 200/201 means accepted (mount happens lazily at first use).
-            # 400/422 means validator rejected (acceptable — NFS may be
-            # disabled). 5xx means broken shape.
-            if r.status_code >= 500:
-                audit_observer.emit(
-                    step="step_1_create_nfs_style_volume",
-                    severity="medium",
-                    category="contract",
-                    title=f"NFS driver_opts caused {r.status_code}",
-                    expected="2xx or 4xx — never 5xx",
-                    observed=f"{r.status_code}: {r.text[:200]!r}",
+            # Acceptable: 2xx (accepted — mount happens lazily), OR
+            # 4xx (validator rejected, e.g. NFS-only allowlist off).
+            # 5xx is a broken-shape bug — the request body should be
+            # syntactically valid regardless of daemon state.
+            assert r.status_code < 500, (
+                f"NFS-style driver_opts raised 5xx: {r.status_code} "
+                f"{r.text[:200]!r}"
+            )
+            assert r.status_code in (200, 201, 400, 422, 403), (
+                f"unexpected NFS-create status {r.status_code}: {r.text[:200]!r}"
+            )
+            # If accepted, inspect must round-trip the driver_opts.
+            if r.status_code in (200, 201):
+                r2 = requests.get(
+                    f"{live_server.rstrip('/')}/api/volumes/{name}/inspect",
+                    headers=auth_headers(), timeout=30,
                 )
-                pytest.fail(f"NFS-style create 5xx: {r.status_code}")
+                assert r2.status_code == 200, (
+                    f"NFS volume inspect failed: {r2.status_code}"
+                )
+                import json as _json
+                body_str = _json.dumps(r2.json())
+                assert "nfs" in body_str.lower(), (
+                    f"NFS driver_opts not persisted in inspect: "
+                    f"{body_str[:300]}"
+                )
     finally:
         _delete_volume(live_server, name)
 
