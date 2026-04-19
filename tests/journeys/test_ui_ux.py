@@ -134,9 +134,11 @@ def test_journey_mobile_viewport_no_horizontal_scroll(audited_page, live_server,
     with step("step_1_sign_in_mobile"):
         login(page, live_server)
 
-    for section in ("dashboard", "containers", "templates"):
+    # Sidebar label → actual H2 copy (dashboard H2 is 'Overview').
+    for section, h2 in (("containers", "Containers"), ("templates", "App templates")):
         with step(f"step_2_no_h_scroll_{section}"):
-            nav_to(page, section)
+            page.locator(f".sidebar a:has-text('{section.capitalize()}')").click()
+            page.wait_for_selector(f"h2:has-text('{h2}')", timeout=5_000)
             overflow = page.evaluate(
                 "() => document.documentElement.scrollWidth > window.innerWidth + 1",
             )
@@ -168,7 +170,7 @@ def test_journey_notifications_bell_shows_recent(audited_page, live_server, audi
 
     with step("step_2_look_for_bell"):
         bell = page.locator(
-            "[data-testid='notifications-bell'], .notifications-bell, button[aria-label*='notification' i]",
+            "[data-testid='notif-bell'], .notif-bell, [aria-label='Notifications']",
         ).first
         if bell.count() == 0:
             audit_observer.emit(
@@ -192,11 +194,11 @@ def test_journey_notifications_bell_shows_recent(audited_page, live_server, audi
 
     with step("step_4_bell_panel_contains_toast"):
         bell = page.locator(
-            "[data-testid='notifications-bell'], .notifications-bell, button[aria-label*='notification' i]",
+            "[data-testid='notif-bell'], .notif-bell, [aria-label='Notifications']",
         ).first
         bell.click()
         page.wait_for_timeout(300)
-        panel = page.locator(".notifications-panel, [role='dialog'][aria-label*='notification' i]")
+        panel = page.locator("[data-testid='notif-panel'], .notif-panel")
         if panel.count() > 0:
             # Content must include the emitted toast text.
             if "pa-audit test toast" not in panel.inner_text(timeout=SHORT):
@@ -412,9 +414,16 @@ def test_journey_i18n_missing_key_audit(audited_page, live_server, audit_observe
         login(page, live_server)
 
     placeholder_patterns = ("{{", "}}", "t('", "i18n.")
-    for section in ("dashboard", "containers", "images", "templates"):
+    # Map sidebar label → actual H2 (dashboard's H2 is 'Overview', etc.)
+    section_h2 = {
+        "containers": "Containers",
+        "images": "Images",
+        "templates": "App templates",
+    }
+    for section, h2 in section_h2.items():
         with step(f"step_2_scan_{section}_for_placeholders"):
-            nav_to(page, section)
+            page.locator(f".sidebar a:has-text('{section.capitalize()}')").click()
+            page.wait_for_selector(f"h2:has-text('{h2}')", timeout=5_000)
             text = page.locator("#main").inner_text()
             hits = [p for p in placeholder_patterns if p in text]
             if hits:

@@ -97,9 +97,11 @@ def test_journey_upload_yaml_and_deploy(audited_page, live_server, audit_observe
             nav_to(page, "compose")
 
         # UI: set project name input then upload file via the hidden
-        # file-input. Playwright's set_input_files works on <input type=file>.
+        # file-input. Playwright's set_input_files fires onchange →
+        # uploadCompose() which POSTs /api/compose/up. No Deploy button
+        # exists — upload is auto-triggered by file selection.
         with step("step_3_set_project_and_upload"):
-            proj_input = page.locator("input[placeholder*='project' i]").first
+            proj_input = page.locator("#compose-project").first
             if proj_input.count() == 0:
                 pytest.skip("compose project input not found")
             proj_input.fill(project)
@@ -109,14 +111,11 @@ def test_journey_upload_yaml_and_deploy(audited_page, live_server, audit_observe
                 "mimeType": "application/x-yaml",
                 "buffer": _MINIMAL_YAML,
             })
-            # If the page auto-submits on file select, the next assertion
-            # below succeeds. Otherwise click the Deploy button.
-            deploy_btn = page.locator("button:has-text('Deploy'), button:has-text('Up')").first
-            if deploy_btn.count() > 0:
-                deploy_btn.click()
 
         with step("step_4_stack_row_appears"):
-            page.wait_for_selector(f"text={project}", timeout=MEDIUM)
+            # Up to LONG (90s) for first-time image pull + container start.
+            from tests.e2e_helpers import LONG
+            page.wait_for_selector(f"text={project}", timeout=LONG)
     finally:
         _down(live_server, project)
 
