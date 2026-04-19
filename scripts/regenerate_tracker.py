@@ -25,7 +25,6 @@ import re
 import subprocess
 from pathlib import Path
 
-
 TRACKER_PATH = Path("docs/dev/persona_audit_tracker.md")
 ARTIFACT_ROOT = Path("tests/e2e-artifacts/persona-audit")
 DOCS_DEV = Path("docs/dev")
@@ -195,11 +194,11 @@ def _regenerate_testing_csv() -> int:
     for cat, glob in _TESTING_CATEGORIES:
         files: set[Path] = set()
         for g in glob.split(","):
-            files.update(Path(".").glob(g.strip()))
+            files.update(Path().glob(g.strip()))
         total = 0
         for f in files:
             try:
-                total += len(re.findall(r"^def test_\w+", f.read_text(encoding="utf-8"), re.M))
+                total += len(re.findall(r"^def test_\w+", f.read_text(encoding="utf-8"), re.MULTILINE))
             except OSError:
                 continue
         rows.append((cat, glob, str(len(files)), str(total), today))
@@ -228,7 +227,7 @@ def _regenerate_open_work_csv() -> int:
     rows: list[tuple[str, ...]] = [_OPEN_WORK_HEADER]
     seen = 0
     # Scan source + tests (skip venvs / caches).
-    for path in Path(".").rglob("*.py"):
+    for path in Path().rglob("*.py"):
         if any(part.startswith(".") or part in {"node_modules", "__pycache__"}
                for part in path.parts):
             continue
@@ -265,7 +264,7 @@ def _regenerate_open_work_csv() -> int:
 
 def _last_commit_sha() -> str:
     try:
-        r = subprocess.run(  # noqa: S603
+        r = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, check=False,
         )
@@ -278,7 +277,7 @@ def _count_journeys() -> int:
     total = 0
     for p in Path("tests/journeys").glob("test_*.py"):
         try:
-            total += len(re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), re.M))
+            total += len(re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), re.MULTILINE))
         except OSError:
             continue
     return total

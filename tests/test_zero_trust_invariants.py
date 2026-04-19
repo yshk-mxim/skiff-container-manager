@@ -35,7 +35,6 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.routing import Route
 
-
 pytestmark = pytest.mark.unit
 
 

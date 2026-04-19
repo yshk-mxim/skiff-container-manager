@@ -34,7 +34,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -308,7 +307,7 @@ def test_journey_rename_persists(audited_page, live_server, audit_observer, pers
 def test_journey_bulk_stop_multiple(audited_page, live_server, audit_observer, persona):
     """Multi-select 3 rows → click Bulk Stop → all 3 stop. Tests the
     bulk-action bar that hb-no-bulk-actions closed."""
-    from tests.e2e_helpers import MEDIUM, SHORT, login, nav_to
+    from tests.e2e_helpers import SHORT, login, nav_to
 
     page = audited_page
     names = [_run_seed_container(live_server, "bk") for _ in range(3)]
@@ -720,9 +719,9 @@ def test_journey_rootless_exec_capability_check(audited_page, live_server, audit
     we DON'T assert the exact UID (cross-platform variance) but we do
     assert the endpoint either succeeds or fails with a catalogued
     envelope, never a raw traceback."""
-    from tests.e2e_helpers import auth_headers
-
     import uuid
+
+    from tests.e2e_helpers import auth_headers
     name = f"pa-ru-{uuid.uuid4().hex[:6]}"
     r = requests.post(
         f"{live_server.rstrip('/')}/api/containers/run",

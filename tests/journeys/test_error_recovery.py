@@ -18,7 +18,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -269,7 +268,7 @@ def test_journey_logs_viewer_clears_connecting_placeholder(audited_page, live_se
     """hb-logs-connecting-forever: a container with no output should
     not stay 'Connecting...' forever. The viewer must clear the
     placeholder on WS open even if no bytes arrive."""
-    from tests.e2e_helpers import MEDIUM, SHORT, login, nav_to
+    from tests.e2e_helpers import SHORT, login, nav_to
 
     page = audited_page
     name = f"pa-lf-{uuid.uuid4().hex[:6]}"

@@ -33,7 +33,7 @@ pytest.importorskip(
 
 pytestmark = pytest.mark.e2e
 
-from tests.e2e_helpers import SHORT, login, nav_to, teardown_container  # noqa: E402
+from tests.e2e_helpers import SHORT, login, nav_to, teardown_container
 
 
 def test_file_browser_lists_navigates_downloads_uploads(page, live_server, docker_client):

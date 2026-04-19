@@ -17,7 +17,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -450,7 +449,7 @@ def test_journey_ws_auth_lockout(audited_page, live_server, audit_observer, pers
                 observed="connection opened",
             )
             pytest.fail("WS auth lockout bypassed")
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Any connection failure is acceptable — that's the lockout.
             return
 

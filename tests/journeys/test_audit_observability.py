@@ -17,7 +17,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -106,7 +105,7 @@ def test_journey_events_endpoint_bounds_since_secs(audited_page, live_server, au
                 category="security",
                 title="events endpoint does not bound since_secs",
                 expected="400/422 on since_secs above reasonable cap",
-                observed=f"200 OK on since_secs=1e9",
+                observed="200 OK on since_secs=1e9",
             )
 
 

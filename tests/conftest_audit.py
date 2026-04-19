@@ -49,7 +49,7 @@ def audited_page(audit_observer: AuditObserver, page):
     return page
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: ARG001
+def pytest_collection_modifyitems(config, items):
     """Mark every journey test with `persona_audit` so the full suite
     can be sliced via `-m persona_audit`."""
     for item in items:

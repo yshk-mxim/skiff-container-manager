@@ -21,7 +21,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -87,7 +86,7 @@ def _down(live_server: str, project: str) -> None:
 def test_journey_upload_yaml_and_deploy(audited_page, live_server, audit_observer, persona):
     """Upload a one-service compose file via the UI's file input, click
     Deploy, assert the stack appears on the list."""
-    from tests.e2e_helpers import MEDIUM, SHORT, login, nav_to
+    from tests.e2e_helpers import MEDIUM, login, nav_to
 
     page = audited_page
     project = _project_name("up")
@@ -279,7 +278,7 @@ def test_journey_compose_aggregated_logs(audited_page, live_server, audit_observ
 def test_journey_compose_page_has_search_bar(audited_page, live_server, audit_observer, persona):
     """hb-compose-no-search regression. Hobbyist typically has ≥5
     stacks — the compose page must expose a search bar."""
-    from tests.e2e_helpers import SHORT, login, nav_to
+    from tests.e2e_helpers import login, nav_to
 
     page = audited_page
     with step("step_1_sign_in"):

@@ -18,7 +18,6 @@ import requests
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -212,7 +211,7 @@ def test_journey_developer_cmd_k_reaches_run(audited_page, live_server, audit_ob
     """Developer rubric: ⌘K palette jumps to any primary action. This
     journey opens the palette and confirms 'Run container' or
     similar action is reachable without mouse."""
-    from tests.e2e_helpers import SHORT, login
+    from tests.e2e_helpers import login
 
     page = audited_page
     with step("step_1_sign_in"):

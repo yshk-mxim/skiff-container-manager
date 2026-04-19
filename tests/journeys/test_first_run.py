@@ -21,7 +21,6 @@ import pytest
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -234,9 +233,9 @@ def test_journey_zero_config_wizard_reachable(audited_page, live_server, audit_o
     should find the wizard reachable from the root; once a token is
     already configured (the e2e harness state) the wizard endpoint
     must surface whether setup is complete."""
-    from tests.e2e_helpers import auth_headers
-
     import requests
+
+    from tests.e2e_helpers import auth_headers
 
     with step("step_1_probe_setup_state"):
         r = requests.get(
@@ -269,9 +268,9 @@ def test_journey_abandoned_wizard_recovers(audited_page, live_server, audit_obse
     """Plan J-01 item: abandoned wizard. If the user closes mid-wizard
     and reopens, the next request to /api/setup-state must still serve
     a valid envelope — no half-torn-down state."""
-    from tests.e2e_helpers import auth_headers
-
     import requests
+
+    from tests.e2e_helpers import auth_headers
 
     with step("step_1_hit_setup_state_twice_with_gap"):
         # Simulate the user opening, closing, reopening.
@@ -294,9 +293,9 @@ def test_journey_tunnel_status_queryable(audited_page, live_server, audit_observ
     """Plan J-01 item: tunnel setup. GET /api/tunnel/status must always
     be queryable (even when no tunnel is configured) so the UI can render
     'not configured' rather than hang."""
-    from tests.e2e_helpers import auth_headers
-
     import requests
+
+    from tests.e2e_helpers import auth_headers
 
     with step("step_1_query_tunnel_status"):
         r = requests.get(

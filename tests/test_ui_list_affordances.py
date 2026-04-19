@@ -38,8 +38,7 @@ pytest.importorskip(
 
 pytestmark = pytest.mark.e2e
 
-from tests.e2e_helpers import SHORT, login, nav_to  # noqa: E402
-
+from tests.e2e_helpers import SHORT, login, nav_to
 
 # Every SPA page that renders a list of entities and the selector for
 # its search/filter input. "Inherently short" pages (Dashboard, Wizard)

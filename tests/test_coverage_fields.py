@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -62,7 +61,7 @@ def test_no_blank_decision_cells() -> None:
             # Accept Y / Y (note) / Y* / N / N! / N (reason). The
             # regex below is deliberately permissive — the rule is
             # 'something starting with Y or N'.
-            if not v[0] in {"Y", "N"}:
+            if v[0] not in {"Y", "N"}:
                 bad.append(f"{who}: {col} = {v!r} (must start with Y or N)")
     assert not bad, "\n".join(bad)
 

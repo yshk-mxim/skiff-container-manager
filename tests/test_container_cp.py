@@ -162,7 +162,7 @@ def test_validate_cp_path_never_raises_non_http_errors(path):
         _validate_path(path)
     except HTTPException:
         pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         pytest.fail(f"_validate_cp_path raised {type(exc).__name__} on {path!r}: {exc}")
 
 

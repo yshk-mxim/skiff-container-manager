@@ -25,7 +25,6 @@ import pytest
 
 from tests.journeys._history import HISTORICAL_BUGS, HistoricalBug
 
-
 pytestmark = pytest.mark.unit
 
 

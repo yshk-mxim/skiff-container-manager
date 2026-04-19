@@ -19,7 +19,6 @@ import pytest
 from tests.audit_driver import step
 from tests.journeys import journey
 
-
 pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
 
 pytest.importorskip(
@@ -260,7 +259,7 @@ def test_journey_enter_submits_create_forms(audited_page, live_server, audit_obs
     """Developer rubric: Enter submits every non-multiline form.
     Drives the Volumes page create-volume modal; typing a name and
     pressing Enter should trigger submit."""
-    from tests.e2e_helpers import SHORT, login, nav_to
+    from tests.e2e_helpers import login, nav_to
 
     page = audited_page
     with step("step_1_sign_in"):

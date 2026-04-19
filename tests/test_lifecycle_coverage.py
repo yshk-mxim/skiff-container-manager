@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -93,7 +92,7 @@ def _known_audit_event_keys() -> set[str]:
     """Collect audit-event keys from the events registry (if present)."""
     try:
         from skiff.contract import events as ev
-    except Exception:  # noqa: BLE001
+    except Exception:
         return set()
     keys: set[str] = set()
     for name in dir(ev):

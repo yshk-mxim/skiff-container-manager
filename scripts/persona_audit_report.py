@@ -20,7 +20,6 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-
 ARTIFACT_ROOT = Path("tests/e2e-artifacts/persona-audit")
 REPORT_DIR = Path("docs/dev")
 

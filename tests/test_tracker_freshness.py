@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -85,7 +84,7 @@ def test_testing_tracker_rollup_matches_journey_count() -> None:
     real_count = 0
     for p in Path("tests/journeys").glob("test_*.py"):
         real_count += len(
-            _re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), _re.M)
+            _re.findall(r"^def test_journey_\w+", p.read_text(encoding="utf-8"), _re.MULTILINE)
         )
     claimed = int(e2e.get("test_function_count", "0"))
     # Allow equal. If the tracker is off by more than 2 journeys

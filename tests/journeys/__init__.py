@@ -143,4 +143,4 @@ def discover_journeys() -> dict[str, JourneyMeta]:
 
 # `step(name)` is re-exported from `tests.audit_driver` so journey files
 # can import both symbols from the same namespace.
-from tests.audit_driver import step  # noqa: E402,F401  (module-level re-export)
+from tests.audit_driver import step  # noqa: F401  (module-level re-export)

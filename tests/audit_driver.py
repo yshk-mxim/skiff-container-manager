@@ -33,7 +33,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # Root where every observation artifact lives. Git-ignored — each pass
 # is a subdirectory so previous passes stay for baseline diffing.
 ARTIFACT_ROOT = Path("tests/e2e-artifacts/persona-audit")
@@ -89,7 +88,7 @@ def redact_artifact(text: str) -> str:
 # can find it without asking every journey to pass it down. Set by
 # `tests/conftest_audit.py` (module-scoped). Multi-threaded tests would
 # need an asyncio-context variable; persona-audit runs single-threaded.
-_CURRENT_OBSERVER: "AuditObserver | None" = None
+_CURRENT_OBSERVER: AuditObserver | None = None
 
 
 @dataclass
@@ -177,14 +176,14 @@ class AuditObserver:
         if self.page is not None:
             try:
                 self.page.screenshot(path=str(stem) + ".png", full_page=True)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             try:
                 dom = self.page.content()
                 (stem.with_suffix(".dom.html")).write_text(
                     redact_artifact(dom), encoding="utf-8",
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         # Console + errors + network: flush only the NEW entries since
         # the last step. A naive copy-and-clear keeps memory bounded.
