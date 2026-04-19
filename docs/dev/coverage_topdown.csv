@@ -129,3 +129,6 @@ hobbyist,test_journey_compose_yaml_export_reimport_cycle,"Compose export+reimpor
 hobbyist,test_journey_denied_registry_explains_allowlist,"Run with denied registry",POST /api/containers/run,-,-,Y
 hobbyist,test_journey_disk_full_pull_surfaces_error,"Pull failure",POST /api/images/pull,-,-,Y
 hobbyist,test_journey_volume_backup_via_cp,"Backup marker out",GET /api/containers/{id}/files,-,-,Y
+sre_ops,test_journey_images_prune_returns_reclaimed,"Images → Prune",POST /api/images/prune,images.prune,"POST /images/prune",Y
+developer,test_journey_image_tag_search_finds_stable_tag,"Image inspect modal tag filter",GET /api/registry/tags,-,GET /images/search,Y
+developer,test_journey_context_menu_on_container_row,"Right-click on row",-,-,-,Y

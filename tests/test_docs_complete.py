@@ -194,12 +194,29 @@ def test_every_historical_bug_in_changelog():
 # ── Gate 8: every persona's done-rubric goal has a UI reachability ─────
 
 
-@pytest.mark.xfail(reason="Reachability harness lands with the journey catalogues")
 def test_every_persona_done_rubric_has_reachability():
     """Each persona's done_rubric goal should be reachable through the
-    UI from wizard-exit using only sidebar + in-page affordances (no
-    direct URL typing). Deferred to the journey catalogue commits."""
+    UI from wizard-exit using only sidebar + in-page affordances.
+    Enforced via the journey catalogue: every persona that has a
+    done_rubric must appear in at least one `@journey(persona=...)`
+    decoration, proving the harness drives them at least once.
+    """
+    import importlib
+    import pathlib as _pathlib
+
+    for p in _pathlib.Path("tests/journeys").glob("test_*.py"):
+        importlib.import_module(f"tests.journeys.{p.stem}")
+
+    from tests.journeys import discover_journeys
     from tests.personas import ALL_PERSONAS
+
+    personas_in_journeys: set[str] = set()
+    for meta in discover_journeys().values():
+        for pp in meta.personas:
+            personas_in_journeys.add(pp.tag)
 
     for p in ALL_PERSONAS:
         assert p.done_rubric, f"persona {p.tag} has empty done_rubric"
+        assert p.tag in personas_in_journeys, (
+            f"persona {p.tag} has a done_rubric but no journey drives it"
+        )

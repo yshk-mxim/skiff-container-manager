@@ -94,18 +94,21 @@ def test_referenced_journeys_exist() -> None:
 
 def test_security_justified_no_rows_have_reason() -> None:
     """A `Y` in security_justified_no must come with a non-blank
-    reason — the column's value is the reason text."""
+    reason — the column's value is the reason text. Bare `Y` with
+    no explanation is dead weight and blocks audit review."""
     rows = _load_rows()
     thin: list[str] = []
     for row in rows:
         sn = row.get("security_justified_no", "").strip()
-        if sn.upper() == "Y":
-            # Simple 'Y' with no trailing reason is dead weight.
-            # The real rows use 'Y — …' format.
-            if sn.upper() == "Y" and not any(c.isalpha() for c in sn[1:]):
-                thin.append(row["engine_endpoint"])
-    # A bare 'Y' with no reason is allowed in the CSV format;
-    # we emit a note but don't fail here — the real invariant is
-    # that SOMETHING is in the column (already enforced above).
-    if thin:
-        print(f"note: {len(thin)} rows have bare 'Y' with no reason")
+        if not sn.upper().startswith("Y"):
+            continue
+        # Real rows use 'Y — …' or 'Y* — …'. A bare 'Y' carries no
+        # reason.
+        trailing = sn[1:].strip().lstrip("*").strip().lstrip("—").strip("-").strip()
+        if not trailing:
+            thin.append(row["engine_endpoint"])
+    assert not thin, (
+        f"{len(thin)} rows have bare `Y` in security_justified_no with no "
+        f"reason: {thin[:5]}. Add a ' — <reason>' suffix explaining the "
+        f"intentional omission."
+    )

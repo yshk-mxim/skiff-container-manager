@@ -452,23 +452,34 @@ def test_zt_sensitive_env_vars_redacted_in_inspect():
 
 def test_zt_public_paths_match_crud_completeness_file():
     """The _PUBLIC set in test_crud_completeness.py and this file must
-    agree — split lists drift, and a new unauth route slips through the
-    crack. If this test fails, sync the two sets."""
-    from tests.test_crud_completeness import test_all_routes_have_auth_dependency  # noqa: F401
+    agree — split lists drift, and a new unauth route slips through
+    the crack. Parse the other file's _PUBLIC literal via AST and
+    enforce equality."""
+    import ast
+    import pathlib
 
-    # The check is structural — both files have a hardcoded set. Instead
-    # of introspecting, assert the two sets have the same membership by
-    # parsing the file source (cheap + doesn't need a new module).
-    other_src = __import__("tests.test_crud_completeness", fromlist=["_PUBLIC"])
-    # The CRUD test uses an inline `_PUBLIC` inside its test fn; we
-    # extract via its AST. Simpler: assert this file's set is a subset
-    # of what the other file's test allows, which we verify by copying.
-    # If a route is in the CRUD test's _PUBLIC but not ours, fine; if
-    # it's in ours but not theirs, the CRUD test will fail and flag the
-    # divergence. Fail HERE on intersection-mismatch.
-    expected = _PUBLIC_PATHS
-    # The source-extract path is brittle; skip strict parity until we
-    # factor _PUBLIC into a shared module. Marking as xfail for the
-    # scaffolding commit.
-    _ = other_src
-    assert expected, "_PUBLIC_PATHS should not be empty"
+    source = pathlib.Path("tests/test_crud_completeness.py").read_text()
+    tree = ast.parse(source)
+    crud_public: set[str] | None = None
+    for node in ast.walk(tree):
+        # Find `_PUBLIC = {…}` inside test_all_routes_have_auth_dependency.
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "_PUBLIC":
+                    if isinstance(node.value, ast.Set):
+                        crud_public = {
+                            elt.value for elt in node.value.elts
+                            if isinstance(elt, ast.Constant)
+                        }
+    assert crud_public is not None, (
+        "Could not parse _PUBLIC from test_crud_completeness.py — "
+        "the set literal may have moved"
+    )
+    divergence_this_side = _PUBLIC_PATHS - crud_public
+    divergence_other_side = crud_public - _PUBLIC_PATHS
+    assert not divergence_this_side and not divergence_other_side, (
+        f"_PUBLIC sets drifted.\n"
+        f"  in zero-trust only: {divergence_this_side}\n"
+        f"  in crud only:       {divergence_other_side}\n"
+        f"Sync the two sets (or factor them into a shared module)."
+    )

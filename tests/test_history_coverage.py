@@ -71,10 +71,18 @@ def test_hb_has_fix_commit(hb: HistoricalBug) -> None:
     )
 
 
-@pytest.mark.xfail(reason="journey catalogues land in a later commit")
 def test_every_hb_is_covered_by_a_journey():
-    """Once tests/journeys/*.py ship, this gate enforces that every
-    `hb-*` is in at least one `@journey(covers=...)` tuple."""
+    """Every `hb-*` must appear in at least one `@journey(covers=...)`
+    tuple so the regression has a live-driven test."""
+    import importlib
+    import pathlib as _pathlib
+
+    # Import each journey module to populate JOURNEY_REGISTRY (decorators
+    # run on import). The tests/journeys package's __init__ doesn't
+    # auto-import the test_*.py siblings.
+    for p in _pathlib.Path("tests/journeys").glob("test_*.py"):
+        importlib.import_module(f"tests.journeys.{p.stem}")
+
     from tests.journeys import discover_journeys
 
     covered: set[str] = set()

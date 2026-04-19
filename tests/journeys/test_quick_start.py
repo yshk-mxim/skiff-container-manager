@@ -344,3 +344,124 @@ def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audi
             )
         except requests.exceptions.RequestException:
             pass
+
+
+# ── Historical-bug coverage additions ────────────────────────────────
+
+
+@journey(
+    persona=("sre_ops",),
+    category="quick_start",
+    severity="medium",
+    covers=("hb-image-prune-missing",),
+)
+def test_journey_images_prune_returns_reclaimed(audited_page, live_server, audit_observer, persona):
+    """hb-image-prune-missing: images must expose a dedicated prune
+    endpoint (not just bundled under system prune)."""
+    from tests.e2e_helpers import auth_headers
+
+    with step("step_1_prune_images"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/images/prune",
+            headers=auth_headers(), timeout=60,
+        )
+        assert r.status_code == 200, (
+            f"images prune failed: {r.status_code} {r.text[:200]!r}"
+        )
+        body = r.json()
+        # Must carry a reclaimed-space key so SRE can read the outcome.
+        reclaimed_keys = {"SpaceReclaimed", "space_reclaimed",
+                          "space_reclaimed_mb", "reclaimed_bytes"}
+        assert any(k in body for k in reclaimed_keys), (
+            f"images prune missing reclaimed-space key: {body}"
+        )
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="medium",
+    covers=("hb-tag-search-3.12-slim",),
+)
+def test_journey_image_tag_search_finds_stable_tag(audited_page, live_server, audit_observer, persona):
+    """hb-tag-search-3.12-slim: tag search must reach beyond the default
+    100-most-recent window via the name filter param."""
+    from tests.e2e_helpers import auth_headers
+
+    with step("step_1_tags_with_name_filter"):
+        r = requests.get(
+            f"{live_server.rstrip('/')}/api/registry/tags",
+            params={"image": "library/python", "name": "3.12"},
+            headers=auth_headers(), timeout=30,
+        )
+        # Accept 200 (found) or 404/502 (Docker Hub unreachable in CI);
+        # 5xx indicates the server crashed on the filter param itself.
+        if r.status_code in (404, 502, 504):
+            pytest.skip(f"Docker Hub unreachable: {r.status_code}")
+        assert r.status_code == 200, (
+            f"tag search failed: {r.status_code} {r.text[:200]!r}"
+        )
+        body = r.json()
+        tags = body.get("tags") or body.get("results") or []
+        # Filter server-side must return at least some 3.12-named tags.
+        matches = [t for t in tags if "3.12" in (t.get("name") if isinstance(t, dict) else str(t))]
+        assert matches, (
+            f"tag search for 3.12 returned no matches (body: {str(body)[:300]})"
+        )
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="low",
+    covers=("hb-no-context-menu",),
+)
+def test_journey_context_menu_on_container_row(audited_page, live_server, audit_observer, persona):
+    """hb-no-context-menu: right-click on a container row must open a
+    context menu with the same verbs as the button group."""
+    import uuid
+    from tests.e2e_helpers import MEDIUM, SHORT, auth_headers, login, nav_to
+
+    page = audited_page
+    name = f"pa-ctx-{uuid.uuid4().hex[:6]}"
+    r = requests.post(
+        f"{live_server.rstrip('/')}/api/containers/run",
+        params={"image": "alpine:3.20", "name": name},
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        json={"command": "sleep 3600", "labels": {"skiff-audit-run": "1"}},
+        timeout=120,
+    )
+    if r.status_code not in (200, 201):
+        pytest.skip(f"seed failed: {r.status_code}")
+    try:
+        with step("step_1_sign_in"):
+            login(page, live_server)
+        with step("step_2_nav_containers"):
+            nav_to(page, "containers")
+            page.wait_for_selector(f"text={name}", timeout=SHORT)
+        with step("step_3_right_click_row"):
+            row = page.locator(f"tr:has-text('{name}')").first
+            row.click(button="right")
+            page.wait_for_timeout(300)
+        with step("step_4_context_menu_visible"):
+            # Accept several context-menu class conventions; the key
+            # point is SOMETHING appears and has recognisable verbs.
+            menu = page.locator(
+                ".context-menu, [role='menu'], .ctx-menu",
+            ).first
+            assert menu.count() > 0 and menu.is_visible(), (
+                "no context menu rendered on right-click"
+            )
+            text = menu.inner_text(timeout=MEDIUM).lower()
+            verbs_present = sum(v in text for v in ("stop", "restart", "delete", "logs"))
+            assert verbs_present >= 2, (
+                f"context menu missing the common verbs; text: {text[:200]!r}"
+            )
+    finally:
+        try:
+            requests.delete(
+                f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
+                headers=auth_headers(), timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
