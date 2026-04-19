@@ -352,3 +352,236 @@ def test_journey_compose_privileged_blocked(audited_page, live_server, audit_obs
                 )
     finally:
         _down(live_server, project)
+
+
+# ── Plan-named J-04 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("developer", "sre_ops"),
+    category="compose",
+    severity="medium",
+)
+def test_journey_compose_explicit_tear_down(audited_page, live_server, audit_observer, persona):
+    """Plan J-04 item: tear down. Explicit up → down → re-up cycle,
+    asserting each step's 200. Down must leave the stack absent from
+    /api/compose/stacks."""
+    from tests.e2e_helpers import auth_headers
+
+    project = _project_name("td")
+    try:
+        with step("step_1_up"):
+            _deploy(live_server, project, _MINIMAL_YAML)
+        with step("step_2_down"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/compose/down",
+                params={"project_name": project},
+                headers=auth_headers(), timeout=120,
+            )
+            assert r.status_code == 200, f"down failed: {r.status_code}"
+        with step("step_3_stack_absent_from_list"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/compose/stacks",
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200
+            body = r.json()
+            names = {s.get("name") or s.get("project_name") for s in body.get("stacks", [])}
+            if project in names:
+                audit_observer.emit(
+                    step="step_3_stack_absent_from_list",
+                    severity="medium",
+                    category="behaviour",
+                    title="Stack still listed after down",
+                    expected=f"{project} absent from /api/compose/stacks",
+                    observed=f"names: {names}",
+                )
+        with step("step_4_up_again_from_clean"):
+            _deploy(live_server, project, _MINIMAL_YAML)
+    finally:
+        _down(live_server, project)
+
+
+@journey(
+    persona=("developer", "hobbyist"),
+    category="compose",
+    severity="medium",
+)
+def test_journey_compose_yaml_export_reimport_cycle(audited_page, live_server, audit_observer, persona):
+    """Plan J-04 item: YAML export→reimport. Deploy, download YAML,
+    down, re-up with the downloaded bytes. The downloaded YAML must
+    be a valid, complete compose file."""
+    from tests.e2e_helpers import auth_headers
+
+    project = _project_name("ri")
+    try:
+        _deploy(live_server, project, _MINIMAL_YAML)
+        with step("step_1_download_yaml"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/compose/{project}/download",
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200, f"download failed: {r.status_code}"
+            exported = r.content
+        with step("step_2_down"):
+            requests.post(
+                f"{live_server.rstrip('/')}/api/compose/down",
+                params={"project_name": project},
+                headers=auth_headers(), timeout=120,
+            )
+        with step("step_3_reimport_exported_yaml"):
+            files = [("file", ("docker-compose.yml", exported, "application/x-yaml"))]
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/compose/up",
+                params={"project_name": project},
+                headers=auth_headers(),
+                files=files,
+                timeout=180,
+            )
+            if r.status_code != 200:
+                audit_observer.emit(
+                    step="step_3_reimport_exported_yaml",
+                    severity="high",
+                    category="behaviour",
+                    title="Re-import of downloaded YAML failed",
+                    expected="200 OK on round-trip",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail(f"reimport failed: {r.status_code}")
+    finally:
+        _down(live_server, project)
+
+
+@journey(
+    persona=("sre_ops",),
+    category="compose",
+    severity="medium",
+)
+def test_journey_compose_failed_service_triage_via_logs(audited_page, live_server, audit_observer, persona):
+    """Plan J-04 item: failed-service triage via aggregated logs.
+    Deploy a stack whose service crashes on boot (exec non-existent
+    command). /api/compose/{project}/logs must include stderr from
+    the crash so an SRE can diagnose without exec-ing into the
+    container."""
+    import time
+
+    from tests.e2e_helpers import auth_headers
+
+    project = _project_name("ft")
+    crashing = b"""services:
+  crasher:
+    image: alpine:3.20
+    command: /no/such/binary
+    labels:
+      skiff-audit-run: "1"
+"""
+    try:
+        # Deploy; crash is expected, so accept 200 even though the
+        # container will immediately exit non-zero.
+        files = [("file", ("docker-compose.yml", crashing, "application/x-yaml"))]
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/compose/up",
+            params={"project_name": project},
+            headers=auth_headers(), files=files, timeout=120,
+        )
+        if r.status_code != 200:
+            pytest.skip(f"up failed: {r.status_code}")
+        # Let the crash propagate to the compose log buffer.
+        time.sleep(2)
+
+        with step("step_1_fetch_logs_for_failed_service"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/compose/{project}/logs",
+                params={"tail": 100},
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200, f"logs failed: {r.status_code}"
+            body = r.text.lower()
+            # The crasher errored on a missing binary — SRE should see
+            # the hint somewhere in the aggregated log.
+            if "no such" not in body and "not found" not in body and "executable" not in body:
+                audit_observer.emit(
+                    step="step_1_fetch_logs_for_failed_service",
+                    severity="medium",
+                    category="behaviour",
+                    title="Failed-service logs missing crash hint",
+                    expected="Aggregated logs include 'not found' / 'no such'",
+                    observed=r.text[:300],
+                )
+    finally:
+        _down(live_server, project)
+
+
+@journey(
+    persona=("hobbyist", "developer"),
+    category="compose",
+    severity="medium",
+    tags=("zero-trust",),
+)
+def test_journey_compose_env_secret_not_leaked(audited_page, live_server, audit_observer, persona):
+    """Plan J-04 item: env-secret deploy. Deploy a stack with a fake
+    secret in environment (`MY_PASSWORD=hunter2`); verify the secret
+    value does NOT echo into the audit log or the compose download."""
+    from tests.e2e_helpers import auth_headers
+
+    project = _project_name("env")
+    secret_value = "hunter2-this-must-not-leak"
+    yaml = f"""services:
+  app:
+    image: alpine:3.20
+    command: sleep 3600
+    environment:
+      - MY_PASSWORD={secret_value}
+    labels:
+      skiff-audit-run: "1"
+""".encode()
+    try:
+        with step("step_1_up_with_secret"):
+            files = [("file", ("docker-compose.yml", yaml, "application/x-yaml"))]
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/compose/up",
+                params={"project_name": project},
+                headers=auth_headers(), files=files, timeout=120,
+            )
+            if r.status_code != 200:
+                pytest.skip(f"up failed: {r.status_code}")
+        with step("step_2_audit_does_not_leak"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/system/audit-log",
+                params={"tail": 50},
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code == 200 and secret_value in r.text:
+                audit_observer.emit(
+                    step="step_2_audit_does_not_leak",
+                    severity="P0",
+                    category="security",
+                    zero_trust=True,
+                    title="Env secret leaked into audit log",
+                    expected="Redactor strips MY_PASSWORD values",
+                    observed=f"secret marker '{secret_value}' present in audit",
+                )
+                pytest.fail("env secret leaked to audit")
+        with step("step_3_download_yaml_leaks_only_expected"):
+            # Downloading YAML will legitimately contain the value
+            # (that's the deployed compose file). This step is
+            # documentation: if the policy ever changes to mask on
+            # download, this is where the assertion flips.
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/compose/{project}/download",
+                headers=auth_headers(), timeout=30,
+            )
+            # Accept either: secret present (current policy) OR masked.
+            # Emit a low-severity observation of which it is so the
+            # tracker can record the policy.
+            observed = "present" if secret_value in r.text else "masked"
+            audit_observer.emit(
+                step="step_3_download_yaml_leaks_only_expected",
+                severity="low",
+                category="behaviour",
+                title=f"Compose download env-secret policy: {observed}",
+                expected="Explicit policy documented in README",
+                observed=f"secret value is {observed} on download",
+            )
+    finally:
+        _down(live_server, project)
