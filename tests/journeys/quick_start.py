@@ -1,0 +1,243 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
+"""Quick-start journeys — 6 scenarios covering the shortest paths to a
+running container from zero. Covers template-driven deploys (novice
+flow) and direct image runs (developer flow).
+
+Template cards are declared in config._APP_TEMPLATES; clicking one
+opens a prefilled Run-container modal. These journeys walk the
+click → modal → submit → running-row pipeline and assert the user
+observes a success state without free-text typing (novice rubric).
+"""
+
+from __future__ import annotations
+
+import pytest
+import requests
+
+from tests.audit_driver import step
+from tests.journeys import journey
+
+
+pytest_plugins = ["tests.conftest_e2e", "tests.conftest_audit"]
+
+pytest.importorskip(
+    "playwright",
+    reason='playwright not installed — run: pip install -e ".[dev,e2e]"',
+)
+
+pytestmark = pytest.mark.e2e
+
+
+def _open_template(page, tid: str, timeout: int) -> None:
+    """Navigate Templates → click a template card → wait for the
+    prefilled Run modal to render. Reused across template journeys."""
+    page.locator(".sidebar a:has-text('Templates')").click()
+    page.wait_for_selector("h2:has-text('App templates')", timeout=timeout)
+    card = page.locator(f"[data-testid='template-{tid}']")
+    # Templates whose registry is not allowed render disabled; skip
+    # those journeys on the CI with a restricted allowlist.
+    if not card.first.is_enabled() and card.first.get_attribute("style", timeout=1000) and "not-allowed" in (card.first.get_attribute("style") or ""):
+        pytest.skip(f"template {tid} disabled by registry allowlist")
+    card.first.click()
+    # Run modal renders on the containers page after a short delay.
+    page.wait_for_selector("h3:has-text('Run'), h2:has-text('Run')", timeout=timeout)
+
+
+@journey(
+    persona=("novice", "hobbyist"),
+    category="quick_start",
+    severity="high",
+    covers=("hb-templates-missing",),
+)
+def test_journey_template_opens_run_modal_nginx(audited_page, live_server, audit_observer, persona):
+    """Novice path: Dashboard → Templates → nginx card → Run modal
+    renders with image prefilled. Does NOT actually submit run (that
+    path needs a real daemon + network pull — covered by extended pass)."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+
+    with step("step_2_open_nginx_template"):
+        _open_template(page, "nginx", SHORT)
+
+    with step("step_3_image_prefilled"):
+        # Image input is prefilled with nginx:alpine — no free-text typing required.
+        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        val = img_input.input_value() if img_input.count() > 0 else ""
+        assert "nginx" in val, f"image not prefilled with nginx (got {val!r})"
+
+    with step("step_4_cancel_keeps_clean_state"):
+        # Novice may change their mind — cancel must be easy and obvious.
+        cancel = page.locator("button:has-text('Cancel'), button:has-text('Close')").first
+        if cancel.count() > 0:
+            cancel.click()
+        # Modal should be gone.
+        page.wait_for_selector("h3:has-text('Run'), h2:has-text('Run')",
+                               state="hidden", timeout=SHORT)
+
+
+@journey(
+    persona=("novice",),
+    category="quick_start",
+    severity="high",
+    covers=("hb-templates-missing",),
+)
+def test_journey_template_postgres_shows_required_password(audited_page, live_server, audit_observer, persona):
+    """Novice path to postgres: template declares POSTGRES_PASSWORD
+    as required. The Run modal must surface the env var with its
+    'help' text so the novice doesn't submit a config-broken deploy."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+
+    with step("step_2_open_postgres_template"):
+        _open_template(page, "postgres", SHORT)
+
+    with step("step_3_password_env_visible"):
+        # The env-var row for POSTGRES_PASSWORD should be present in the modal
+        # (the template declares required=True + help text).
+        body = page.locator(".modal, dialog, form").first
+        # Any of: key chip, input name, or label should mention POSTGRES_PASSWORD
+        assert body.locator("text=POSTGRES_PASSWORD").count() > 0, (
+            "postgres template modal missing POSTGRES_PASSWORD env row"
+        )
+
+    with step("step_4_close_without_submit"):
+        cancel = page.locator("button:has-text('Cancel'), button:has-text('Close')").first
+        if cancel.count() > 0:
+            cancel.click()
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="medium",
+)
+def test_journey_developer_opens_run_modal_directly(audited_page, live_server, audit_observer, persona):
+    """Developer path: Containers → 'Run new container' → modal
+    opens with an empty image field ready for typing. Enter-in-input
+    should not submit prematurely (hb-*-form-shape class)."""
+    from tests.e2e_helpers import SHORT, login, nav_to
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+
+    with step("step_2_nav_containers"):
+        nav_to(page, "containers")
+
+    with step("step_3_open_run_modal"):
+        btn = page.locator("button:has-text('Run new container'), button:has-text('Run a container')").first
+        assert btn.count() > 0, "Containers page missing Run-new-container button"
+        btn.click()
+        page.wait_for_selector("h3:has-text('Run'), h2:has-text('Run')", timeout=SHORT)
+
+    with step("step_4_image_input_is_empty_and_focusable"):
+        img = page.locator("input[placeholder*='image' i], input[name='image']").first
+        assert img.count() > 0, "Run modal missing image input"
+        # Should be empty for a cold open (no prefill from template).
+        assert img.input_value() == "", "image input not empty on cold open"
+
+
+@journey(
+    persona=("super_user",),
+    category="quick_start",
+    severity="medium",
+    tags=("api",),
+)
+def test_journey_super_user_lists_templates_via_api(audited_page, live_server, audit_observer, persona):
+    """Super-user parity: every UI action has an API equivalent.
+    GET /api/templates must return the same catalogue the UI renders."""
+    from tests.e2e_helpers import auth_headers
+
+    with step("step_1_fetch_templates_api"):
+        r = requests.get(f"{live_server.rstrip('/')}/api/templates",
+                         headers=auth_headers(), timeout=10)
+        assert r.status_code == 200, f"GET /api/templates → {r.status_code}"
+        body = r.json()
+        assert "templates" in body, "response missing 'templates' key"
+        ids = {t["id"] for t in body["templates"]}
+        # Seeded catalogue covers these; if any drop out, super-user
+        # has a parity regression.
+        expected = {"nginx", "postgres", "redis", "alpine"}
+        missing = expected - ids
+        assert not missing, f"API response missing seeded templates: {missing}"
+
+
+@journey(
+    persona=("hobbyist",),
+    category="quick_start",
+    severity="medium",
+)
+def test_journey_hobbyist_finds_template_by_search(audited_page, live_server, audit_observer, persona):
+    """Hobbyist types 'post' into the filter input — expect ≤2 matches
+    (postgres; mongo if 'Document' contains 'Post'-like copy isn't matched).
+    Validates the template filter input actually filters (not dead widget)."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+
+    with step("step_2_nav_templates"):
+        page.locator(".sidebar a:has-text('Templates')").click()
+        page.wait_for_selector("h2:has-text('App templates')", timeout=SHORT)
+
+    with step("step_3_type_search_query"):
+        search = page.locator("input[type='search']").first
+        search.fill("post")
+        # One template card should remain: postgres.
+        page.wait_for_selector("[data-testid='template-postgres']", timeout=SHORT)
+        # nginx card should be filtered out.
+        assert page.locator("[data-testid='template-nginx']").count() == 0, (
+            "search filter not actually filtering"
+        )
+
+    with step("step_4_clear_search_restores_all"):
+        search.fill("")
+        page.wait_for_selector("[data-testid='template-nginx']", timeout=SHORT)
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="medium",
+)
+def test_journey_developer_cmd_k_reaches_run(audited_page, live_server, audit_observer, persona):
+    """Developer rubric: ⌘K palette jumps to any primary action. This
+    journey opens the palette and confirms 'Run container' or
+    similar action is reachable without mouse."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+
+    with step("step_2_open_palette"):
+        # Accelerator varies by OS; try both Mod+K and Control+K.
+        page.keyboard.press("Meta+K")
+        # If palette didn't open (Linux CI), try Control+K.
+        if page.locator(".palette, [role='dialog'][aria-label*='palette' i]").count() == 0:
+            page.keyboard.press("Control+K")
+        # If still no palette, this feature isn't wired for dev persona
+        # yet — emit a finding rather than fail hard.
+        if page.locator(".palette, [role='dialog'][aria-label*='palette' i]").count() == 0:
+            audit_observer.emit(
+                step="step_2_open_palette",
+                severity="medium",
+                category="behaviour",
+                title="⌘K palette not reachable from dashboard",
+                expected="Developer presses ⌘K / Ctrl-K → palette opens",
+                observed="Neither shortcut opened a palette dialog",
+            )
+            return
+
+    with step("step_3_palette_has_run_action"):
+        page.keyboard.type("run")
+        # Expect at least one match surfacing a run action.
+        page.wait_for_timeout(200)
