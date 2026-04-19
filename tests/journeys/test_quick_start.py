@@ -241,3 +241,107 @@ def test_journey_developer_cmd_k_reaches_run(audited_page, live_server, audit_ob
         page.keyboard.type("run")
         # Expect at least one match surfacing a run action.
         page.wait_for_timeout(200)
+
+
+# ── Plan-named J-02 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="medium",
+)
+def test_journey_template_python_dev_opens_modal(audited_page, live_server, audit_observer, persona):
+    """Plan J-02 item: template→python-dev. The seeded catalogue has
+    a `python` template; this journey opens its Run modal and asserts
+    the image field is prefilled with a python image."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+    with step("step_2_open_python_template"):
+        _open_template(page, "python", SHORT)
+    with step("step_3_image_is_python"):
+        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        val = img_input.input_value() if img_input.count() > 0 else ""
+        assert "python" in val.lower(), f"image not python: {val!r}"
+
+
+@journey(
+    persona=("developer",),
+    category="quick_start",
+    severity="medium",
+)
+def test_journey_template_node_dev_opens_modal(audited_page, live_server, audit_observer, persona):
+    """Plan J-02 item: template→node-dev. Same shape as python-dev —
+    asserts the node template prefills the modal with a node image."""
+    from tests.e2e_helpers import SHORT, login
+
+    page = audited_page
+    with step("step_1_sign_in"):
+        login(page, live_server)
+    with step("step_2_open_node_template"):
+        _open_template(page, "node", SHORT)
+    with step("step_3_image_is_node"):
+        img_input = page.locator("input[placeholder*='image' i], input[name='image']").first
+        val = img_input.input_value() if img_input.count() > 0 else ""
+        assert "node" in val.lower(), f"image not node: {val!r}"
+
+
+@journey(
+    persona=("sre_ops", "developer"),
+    category="quick_start",
+    severity="medium",
+    tags=("api",),
+)
+def test_journey_pull_then_run_separates_cleanly(audited_page, live_server, audit_observer, persona):
+    """Plan J-02 item: pull-then-run. Pull an image first (background
+    task), then run a container from it — exercises the two-step path
+    that lets SRE operators warm the image cache before deploying."""
+    import uuid
+
+    from tests.e2e_helpers import auth_headers
+
+    name = f"pa-ptr-{uuid.uuid4().hex[:6]}"
+    ref = "alpine:3.20"
+    with step("step_1_pull_image"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/images/pull",
+            params={"ref": ref},
+            headers=auth_headers(), timeout=300,
+        )
+        # 200 or 202 (background task) both acceptable.
+        if r.status_code not in (200, 202):
+            audit_observer.emit(
+                step="step_1_pull_image",
+                severity="medium",
+                category="contract",
+                title=f"Image pull returned {r.status_code}",
+                expected="200 or 202",
+                observed=f"{r.status_code}: {r.text[:200]!r}",
+            )
+    try:
+        with step("step_2_run_after_pull"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/containers/run",
+                headers={**auth_headers(), "Content-Type": "application/json"},
+                json={
+                    "image": ref,
+                    "name": name,
+                    "command": "sleep 3600",
+                    "labels": {"skiff-audit-run": "1"},
+                },
+                timeout=120,
+            )
+            assert r.status_code in (200, 201), (
+                f"run after pull failed: {r.status_code} {r.text}"
+            )
+    finally:
+        try:
+            requests.delete(
+                f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
+                headers=auth_headers(), timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
