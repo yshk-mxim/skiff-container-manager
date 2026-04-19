@@ -38,7 +38,7 @@ complexity:  ## Cyclomatic complexity (McCabe) + pylint heuristics (matches pypr
 
 # ── JS + Markdown quality ─────────────────────────────────
 lint-js:  ## Guard: no innerHTML string interpolation outside ui.js
-	@bad=$$(git grep -n -E 'innerHTML\s*=\s*([`"'\''"]).*\$$\{|innerHTML\s*=\s*[^;]+\+' -- 'skiff/static/**/*.js' ':!skiff/static/ui.js' ':(exclude)skiff/static/swagger-ui/' || true); \
+	@bad=$$(git grep -n -E 'innerHTML\s*=\s*([`"'\''"]).*\$$\{|innerHTML\s*=\s*[^;]+\+' -- 'skiff/static/**/*.js' ':!skiff/static/ui.js' ':(exclude)skiff/static/swagger-ui/' ':(exclude)skiff/static/xterm/' || true); \
 	if [ -n "$$bad" ]; then \
 	  echo "::error::innerHTML with interpolation outside ui.js — XSS risk:"; \
 	  echo "$$bad"; \
