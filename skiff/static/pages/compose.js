@@ -8,6 +8,47 @@
  */
 "use strict";
 
+// Scale modal — pick a service, enter replica count. Fires
+// /api/compose/{project}/scale which calls `docker compose up -d --scale`.
+function _showComposeScaleModal(stack) {
+  var services = (stack.services || []).map(function(s) { return s.name; });
+  if (!services.length) {
+    toast('No services to scale', 'error');
+    return;
+  }
+  UI.formModal({
+    title: 'Scale stack ' + stack.name,
+    fields: [
+      {
+        name: 'service_name',
+        label: 'Service',
+        type: 'select',
+        options: services.map(function(s) { return { value: s }; }),
+      },
+      {
+        name: 'replicas',
+        label: 'Replicas',
+        type: 'number',
+        value: '1',
+        help: 'Target number of instances. 0 stops the service without removing it. Max is server-configured (default 10).',
+      },
+    ],
+    submitLabel: 'Scale',
+    onSubmit: function(values) {
+      return apiFetch(
+        API + '/compose/' + encodeURIComponent(stack.name) + '/scale'
+        + '?service_name=' + encodeURIComponent(values.service_name)
+        + '&replicas=' + encodeURIComponent(values.replicas),
+        { method: 'POST' },
+      ).then(function() {
+        toast('Scaled ' + values.service_name + ' to ' + values.replicas, 'success');
+        showCompose();
+      });
+    },
+  });
+}
+
+
 // Stack-aggregated logs modal. Hits /api/compose/{project}/logs,
 // renders lines as "service | …" the same way `docker compose logs` does.
 // textContent only — server-supplied lines never touch innerHTML.
@@ -51,10 +92,42 @@ async function showCompose() {
 
   if (stacks.length > 0) {
     var stackHeader = document.createElement('h3');
-    stackHeader.textContent = 'Running Stacks';
+    stackHeader.textContent = 'Running Stacks (' + stacks.length + ')';
     stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px';
     main.appendChild(stackHeader);
-    stacks.forEach(function(stack) {
+    var search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'search-bar';
+    search.placeholder = 'Search stacks by project name or service...';
+    search.setAttribute('data-testid', 'compose-search');
+    main.appendChild(search);
+    var cardsWrap = document.createElement('div');
+    main.appendChild(cardsWrap);
+    function renderStackCards(q) {
+      cardsWrap.innerHTML = '';
+      var needle = (q || '').toLowerCase();
+      var filtered = stacks.filter(function(s) {
+        if (!needle) return true;
+        if ((s.name || '').toLowerCase().indexOf(needle) !== -1) return true;
+        return (s.services || []).some(function(svc) {
+          return (svc.name || '').toLowerCase().indexOf(needle) !== -1;
+        });
+      });
+      stackHeader.textContent = 'Running Stacks (' + filtered.length +
+        (needle && filtered.length !== stacks.length ? '/' + stacks.length : '') + ')';
+      if (!filtered.length) {
+        var em = document.createElement('p');
+        em.style.cssText = 'color:var(--muted);font-size:13px;padding:12px 0';
+        em.textContent = needle ? 'No matches' : '';
+        cardsWrap.appendChild(em);
+        return;
+      }
+      filtered.forEach(function(stack) { cardsWrap.appendChild(_renderStackCard(stack)); });
+    }
+    // Split card rendering into a helper so the filter can re-render
+    // without duplicating the big DOM block. The whole forEach body
+    // below moves into _renderStackCard.
+    function _renderStackCard(stack) {
       var card = document.createElement('div'); card.className = 'stack-card';
       var h4 = document.createElement('h4');
       var dot = document.createElement('span'); dot.className = 'dot ' + (stack.status === 'running' ? 'ok' : 'down');
@@ -92,6 +165,30 @@ async function showCompose() {
       btnRow.appendChild(makeBtn('All service logs', function() {
         _showComposeAggregateLogs(stack.name);
       }, 'btn small'));
+      btnRow.appendChild(makeActionBtn('Start', function() {
+        return apiFetch(API + '/compose/' + encodeURIComponent(stack.name) + '/start',
+                        { method: 'POST' }).then(function() {
+          toast(stack.name + ' started', 'success'); showCompose();
+        });
+      }, 'btn small', 'Starting\u2026'));
+      btnRow.appendChild(makeActionBtn('Stop', function() {
+        return apiFetch(API + '/compose/' + encodeURIComponent(stack.name) + '/stop',
+                        { method: 'POST' }).then(function() {
+          toast(stack.name + ' stopped', 'info'); showCompose();
+        });
+      }, 'btn small', 'Stopping\u2026'));
+      btnRow.appendChild(makeActionBtn('Pull updates', function() {
+        if (!confirm('Pull latest images for all services in ' + stack.name + '?\nRun a Restart after to apply.'))
+          throw new Error('Cancelled');
+        return apiFetch(API + '/compose/' + encodeURIComponent(stack.name) + '/pull',
+                        { method: 'POST' }).then(function() {
+          toast('Images pulled. Run Restart to apply new tags.', 'success');
+        });
+      }, 'btn small', 'Pulling\u2026'));
+      btnRow.appendChild(makeActionBtn('Scale\u2026', function() {
+        _showComposeScaleModal(stack);
+        throw new Error('ModalOpened');  // don't trigger success toast
+      }, 'btn small'));
       btnRow.appendChild(makeActionBtn('Restart all', function() {
         return apiFetch(API + '/compose/down?project_name=' + encodeURIComponent(stack.name),
                         { method: 'POST' }).then(function() {
@@ -101,6 +198,12 @@ async function showCompose() {
                           { method: 'POST', body: form });
         }).then(function() { toast(stack.name + ' restarted', 'success'); showCompose(); });
       }, 'btn small', 'Restarting\u2026'));
+      btnRow.appendChild(makeBtn('Download YAML', function() {
+        var a = document.createElement('a');
+        a.href = API + '/compose/' + encodeURIComponent(stack.name) + '/download';
+        a.setAttribute('download', stack.name + '.docker-compose.yml');
+        a.click();
+      }, 'btn small'));
       btnRow.appendChild(makeActionBtn('Tear down', function() {
         return apiFetch(API + '/compose/down?project_name=' + encodeURIComponent(stack.name),
                         { method: 'POST' }).then(function() {
@@ -108,8 +211,10 @@ async function showCompose() {
         });
       }, 'btn danger small', 'Tearing down\u2026'));
       card.appendChild(btnRow);
-      main.appendChild(card);
-    });
+      return card;
+    }
+    renderStackCards('');
+    search.oninput = function() { renderStackCards(search.value); };
     main.appendChild(document.createElement('hr'));
   }
 

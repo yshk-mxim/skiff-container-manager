@@ -271,35 +271,130 @@ async function loadSystem() {
       main.appendChild(secList);
     }
 
+    // Docker Events — live window into daemon-emitted events (container
+    // lifecycle, image pulls, network attachments). Matches `docker events`
+    // on the CLI. Polls every 5s while the page is visible.
+    var eventsH = document.createElement('h3');
+    eventsH.textContent = 'Docker Events';
+    eventsH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px';
+    main.appendChild(eventsH);
+    var eventsDesc = document.createElement('p');
+    eventsDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px';
+    eventsDesc.textContent = 'Live daemon events for the last minute. Refreshes every 5 seconds while this page is open.';
+    main.appendChild(eventsDesc);
+    var eventsBox = document.createElement('pre');
+    eventsBox.setAttribute('data-testid', 'events-viewer');
+    eventsBox.style.cssText = 'background:var(--sidebar-bg);color:#e2e8f0;padding:12px;border-radius:6px;font-size:12px;max-height:240px;overflow:auto;font-family:monospace;margin-bottom:16px';
+    eventsBox.textContent = 'Loading\u2026';
+    main.appendChild(eventsBox);
+    function _refreshEvents() {
+      apiFetch(API + '/system/events?since_secs=60&limit=200').then(function(d) {
+        if (currentPage !== 'system') return;
+        var lines = (d.events || []).map(function(e) {
+          var ts = e.time ? new Date(e.time * 1000).toLocaleTimeString() : '';
+          var attrs = Object.keys(e.actor_attributes || {}).map(function(k) {
+            return k + '=' + e.actor_attributes[k];
+          }).join(' ');
+          return ts + ' ' + (e.type || '?') + '.' + (e.action || '?')
+               + (e.actor_id ? ' [' + e.actor_id + ']' : '')
+               + (attrs ? ' ' + attrs : '');
+        });
+        eventsBox.textContent = lines.length
+          ? lines.reverse().join('\n')
+          : '(no events in the last ' + (d.since_secs || 60) + 's)';
+      }).catch(function() { /* keep last-good */ });
+    }
+    _refreshEvents();
+    managedInterval(_refreshEvents, 5000);
+
     // Audit log
     var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; auditH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px'; main.appendChild(auditH);
     var auditDesc = document.createElement('p'); auditDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px'; auditDesc.textContent = 'Recent API requests made to this app.'; main.appendChild(auditDesc);
-    var auditToolbar = document.createElement('div'); auditToolbar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
-    var auditRefreshBtn = makeBtn('Refresh', function() { loadAuditLog(auditBody); }, 'btn small');
+    var auditToolbar = document.createElement('div'); auditToolbar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap';
+    // Tail-size selector — backend caps at MAX_AUDIT_LINES (2000 by default).
+    // Showing only 200 with no affordance to see more was silent truncation.
+    var tailSelect = document.createElement('select');
+    tailSelect.setAttribute('data-testid', 'audit-tail-select');
+    tailSelect.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:13px';
+    [200, 500, 1000, 2000].forEach(function(n) {
+      var opt = document.createElement('option'); opt.value = String(n); opt.textContent = 'Last ' + n;
+      tailSelect.appendChild(opt);
+    });
+    var auditFilter = document.createElement('input');
+    auditFilter.type = 'search';
+    auditFilter.className = 'search-bar';
+    auditFilter.placeholder = 'Filter by event, path, method, or status...';
+    auditFilter.setAttribute('data-testid', 'audit-filter');
+    auditFilter.style.cssText = 'flex:1;min-width:220px;margin:0';
+    var auditRefreshBtn = makeBtn('Refresh', function() { loadAuditLog(auditBody, tailSelect, auditFilter, auditH); }, 'btn small');
     var auditDlBtn = makeBtn('Download .jsonl', function() {
       var a = document.createElement('a'); a.href = API+'/system/audit-log/download';
       a.setAttribute('download','audit.jsonl'); a.click();
     }, 'btn small');
-    auditToolbar.append(auditRefreshBtn, auditDlBtn);
+    auditToolbar.append(tailSelect, auditFilter, auditRefreshBtn, auditDlBtn);
     main.appendChild(auditToolbar);
     var auditTable = document.createElement('table');
     auditTable.innerHTML = '<thead><tr><th>Time</th><th>Event</th><th>Resource</th><th>Method</th><th>Path</th><th>Status</th><th>Remote</th></tr></thead>';
     var auditBody = document.createElement('tbody');
     auditTable.appendChild(auditBody);
     main.appendChild(auditTable);
-    loadAuditLog(auditBody);
+    tailSelect.addEventListener('change', function() { loadAuditLog(auditBody, tailSelect, auditFilter, auditH); });
+    auditFilter.addEventListener('input', function() { loadAuditLog(auditBody, tailSelect, auditFilter, auditH, true); });
+    loadAuditLog(auditBody, tailSelect, auditFilter, auditH);
 
   } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
 }
 
-function loadAuditLog(tbody) {
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
-  apiFetch(API+'/system/audit-log?tail=200').then(function(rows) {
+// Cache of the most recently fetched rows so an input filter doesn't re-hit
+// the network on every keystroke. `reuseCache=true` (passed by the filter
+// keystroke handler) re-renders without an /api/... round trip.
+var _auditRowCache = [];
+function loadAuditLog(tbody, tailSelect, auditFilter, auditH, reuseCache) {
+  var tail = tailSelect && tailSelect.value ? Number(tailSelect.value) : 200;
+  var needle = auditFilter && auditFilter.value ? auditFilter.value.toLowerCase() : '';
+  function _rowMatches(row) {
+    if (!needle) return true;
+    var hay = [
+      row.event, row.raw, row.path, row.method, row.remote,
+      row.resource_type, row.resource_id,
+      typeof row.status === 'number' ? String(row.status) : '',
+    ].filter(Boolean).join(' ').toLowerCase();
+    return hay.indexOf(needle) !== -1;
+  }
+  function _paint(rows) {
     tbody.innerHTML = '';
-    if (!rows || rows.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td'); td.colSpan=7; td.style.cssText='text-align:center;color:var(--muted);padding:20px'; td.textContent='No audit entries yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+    var matching = rows.filter(_rowMatches);
+    if (auditH) {
+      auditH.textContent = 'Audit Log (' + matching.length +
+        (needle && matching.length !== rows.length ? '/' + rows.length : '') + ')';
     }
-    rows.slice().reverse().forEach(function(row) {
+    if (!matching.length) {
+      var tr0 = document.createElement('tr'); var td0 = document.createElement('td');
+      td0.colSpan = 7; td0.style.cssText = 'text-align:center;color:var(--muted);padding:20px';
+      td0.textContent = needle ? 'No audit entries match "' + needle + '".' : 'No audit entries yet.';
+      tr0.appendChild(td0); tbody.appendChild(tr0); return;
+    }
+    matching.slice().reverse().forEach(function(row) {
+      _paintAuditRow(row, tbody);
+    });
+  }
+  if (reuseCache && _auditRowCache.length) { _paint(_auditRowCache); return; }
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
+  apiFetch(API+'/system/audit-log?tail=' + tail).then(function(rows) {
+    _auditRowCache = rows || [];
+    _paint(_auditRowCache);
+  }).catch(function(e) {
+    var tr = document.createElement('tr');
+    var td = document.createElement('td');
+    td.colSpan = 7;
+    td.style.cssText = 'color:var(--red);padding:12px';
+    td.textContent = 'Failed: ' + e.message;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  });
+}
+
+function _paintAuditRow(row, tbody) {
       var tr = document.createElement('tr');
       var ts = row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '';
       var evt = row.event || row.raw || '';
@@ -335,16 +430,6 @@ function loadAuditLog(tbody) {
       tr.appendChild(td4);
       tr.appendChild(_auditCell(row.remote || '', 'color:var(--muted)'));
       tbody.appendChild(tr);
-    });
-  }).catch(function(e) {
-    var tr = document.createElement('tr');
-    var td = document.createElement('td');
-    td.colSpan = 6;
-    td.style.cssText = 'color:var(--red);padding:12px';
-    td.textContent = 'Failed: ' + e.message;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  });
 }
 
 // ── Keyboard shortcuts ──

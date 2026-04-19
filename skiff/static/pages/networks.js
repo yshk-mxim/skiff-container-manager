@@ -38,15 +38,36 @@ async function loadNetworks() {
     desc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
     desc.textContent = 'Docker networks are internal to the container environment and used for container-to-container communication. They are not externally accessible.';
     main.appendChild(desc);
+    var search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'search-bar';
+    search.placeholder = 'Search networks by name, driver, or subnet...';
+    search.setAttribute('data-testid', 'networks-search');
+    main.appendChild(search);
     var table = document.createElement('table');
     table.innerHTML = '<thead><tr><th>Name</th><th>ID</th><th>Driver</th><th>Scope</th><th>Containers</th><th>Subnet</th><th>Actions</th></tr></thead>';
     var tbody = document.createElement('tbody');
-    if (networks.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td');
-      td.colSpan = 7; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
-      td.textContent = 'No networks found'; tr.appendChild(td); tbody.appendChild(tr);
-    } else {
-      networks.forEach(function(n) {
+    function renderNetRows(q) {
+      tbody.innerHTML = '';
+      var needle = (q || '').toLowerCase();
+      var filtered = networks.filter(function(n) {
+        if (!needle) return true;
+        var subnet = (n.ipam && n.ipam.length)
+          ? n.ipam.map(function(c) { return c.Subnet || ''; }).filter(Boolean).join(', ') : '';
+        return (n.name || '').toLowerCase().indexOf(needle) !== -1 ||
+               (n.driver || '').toLowerCase().indexOf(needle) !== -1 ||
+               subnet.toLowerCase().indexOf(needle) !== -1;
+      });
+      h2.textContent = 'Networks (' + filtered.length +
+        (needle && filtered.length !== networks.length ? '/' + networks.length : '') + ')';
+      if (filtered.length === 0) {
+        var tr = document.createElement('tr'); var td = document.createElement('td');
+        td.colSpan = 7; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
+        td.textContent = needle ? 'No matches' : 'No networks found';
+        tr.appendChild(td); tbody.appendChild(tr);
+        return;
+      }
+      filtered.forEach(function(n) {
         var tr = document.createElement('tr');
         var tdN = document.createElement('td'); tdN.style.fontWeight = '500'; tdN.textContent = n.name;
         if (['bridge', 'host', 'none'].indexOf(n.name) !== -1) {
@@ -103,6 +124,8 @@ async function loadNetworks() {
         tr.append(tdN, tdId, tdD, tdS, tdC, tdSubnet, tdAct); tbody.appendChild(tr);
       });
     }
+    renderNetRows('');
+    search.oninput = function() { renderNetRows(search.value); };
     table.appendChild(tbody); main.appendChild(table);
   } catch (e) {
     main.innerHTML = '';
@@ -113,6 +136,8 @@ async function loadNetworks() {
 
 
 function showCreateNetworkModal() {
+  // Docker networks can't be retuned after creation (labels, IPAM,
+  // internal/attachable are immutable). Expose every knob up-front.
   UI.formModal({
     title: 'Create network',
     fields: [
@@ -120,13 +145,51 @@ function showCreateNetworkModal() {
       {
         name: 'driver', label: 'Driver', type: 'select',
         options: ['bridge', 'overlay', 'macvlan'].map(function(d) { return { value: d }; }),
+        help: 'bridge is the default single-host driver. overlay needs swarm mode. macvlan assigns MAC-layer access.',
+      },
+      {
+        name: 'subnet', label: 'Subnet (optional)',
+        placeholder: '10.20.0.0/24',
+        help: 'CIDR for the network\'s IPAM pool. Leave blank to let Docker pick.',
+      },
+      {
+        name: 'gateway', label: 'Gateway (optional)',
+        placeholder: '10.20.0.1',
+        help: 'Requires Subnet. Defaults to .1 of the subnet when blank.',
+      },
+      {
+        name: 'labels', label: 'Labels (optional)',
+        type: 'textarea',
+        placeholder: 'env=prod\nteam=platform',
+        help: 'key=value pairs, one per line. Cannot be changed after creation.',
+      },
+      {
+        name: 'internal', label: 'Internal (no external connectivity)',
+        type: 'checkbox',
+      },
+      {
+        name: 'attachable', label: 'Attachable (standalone containers can join)',
+        type: 'checkbox',
+      },
+      {
+        name: 'enable_ipv6', label: 'Enable IPv6',
+        type: 'checkbox',
       },
     ],
     submitLabel: 'Create',
     onSubmit: function(values) {
+      var params = new URLSearchParams({
+        name: values.name,
+        driver: values.driver || 'bridge',
+      });
+      if (values.subnet) params.set('subnet', values.subnet);
+      if (values.gateway) params.set('gateway', values.gateway);
+      if (values.labels) params.set('labels', values.labels);
+      if (values.internal) params.set('internal', 'true');
+      if (values.attachable) params.set('attachable', 'true');
+      if (values.enable_ipv6) params.set('enable_ipv6', 'true');
       return guardedAction('create-network', function() {
-        return apiFetch(API + '/networks/create?name=' + encodeURIComponent(values.name) +
-                        '&driver=' + values.driver, { method: 'POST' });
+        return apiFetch(API + '/networks/create?' + params.toString(), { method: 'POST' });
       }).then(function() { toast('Network created', 'success'); loadNetworks(); });
     },
   });

@@ -30,7 +30,24 @@ async function loadImages() {
     var h2 = document.createElement('h2'); h2.textContent = 'Images (' + images.length + ')';
     var ha = document.createElement('div'); ha.className = 'header-actions';
     var imgSearch = document.createElement('input'); imgSearch.className = 'search-bar'; imgSearch.placeholder = 'Search images...';
-    ha.append(imgSearch, makeBtn('Pull image', showPullModal, 'btn primary'));
+    ha.append(
+      imgSearch,
+      makeBtn('Pull image', showPullModal, 'btn primary'),
+      makeActionBtn('Prune', function() {
+        if (!confirm('Remove dangling (untagged) images? Used-by-container images will be kept.'))
+          throw new Error('Cancelled');
+        return guardedAction('prune-images', function() {
+          return apiFetch(API + '/images/prune?dangling_only=true', { method: 'POST' }).then(function(r) {
+            var n = r.deleted_count || 0;
+            var msg = n ? 'Pruned ' + n + ' image' + (n === 1 ? '' : 's')
+                        + ' (' + (r.space_reclaimed_mb || 0) + ' MB reclaimed)'
+                        : 'No dangling images to prune';
+            toast(msg, n ? 'success' : 'info');
+            loadImages();
+          });
+        });
+      }, 'btn small', 'Pruning\u2026'),
+    );
     header.append(h2, ha);
     main.appendChild(header);
     var imgDesc = document.createElement('p'); imgDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';

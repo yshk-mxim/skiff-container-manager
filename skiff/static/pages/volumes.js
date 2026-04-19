@@ -13,14 +13,21 @@
 
 async function _showVolumeInspectModal(name) {
   var body = UI.el('div', { text: t('common.loading') });
+  var _raw = null;
   var m = UI.modal({
     title: t('volumes.modal.inspect_title', { name: name }),
     body: body,
-    actions: [makeBtn(t('common.close'), function() { m.close(); })],
+    actions: [
+      makeBtn('Export JSON', function() {
+        if (_raw) UI.downloadJson(_raw, 'volume-' + name + '.json');
+      }, 'btn small'),
+      makeBtn(t('common.close'), function() { m.close(); }),
+    ],
   });
   m.box.style.cssText += 'max-width:540px;';
   try {
     var d = await apiFetch(API + '/volumes/' + encodeURIComponent(name) + '/inspect');
+    _raw = d;
     body.innerHTML = '';
     // Sentinel -1 = driver doesn't report usage data; show a friendly phrase
     // instead of "-1" which looks like a bug.
@@ -83,6 +90,15 @@ async function loadVolumes() {
     volDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
     volDesc.textContent = t('volumes.description');
     main.appendChild(volDesc);
+    // Search bar (matches the pattern used by containers + images pages).
+    // Client-side substring filter on name + driver so large volume lists
+    // stay navigable; the 0-vs-N count updates as the filter changes.
+    var search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'search-bar';
+    search.placeholder = t('volumes.search_placeholder');
+    search.setAttribute('data-testid', 'volumes-search');
+    main.appendChild(search);
     var table = document.createElement('table');
     // The <thead> row is built via createElement so the column-header text
     // flows through `t(...)` rather than an inline English literal.
@@ -99,12 +115,24 @@ async function loadVolumes() {
     });
     thead.appendChild(thRow); table.appendChild(thead);
     var tbody = document.createElement('tbody');
-    if (volumes.length === 0) {
-      var tr = document.createElement('tr'); var td = document.createElement('td');
-      td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
-      td.textContent = t('volumes.empty'); tr.appendChild(td); tbody.appendChild(tr);
-    } else {
-      volumes.forEach(function(v) {
+    function renderVolumeRows(q) {
+      tbody.innerHTML = '';
+      var needle = (q || '').toLowerCase();
+      var filtered = volumes.filter(function(v) {
+        if (!needle) return true;
+        return (v.name || '').toLowerCase().indexOf(needle) !== -1 ||
+               (v.driver || '').toLowerCase().indexOf(needle) !== -1;
+      });
+      h2.textContent = t('volumes.title') + ' (' + filtered.length +
+        (needle && filtered.length !== volumes.length ? '/' + volumes.length : '') + ')';
+      if (filtered.length === 0) {
+        var tr = document.createElement('tr'); var td = document.createElement('td');
+        td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
+        td.textContent = needle ? t('common.no_matches') : t('volumes.empty');
+        tr.appendChild(td); tbody.appendChild(tr);
+        return;
+      }
+      filtered.forEach(function(v) {
         var tr = document.createElement('tr');
         var tdN = document.createElement('td'); tdN.style.fontWeight = '500'; tdN.textContent = v.name;
         var tdD = document.createElement('td'); tdD.textContent = v.driver;
@@ -136,6 +164,8 @@ async function loadVolumes() {
         tr.append(tdN, tdD, tdU, tdC, tdA); tbody.appendChild(tr);
       });
     }
+    renderVolumeRows('');
+    search.oninput = function() { renderVolumeRows(search.value); };
     table.appendChild(tbody); main.appendChild(table);
   } catch (e) {
     main.innerHTML = '';
@@ -148,19 +178,49 @@ async function loadVolumes() {
 
 
 function showCreateVolumeModal() {
+  // Volumes are immutable after creation (docker doesn't let you change
+  // labels, driver, or opts later). So the create modal needs to expose
+  // every knob up-front; this form mirrors `docker volume create`.
   UI.formModal({
     title: t('volumes.modal.create_title'),
-    fields: [{
-      name: 'name',
-      label: t('volumes.columns.name'),
-      required: true,
-      placeholder: t('volumes.create_placeholder'),
-    }],
+    fields: [
+      {
+        name: 'name',
+        label: t('volumes.columns.name'),
+        required: true,
+        placeholder: t('volumes.create_placeholder'),
+      },
+      {
+        name: 'driver',
+        label: 'Driver',
+        type: 'select',
+        options: ['local', 'nfs', 'tmpfs'].map(function(d) { return { value: d }; }),
+        help: 'local is the default. nfs/tmpfs require the driver to be available on the host.',
+      },
+      {
+        name: 'labels',
+        label: 'Labels (optional)',
+        type: 'textarea',
+        placeholder: 'env=prod\nteam=platform',
+        help: 'key=value pairs, one per line. Labels cannot be changed after creation.',
+      },
+      {
+        name: 'driver_opts',
+        label: 'Driver options (optional)',
+        type: 'textarea',
+        placeholder: 'type=nfs\ndevice=:/path\no=addr=10.0.0.1,rw',
+        help: 'Driver-specific options. For local+nfs: type/device/o. Cannot be changed later.',
+      },
+    ],
     submitLabel: t('volumes.actions.create'),
     onSubmit: function(values) {
+      var params = new URLSearchParams({ name: values.name });
+      if (values.driver) params.set('driver', values.driver);
+      if (values.labels) params.set('labels', values.labels);
+      if (values.driver_opts) params.set('driver_opts', values.driver_opts);
       return guardedAction('create-volume', function() {
         return apiFetch(
-          API + '/volumes/create?name=' + encodeURIComponent(values.name),
+          API + '/volumes/create?' + params.toString(),
           { method: 'POST' },
         );
       }).then(function() { toast(t('volumes.toast.created'), 'success'); loadVolumes(); });
