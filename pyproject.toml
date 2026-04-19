@@ -206,6 +206,7 @@ markers = [
     "integration: tests against a real Docker daemon",
     "property: hypothesis property-based tests",
     "e2e: end-to-end Playwright tests requiring live server and Docker tunnel",
+    "persona_audit: driver-seat persona-audit journey (subset of e2e)",
     # R12 — per-module markers; auto-tagged by tests/conftest.py from filename.
     # Run e.g. `pytest -m containers` or `pytest -m 'images or volumes'`.
     "containers: targets skiff.routers.containers",

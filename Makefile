@@ -1,4 +1,4 @@
-.PHONY: help lint lint-antipatterns lint-js lint-md lint-asvs lint-notice lint-i18n format security complexity test test-unit test-e2e coverage docs docs-check sbom ci clean deps
+.PHONY: help lint lint-antipatterns lint-js lint-md lint-asvs lint-notice lint-i18n format security complexity test test-unit test-e2e persona-audit persona-audit-report tracker coverage docs docs-check sbom ci clean deps
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -67,6 +67,25 @@ test-unit:  ## Run just the unit tier (no Docker daemon needed)
 
 test-e2e:  ## Run Playwright e2e tests (requires .[e2e] + chromium)
 	pytest -v -m e2e tests/
+
+persona-audit:  ## Run the driver-seat persona audit harness (see docs/dev/persona_audit_tracker.md)
+	# The harness captures screenshots / DOM / console / stderr / audit
+	# per step, cross-checks against docs + competitor matrix + zero-trust
+	# invariants, and emits finding.json entries under
+	# tests/e2e-artifacts/persona-audit/pass-<N>/. Run repeatedly — each
+	# invocation is one pass; the done rubric demands 2 consecutive clean
+	# passes + all 16 gates green.
+	#
+	# Override PERSONA=<tag> and JOURNEY=<name> to drive a slice.
+	pytest -v -m "persona_audit" tests/journeys/ \
+	  $(if $(PERSONA),-k "$(PERSONA)") \
+	  $(if $(JOURNEY),-k "$(JOURNEY)")
+
+persona-audit-report:  ## Write docs/dev/persona_audit_report_<date>.md from the latest pass
+	python3 scripts/persona_audit_report.py
+
+tracker:  ## Refresh docs/dev/persona_audit_tracker.md + backing CSVs
+	python3 scripts/regenerate_tracker.py
 
 coverage:  ## Coverage report (HTML + term-missing), excludes e2e
 	pytest --cov --cov-report=term-missing --cov-report=html -m "not e2e" tests/
