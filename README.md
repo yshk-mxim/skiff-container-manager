@@ -58,6 +58,7 @@ Known gaps (see [`SECURITY.md`](SECURITY.md) for the full list) include a shared
 - **Compose** — deploy, teardown, per-service restart, stop/start, pull images, scale services, download YAML; sandbox-validated before execution
 - **System** — engine info, disk usage, prune all / build cache, live Docker events viewer, filterable audit log
 - **Notifications** — toasts mirrored into a bell-icon history panel (last 50)
+- **Command palette** — press **⌘K** (macOS) or **Ctrl+K** (everywhere else) to jump to any page or container by name from anywhere in the app
 - **Security** — Bearer token auth, CSRF protection, registry allowlist, rate limiting, security headers, audit logging, reviewer-mode (read-only) profile
 
 ---

@@ -32,6 +32,14 @@
          registry. Adding a new page = one JS file; sidebar updates
          automatically. Persona filtering honoured. Mount point below. -->
     <div id="sidebar-mount"></div>
+    <!-- Keyboard shortcut hint for the command palette.
+         `core/palette.js` swaps the text to ⌘K on macOS, Ctrl+K elsewhere,
+         after the DOM is ready. Kept subdued so it doesn't compete with
+         nav labels but visible enough that a first-time user who skipped
+         the tour can still discover the shortcut. -->
+    <div id="sidebar-palette-hint" class="sidebar-palette-hint" aria-hidden="true">
+      Press <kbd>Ctrl+K</kbd> to search
+    </div>
     <div class="sidebar-spacer"></div>
     <div class="sidebar-status" id="sidebar-status"><span class="dot"></span> <span>Connecting...</span></div>
     <div class="sidebar-footer col">

@@ -159,7 +159,20 @@ def test_submit_with_short_token_shows_error(setup_page):
     setup_page.locator("#sw-token").fill("tooshort")
     setup_page.locator("button:has-text('Save .env')").click()
     setup_page.wait_for_timeout(500)
-    assert setup_page.locator("#sw-error").is_visible()
+    err = setup_page.locator("#sw-error")
+    assert err.is_visible()
+    # Regression: the 4xx envelope is `{detail: {code, message}}`. If
+    # the client sets `textContent = d.detail` directly it stringifies
+    # to "[object Object]" — a real bug users hit in production. The
+    # rendered text MUST be a human-readable message, not an object
+    # stringification.
+    rendered = err.inner_text()
+    assert "[object Object]" not in rendered, f"wizard error is stringified envelope, not the message: {rendered!r}"
+    # Short-token rejection must hint at the length requirement.
+    lower = rendered.lower()
+    assert any(k in lower for k in ("token", "16", "short", "length", "character")), (
+        f"short-token error gives no hint at the length constraint: {rendered!r}"
+    )
 
 
 # ── SSH tunnel connect ─────────────────────────────────────────────────────
@@ -186,14 +199,23 @@ def test_tunnel_connect_invalid_target_shows_error(setup_page):
 
 @pytest.mark.skipif(not E2E_SSH_TUNNEL_TARGET, reason="E2E_SSH_TUNNEL_TARGET not set")
 def test_tunnel_connect_real_ssh(setup_page):
-    """Full tunnel connect test — requires E2E_SSH_TUNNEL_TARGET=user@host."""
+    """Full tunnel connect test — requires E2E_SSH_TUNNEL_TARGET=user@host.
+
+    Default tab post-wizard-overhaul is Local/Custom; switch to SSH
+    Tunnel before the #sw-ssh-target input becomes visible."""
+    setup_page.locator("button:has-text('SSH Tunnel')").click()
+    setup_page.locator("#sw-ssh-target").wait_for(state="visible", timeout=5_000)
     setup_page.locator("#sw-ssh-target").fill(E2E_SSH_TUNNEL_TARGET)
-    setup_page.locator("button:has-text('Connect')").click()
+    setup_page.locator("#sw-tunnel-btn").click()
     setup_page.wait_for_timeout(20_000)
-    status = setup_page.locator("#sw-tunnel-status")
-    assert "✓" in status.inner_text()
+    status_text = setup_page.locator("#sw-tunnel-status").inner_text()
+    # Regression — envelope stringification: tunnel-connect errors hit
+    # `_renderTunnelError` which does unwrap `detail.message`. Assert
+    # no path through this flow ever renders "[object Object]".
+    assert "[object Object]" not in status_text, f"tunnel status renders stringified envelope: {status_text!r}"
+    assert "\u2713" in status_text, f"tunnel connect did not succeed: {status_text!r}"
     host_val = setup_page.evaluate("document.getElementById('sw-host').value")
-    assert host_val.startswith("unix://")
+    assert host_val.startswith("unix://"), f"tunnel success but host not prefilled: {host_val!r}"
 
 
 # ── Session-only flow (runs last — configures the server in session memory) ─
@@ -219,3 +241,29 @@ def test_session_only_setup_completes(setup_page, unconfigured_server):
     setup_page.wait_for_selector("h2, h3", timeout=15_000)
     # Wizard should be gone
     assert setup_page.locator("text=First-run setup").count() == 0
+
+
+# ── Class-sweep: no wizard error renders "[object Object]" ────────────────
+
+
+def test_no_wizard_error_path_emits_object_stringification(setup_page):
+    """Regression class-sweep for the envelope-stringification bug:
+    every 4xx/5xx server response shapes to `{detail: {code, message}}`.
+    A client that does `textContent = d.detail` renders "[object Object]"
+    and leaves the user with no recoverable signal.
+
+    This test drives a server-error path (short-token submit →
+    /api/setup 400) and asserts the rendered error is a human-readable
+    message, not a stringified object. Sibling test
+    `test_submit_with_short_token_shows_error` also now asserts this.
+    """
+    setup_page.evaluate("document.getElementById('sw-token').removeAttribute('readonly')")
+    setup_page.locator("#sw-token").fill("short")
+    setup_page.locator("button:has-text('Save .env')").click()
+    setup_page.wait_for_timeout(500)
+    err = setup_page.locator("#sw-error")
+    assert err.is_visible(), "short-token submit produced no visible error"
+    rendered = err.inner_text()
+    assert "[object Object]" not in rendered, (
+        f"wizard error renders stringified envelope, not .detail.message: {rendered!r}"
+    )

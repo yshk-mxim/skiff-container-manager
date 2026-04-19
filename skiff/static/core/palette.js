@@ -38,6 +38,19 @@
     return isMacLike() ? '\u2318K' : 'Ctrl+K';
   }
 
+  // Localise the sidebar hint to the user's platform so the visible
+  // shortcut matches what they should actually press. Runs after DOM is
+  // ready — the hint is rendered server-side with the Ctrl+K fallback.
+  function _paintSidebarHint() {
+    var hintKbd = document.querySelector('#sidebar-palette-hint kbd');
+    if (hintKbd) hintKbd.textContent = formatShortcut();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _paintSidebarHint);
+  } else {
+    _paintSidebarHint();
+  }
+
   async function buildItems() {
     var items = [];
     [

@@ -479,7 +479,17 @@ async function swSubmit(saveEnv) {
         });
         if (!r.ok) {
             const d = await r.json().catch(() => ({}));
-            errEl.textContent = d.detail || 'Setup failed.';
+            // `detail` is either a string (legacy envelope) or the new
+            // {code, message, help} object. Extract `.message` so the
+            // user sees the actual reason rather than "[object Object]".
+            var detail = d && d.detail;
+            var msg;
+            if (detail && typeof detail === 'object') {
+                msg = detail.message || detail.code || 'Setup failed.';
+            } else {
+                msg = detail || 'Setup failed.';
+            }
+            errEl.textContent = msg;
             errEl.style.display = 'block';
             return;
         }
