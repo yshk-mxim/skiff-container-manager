@@ -34,13 +34,37 @@ def login(page: Any, live_server: str, token: str | None = None) -> None:
     """Open the live server and authenticate if a Sign in page is shown.
 
     Idempotent: safe to call when the sidebar is already visible.
+    Dismisses the first-run tour overlay if it appears — otherwise its
+    modal backdrop intercepts every click in the sidebar, blocking
+    both tests and real users who want to dive in without the tour.
     """
+    # Pre-set the tour-done flag so a fresh browser context doesn't
+    # show the 4-step walkthrough (real users see it once and dismiss;
+    # tests see it every time because localStorage is per-context).
     page.goto(live_server, wait_until="domcontentloaded")
+    try:
+        page.evaluate("() => localStorage.setItem('skiff.tour.done', '1')")
+    except Exception:
+        pass  # pre-login origin may not permit localStorage yet
     page.wait_for_selector("button:has-text('Sign in'), .sidebar", timeout=MEDIUM)
     if page.locator("button:has-text('Sign in')").count() > 0:
         page.locator("input[type='password']").fill(token or E2E_TOKEN)
         page.locator("button:has-text('Sign in')").click()
         page.wait_for_selector(".sidebar", timeout=MEDIUM)
+    # Belt + braces: if the tour still rendered (page loaded before the
+    # localStorage set took effect, or tour.js raced the read), dismiss
+    # via the Skip button or Esc.
+    tour = page.locator(".tour-overlay")
+    if tour.count() > 0 and tour.first.is_visible():
+        skip = page.locator(".tour-overlay button:has-text('Skip')")
+        if skip.count() > 0:
+            skip.first.click()
+        else:
+            page.keyboard.press("Escape")
+        try:
+            tour.first.wait_for(state="hidden", timeout=SHORT)
+        except Exception:
+            pass
 
 
 def nav_to(page: Any, section: str) -> None:
