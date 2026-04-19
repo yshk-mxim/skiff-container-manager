@@ -260,3 +260,115 @@ def test_journey_audit_never_leaks_bearer(audited_page, live_server, audit_obser
                 observed=f"Markers appear in plaintext: {leaked}",
             )
             pytest.fail(f"credential leaked into audit: {leaked}")
+
+
+# ── Plan-named J-07 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("sre_ops",),
+    category="audit_observability",
+    severity="medium",
+)
+def test_journey_events_stream_captures_container_lifecycle(audited_page, live_server, audit_observer, persona):
+    """Plan J-07 item: events stream during deploy. Run a container,
+    then poll /api/system/events with since_secs=30 and confirm the
+    create/start event shows up. SRE rubric: live feed of daemon events
+    is visible in SKIFF during a deploy."""
+    import time
+    import uuid
+
+    from tests.e2e_helpers import auth_headers
+
+    name = f"pa-ev-{uuid.uuid4().hex[:6]}"
+    with step("step_1_deploy_container"):
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/containers/run",
+            headers={**auth_headers(), "Content-Type": "application/json"},
+            json={
+                "image": "alpine:3.20",
+                "name": name,
+                "command": "sleep 3600",
+                "labels": {"skiff-audit-run": "1"},
+            },
+            timeout=120,
+        )
+        if r.status_code not in (200, 201):
+            pytest.skip(f"deploy failed: {r.status_code}")
+    try:
+        time.sleep(1)
+        with step("step_2_events_contain_deploy"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/system/events",
+                params={"since_secs": 30},
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200, f"events failed: {r.status_code}"
+            body = r.text
+            # The event stream should mention the container name or
+            # at least a `create` or `start` action. If empty, emit a
+            # finding so the SRE rubric tracks parity.
+            if name not in body and "create" not in body.lower() and "start" not in body.lower():
+                audit_observer.emit(
+                    step="step_2_events_contain_deploy",
+                    severity="medium",
+                    category="parity",
+                    title="Events stream did not capture deploy action",
+                    expected=f"Event mentioning {name} or 'create'/'start'",
+                    observed=f"body prefix: {body[:300]!r}",
+                )
+    finally:
+        try:
+            requests.delete(
+                f"{live_server.rstrip('/')}/api/containers/{name}?force=true",
+                headers=auth_headers(), timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
+
+
+@journey(
+    persona=("sre_ops",),
+    category="audit_observability",
+    severity="medium",
+)
+def test_journey_stderr_audit_ui_correlation(audited_page, live_server, audit_observer, persona):
+    """Plan J-07 item: correlate stderr→audit→UI. A 4xx on a mutating
+    endpoint should produce (a) a stderr/log line, (b) an audit event,
+    (c) an error envelope the UI can render. This journey triggers
+    such a 4xx and checks the audit side is populated."""
+    import time
+
+    from tests.e2e_helpers import auth_headers
+
+    with step("step_1_trigger_known_4xx"):
+        # Invalid container name → 4xx envelope + audit line.
+        r = requests.post(
+            f"{live_server.rstrip('/')}/api/containers/run",
+            headers={**auth_headers(), "Content-Type": "application/json"},
+            json={"image": "", "name": "!!bad!!"},
+            timeout=10,
+        )
+        if not (400 <= r.status_code < 500):
+            pytest.skip(f"couldn't provoke a 4xx (got {r.status_code})")
+    time.sleep(0.5)
+    with step("step_2_audit_has_failure_row"):
+        r = requests.get(
+            f"{live_server.rstrip('/')}/api/system/audit-log",
+            params={"tail": 20},
+            headers=auth_headers(), timeout=30,
+        )
+        if r.status_code != 200:
+            pytest.skip(f"audit read failed: {r.status_code}")
+        body = r.text
+        # There should be SOMETHING about a failed container create
+        # in the recent audit — either a 'failed' entry or a '4xx' tag.
+        if "fail" not in body.lower() and "denied" not in body.lower() and "invalid" not in body.lower():
+            audit_observer.emit(
+                step="step_2_audit_has_failure_row",
+                severity="low",
+                category="parity",
+                title="4xx on container create did not produce a visible audit row",
+                expected="Audit tail contains a failure / invalid / denied marker",
+                observed=f"audit tail: {body[-300:]!r}",
+            )
