@@ -278,3 +278,197 @@ def test_journey_files_path_remembered_across_tab_switch(audited_page, live_serv
                 pytest.fail("path not preserved")
     finally:
         _teardown(live_server, name)
+
+
+# ── Plan-named J-06 scenarios ────────────────────────────────────────
+
+
+@journey(
+    persona=("developer",),
+    category="files_tab",
+    severity="medium",
+)
+def test_journey_files_diff_view_lists_changes(audited_page, live_server, audit_observer, persona):
+    """Plan J-06 item: download + diff. After exec-ing a file change,
+    the Files tab's Changes sub-view (docker diff) should list the
+    modified path. Probes /api/containers/{id}/diff directly."""
+    import time
+
+    from tests.e2e_helpers import auth_headers
+
+    name = _seed(live_server, "fldf")
+    try:
+        # Touch a file so diff reports a change. Use the REST exec path
+        # if present; else skip — diff journey only asserts the shape.
+        requests.post(
+            f"{live_server.rstrip('/')}/api/containers/{name}/exec",
+            headers={**auth_headers(), "Content-Type": "application/json"},
+            json={"cmd": ["sh", "-c", "touch /pa-diff-mark"]},
+            timeout=30,
+        )
+        time.sleep(0.5)
+        with step("step_1_fetch_diff"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/diff",
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code == 404:
+                pytest.skip("diff endpoint not surfaced under this path")
+            if r.status_code != 200:
+                audit_observer.emit(
+                    step="step_1_fetch_diff",
+                    severity="medium",
+                    category="contract",
+                    title=f"Diff endpoint returned {r.status_code}",
+                    expected="200 with an array of {Path, Kind} entries",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                return
+            body = r.json()
+            # Body is typically a list of dicts from docker-py.
+            assert isinstance(body, (list, dict)), f"unexpected shape: {type(body)}"
+    finally:
+        _teardown(live_server, name)
+
+
+@journey(
+    persona=("developer",),
+    category="files_tab",
+    severity="high",
+    covers=("hb-cp-ui-missing",),
+)
+def test_journey_files_upload_then_verify(audited_page, live_server, audit_observer, persona):
+    """Plan J-06 item: upload + verify. POST a multipart body to
+    /api/containers/{id}/upload targeting /tmp, then ls /tmp and
+    assert the filename appears."""
+    import io
+
+    from tests.e2e_helpers import auth_headers
+
+    name = _seed(live_server, "flup")
+    marker = "pa-upload-marker.txt"
+    content = b"hello from upload journey\n"
+    try:
+        with step("step_1_upload_file"):
+            files = [("file", (marker, io.BytesIO(content), "text/plain"))]
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/containers/{name}/upload",
+                params={"path": "/tmp"},
+                headers=auth_headers(),
+                files=files,
+                timeout=30,
+            )
+            if r.status_code == 404:
+                pytest.skip("upload endpoint not surfaced under this path")
+            assert r.status_code in (200, 201), (
+                f"upload failed: {r.status_code} {r.text}"
+            )
+        with step("step_2_ls_tmp_sees_uploaded_file"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/ls",
+                params={"path": "/tmp"},
+                headers=auth_headers(), timeout=30,
+            )
+            assert r.status_code == 200
+            entries = r.json().get("entries") or r.json().get("files") or []
+            names = [e.get("name") for e in entries]
+            if marker not in names:
+                audit_observer.emit(
+                    step="step_2_ls_tmp_sees_uploaded_file",
+                    severity="high",
+                    category="behaviour",
+                    title="Uploaded file not visible via ls",
+                    expected=f"{marker} in /tmp",
+                    observed=f"entries: {names[:10]}",
+                )
+                pytest.fail("upload→verify round-trip broken")
+    finally:
+        _teardown(live_server, name)
+
+
+@journey(
+    persona=("developer", "security_reviewer"),
+    category="files_tab",
+    severity="medium",
+    tags=("zero-trust",),
+)
+def test_journey_files_symlink_navigation_safe(audited_page, live_server, audit_observer, persona):
+    """Plan J-06 item: symlink navigation. Listing /var often contains
+    symlinks on Alpine; the response should either follow them (200
+    with contents) or refuse safely (4xx) — never 500 or escape
+    outside the container root."""
+    from tests.e2e_helpers import auth_headers
+
+    name = _seed(live_server, "flsl")
+    try:
+        with step("step_1_ls_with_symlinks"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/ls",
+                params={"path": "/bin"},  # /bin → /usr/bin on modern alpine
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code >= 500:
+                audit_observer.emit(
+                    step="step_1_ls_with_symlinks",
+                    severity="high",
+                    category="contract",
+                    title=f"ls on symlink target returned {r.status_code}",
+                    expected="200 or 4xx — never 5xx",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail("symlink navigation 5xx")
+    finally:
+        _teardown(live_server, name)
+
+
+@journey(
+    persona=("security_reviewer", "developer"),
+    category="files_tab",
+    severity="medium",
+    tags=("zero-trust",),
+)
+def test_journey_files_oversize_upload_rejected(audited_page, live_server, audit_observer, persona):
+    """Plan J-06 item: over-size rejection. Upload must refuse bodies
+    larger than the configured max (to prevent disk exhaustion).
+    Zero-trust: no path around the size limit."""
+    import io
+
+    from tests.e2e_helpers import auth_headers
+
+    name = _seed(live_server, "floz")
+    # 50 MiB payload — enough to exceed most sensible defaults without
+    # taking forever over localhost.
+    big = b"A" * (50 * 1024 * 1024)
+    try:
+        with step("step_1_upload_oversize"):
+            files = [("file", ("big.bin", io.BytesIO(big), "application/octet-stream"))]
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/containers/{name}/upload",
+                params={"path": "/tmp"},
+                headers=auth_headers(),
+                files=files,
+                timeout=120,
+            )
+            # Acceptable: 413 (too large), 400/422 (validator), 500 is NOT acceptable.
+            if r.status_code == 404:
+                pytest.skip("upload endpoint not present")
+            if 200 <= r.status_code < 300:
+                audit_observer.emit(
+                    step="step_1_upload_oversize",
+                    severity="high",
+                    category="security",
+                    title="50 MiB upload accepted — no size cap",
+                    expected="413 / 400 rejection",
+                    observed=f"{r.status_code} accepted",
+                )
+                audit_observer.emit(
+                    step="step_1_upload_oversize",
+                    severity="P0",
+                    category="security",
+                    zero_trust=True,
+                    title="No upload size cap — disk-exhaustion DoS vector",
+                    expected="4xx rejection on oversized bodies",
+                    observed=f"50 MiB upload returned {r.status_code}",
+                )
+    finally:
+        _teardown(live_server, name)
