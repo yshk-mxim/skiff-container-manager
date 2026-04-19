@@ -1,0 +1,75 @@
+engine_endpoint,sdk_method,skiff_route,ui_affordance,exercised_by_journey,security_justified_no
+GET /containers/json,containers.list,GET /api/containers,Containers list page,test_journey_run_then_observe_on_list,
+POST /containers/create,containers.run (create+start),POST /api/containers/run,Run modal,test_journey_run_then_observe_on_list,
+POST /containers/{id}/start,containers.start,POST /api/containers/{id}/start,Row Start,test_journey_stop_then_start_cycle,
+POST /containers/{id}/stop,containers.stop,POST /api/containers/{id}/stop,Row Stop,test_journey_stop_then_start_cycle,
+POST /containers/{id}/restart,containers.restart,POST /api/containers/{id}/restart,Row Restart,test_journey_restart,
+POST /containers/{id}/pause,containers.pause,POST /api/containers/{id}/pause,Row Pause,test_journey_pause_and_unpause,
+POST /containers/{id}/unpause,containers.unpause,POST /api/containers/{id}/unpause,Row Unpause,test_journey_pause_and_unpause,
+POST /containers/{id}/kill,containers.kill,POST /api/containers/{id}/kill,Row Kill (confirm),test_journey_force_kill_requires_confirm,
+POST /containers/{id}/rename,containers.rename,POST /api/containers/{name}/rename,Rename modal,test_journey_rename_persists,
+DELETE /containers/{id},containers.remove,DELETE /api/containers/{id},Row Delete + Undo,test_journey_delete_emits_undo_toast,
+GET /containers/{id}/json,containers.inspect,GET /api/containers/{id},Detail view,test_journey_run_then_observe_on_list,
+GET /containers/{id}/stats,containers.stats,GET /api/containers/{id}/stats,Detail → Stats tab,test_journey_stats_endpoint_returns_shape,
+GET /containers/{id}/logs,containers.logs,WS /ws/logs/{id},Detail → Logs tab,test_journey_logs_viewer_clears_connecting_placeholder,
+GET /containers/{id}/changes,containers.diff,GET /api/containers/{id}/diff,Files tab → Changes,test_journey_files_diff_view_lists_changes,
+POST /containers/{id}/exec,containers.exec_run,POST /api/containers/{id}/exec + WS /ws/exec/{id},Terminal tab,test_journey_exec_roundtrip_writes_file,
+GET /containers/{id}/archive,containers.get_archive,GET /api/containers/{id}/files,Files download,test_journey_files_download_contents,
+PUT /containers/{id}/archive,containers.put_archive,POST /api/containers/{id}/upload,Files upload,test_journey_files_upload_then_verify,
+POST /commit,containers.commit,POST /api/containers/{id}/commit,Commit to image,test_journey_commit_container_to_image,
+POST /containers/{id}/update,containers.update,POST /api/containers/{id}/update,Update resource caps,test_journey_restart_policy_update_surface,
+GET /containers/{id}/top,containers.top,GET /api/containers/{id}/top,Detail → Processes,,Y — low-value duplicate of stats + exec
+POST /containers/prune,containers.prune,POST /api/containers/prune,Containers prune,,Y — covered via system prune
+POST /containers/{id}/wait,containers.wait,-,-,,Y — CLI-only pattern; WS logs covers observability
+POST /containers/{id}/attach,-,-,-,,Y — attach bypasses audit; exec is the approved path
+POST /containers/{id}/resize,-,WS /ws/exec/{id} (resize frame),Terminal resize,test_journey_terminal_survives_tab_switch,
+POST /containers/{id}/export,-,-,-,,Y — export encourages side-loads; commit is approved path
+GET /images/json,images.list,GET /api/images,Images list,test_journey_pull_then_run_separates_cleanly,
+POST /images/create,images.pull,POST /api/images/pull,Pull modal,test_journey_pull_then_run_separates_cleanly,
+POST /images/{name}/push,images.push,-,-,,Y — push encourages unreviewed image promotion
+POST /images/{name}/tag,-,POST /api/images/{id}/tag,Tag modal,test_journey_commit_container_to_image,
+DELETE /images/{name},images.remove,DELETE /api/images/{id},Row Delete,test_journey_commit_container_to_image,
+GET /images/{name}/json,images.inspect,GET /api/images/{id},Detail inspect,test_journey_pull_then_run_separates_cleanly,
+GET /images/{name}/history,images.history,GET /api/images/{id}/history,History modal,,Y — covered by tests/test_new_endpoint_coverage.py (no driver-seat value)
+POST /images/prune,images.prune,POST /api/images/prune,Images prune,,Y — covered by tests/test_new_endpoint_coverage.py::test_image_prune_returns_reclaimed_space
+GET /images/search,images.search,GET /api/registry/tags,Hub search,test_journey_hobbyist_finds_template_by_search,
+POST /build,-,-,-,,Y — supply-chain NO (no arbitrary Dockerfile build)
+POST /images/load,-,-,-,,Y — tar import bypasses registry allowlist
+GET /volumes,volumes.list,GET /api/volumes,Volumes list,test_journey_volumes_and_networks_pages_have_search,
+POST /volumes/create,volumes.create,POST /api/volumes,Create volume modal,test_journey_volume_create_accepts_full_params,
+GET /volumes/{name},volumes.get,GET /api/volumes/{name},Volume detail,test_journey_volume_create_accepts_full_params,
+DELETE /volumes/{name},volumes.remove,DELETE /api/volumes/{name},Delete button,test_journey_volume_backup_via_cp,
+POST /volumes/prune,volumes.prune,POST /api/volumes/prune,Prune button,test_journey_volume_prune_returns_reclaimed,
+GET /networks,networks.list,GET /api/networks,Networks list,test_journey_volumes_and_networks_pages_have_search,
+POST /networks/create,networks.create,POST /api/networks,Create network modal,test_journey_network_create_with_subnet_and_labels,
+GET /networks/{id},networks.get,GET /api/networks/{id},Network detail,test_journey_network_create_with_subnet_and_labels,
+DELETE /networks/{id},networks.remove,DELETE /api/networks/{id},Delete button,test_journey_network_connect_then_disconnect,
+POST /networks/{id}/connect,networks.connect,POST /api/networks/{id}/connect,Connect action,test_journey_network_connect_then_disconnect,
+POST /networks/{id}/disconnect,networks.disconnect,POST /api/networks/{id}/disconnect,Disconnect action,test_journey_network_connect_then_disconnect,
+POST /networks/prune,networks.prune,POST /api/networks/prune,Networks prune,,Y — covered by tests/test_new_endpoint_coverage.py
+GET /events,-,GET /api/system/events (polled),System → Events,test_journey_events_stream_captures_container_lifecycle,
+GET /info,-,GET /api/system/info,System overview,test_journey_landing_on_dashboard,
+GET /df,-,GET /api/system/df,Disk usage card,test_journey_rate_limited_burst_returns_429,
+POST /system/prune,-,POST /api/system/prune,System prune,,Y — covered by tests/test_new_endpoint_coverage.py
+GET /version,-,GET /api/system/info,System overview,test_journey_landing_on_dashboard,
+GET /ping,-,-,-,,Y — low-value health shim; /info covers
+POST /auth,-,-,-,,Y — SKIFF uses bearer rather than Docker auth proxying
+GET /swarm,-,-,-,,Y — Swarm out of scope by design (Docker-only orchestration)
+POST /swarm/init,-,-,-,,Y — Swarm out of scope
+GET /services,-,-,-,,Y — Swarm service list; out of scope
+GET /nodes,-,-,-,,Y — Swarm nodes; out of scope
+GET /secrets,-,-,-,,Y — Swarm secrets; out of scope
+GET /configs,-,-,-,,Y — Swarm configs; out of scope
+GET /plugins,-,-,-,,Y — Plugin surface requires registry allowlist bypass
+POST /plugins/pull,-,-,-,,Y — same
+POST /plugins/{name}/enable,-,-,-,,Y — same
+compose up,subprocess,POST /api/compose/up,Compose Deploy button,test_journey_upload_yaml_and_deploy,
+compose down,subprocess,POST /api/compose/down,Compose Down button,test_journey_compose_explicit_tear_down,
+compose stop,subprocess,POST /api/compose/{p}/stop,Compose stop,test_journey_compose_stop_then_start,
+compose start,subprocess,POST /api/compose/{p}/start,Compose start,test_journey_compose_stop_then_start,
+compose pull,subprocess,POST /api/compose/{p}/pull,Compose pull,test_journey_compose_pull,
+compose scale,subprocess,POST /api/compose/{p}/scale,Scale modal,test_journey_compose_scale_service,
+compose logs,subprocess,GET /api/compose/{p}/logs,Compose logs pane,test_journey_compose_aggregated_logs,
+compose config (download),subprocess,GET /api/compose/{p}/download,Download YAML,test_journey_download_yaml_matches_deployed,
+compose restart service,subprocess,POST /api/compose/{p}/services/{s}/restart,Service restart,,Y — covered by tests/test_coverage_compose.py (no driver-seat value beyond compose stop/start already covered)
+compose build,subprocess,-,-,,Y — supply-chain NO (no local builds)
