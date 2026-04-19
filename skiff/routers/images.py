@@ -159,7 +159,7 @@ def _first_allowed_tag(img: Any) -> AllowedImageEntry | None:
     return None
 
 
-# App templates — one-click deployables. Portainer/Yacht parity. Each
+# App templates — one-click deployables. Each
 # template is a prebuilt `docker run` recipe with sensible ports + env.
 # The catalogue is intentionally short; this is "quick-start for common
 # dev stacks", NOT a registry. Every image must be on docker.io so the

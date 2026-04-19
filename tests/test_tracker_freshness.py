@@ -5,7 +5,7 @@ reasonably fresh.
 
 The tracker is the user's single pane of glass for the persona-audit
 state — findings, parity, GUI elements, testing coverage, open work.
-If a PR touches the harness or the competitor surfaces, it should
+If a PR touches the harness or the capability surface, it should
 rerun `make tracker` and commit the refreshed artefacts; this test
 catches obvious drift (missing files, all-zero counts, stale
 markdown).
@@ -26,8 +26,8 @@ pytestmark = pytest.mark.unit
 TRACKER = Path("docs/dev/persona_audit_tracker.md")
 BACKING_CSVS = (
     Path("docs/dev/findings_tracker.csv"),
-    Path("docs/dev/competitor_matrix.csv"),
-    Path("docs/dev/competitor_gui_elements.csv"),
+    Path("docs/dev/capability_matrix.csv"),
+    Path("docs/dev/expected_gui_elements.csv"),
     Path("docs/dev/testing_tracker.csv"),
     Path("docs/dev/open_work_tracker.csv"),
     Path("docs/dev/coverage_topdown.csv"),

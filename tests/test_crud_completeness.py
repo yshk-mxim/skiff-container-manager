@@ -13,13 +13,13 @@ expected routes at the HTTP-route level, and asserts the frontend
 modals expose the matching knobs. Adding a new endpoint without its
 frontend mirror (or vice versa) trips a specific subtest.
 
-Reference: comparable OSS competitors surveyed:
-  - **Portainer CE** — full CRUD + stack scale/pull/update + events.
-  - **Docker Desktop** — container/volume/network CRUD + extensions.
-  - **Lens** — kubernetes-focused but sets the multi-resource bar.
-  - **LazyDocker** — terminal UI; start/stop/restart/remove + exec.
-  - **Dockge** — compose-stack focused, supports pull/restart/update.
-  - **Yacht** — docker-centric, CRUD + templates.
+Baseline expectations for a Docker-management tool of this class:
+  - full CRUD on containers, images, volumes, networks, stacks
+  - stack lifecycle verbs: up/down/stop/start/pull/restart/scale
+  - observability: events stream, audit log, stats, logs
+  - interactive shell (exec), filesystem browse + cp, inspect/commit
+  - templates / quick-start catalogue
+  - keyboard-first affordances (palette, bulk select, context menu)
 The SKIFF coverage matrix here is the backstop — drift surfaces as a
 failing test, not a user complaint in production."""
 

@@ -911,8 +911,7 @@ function renderContainers(containers) {
   filtered = sortContainers(filtered, _containerSort, _containerSortDir);
 
   // Bulk action bar — renders above the table when any row is selected.
-  // Lets the operator stop/start/restart/delete N containers in one action,
-  // parity with Portainer's multi-select table pattern.
+  // Lets the operator stop/start/restart/delete N containers in one action.
   function _renderBulkBar(visibleIds) {
     // Drop any selection that's no longer visible (filtered out) so the
     // displayed count matches reality.
@@ -1368,9 +1367,9 @@ function _surfaceWsLockout(evt) {
 // limped through line-based commands but couldn't render ANSI colours,
 // readline sequences (arrow-key history, Ctrl-A/E/K/W), Tab completion,
 // or any TUI program (vim, htop, less). xterm.js is the de-facto web-
-// terminal — VS Code's integrated terminal, GitHub Codespaces, and
-// every Portainer-class tool use it. The SKIFF server already emits
-// PTY-raw bytes over the WS; xterm.js just needs to render them.
+// terminal — VS Code's integrated terminal and GitHub Codespaces use it,
+// as do other browser-based exec surfaces. The SKIFF server already
+// emits PTY-raw bytes over the WS; xterm.js just needs to render them.
 var MAX_EXEC_RECONNECTS = 5;
 // Per-container terminal-session cache. Users regularly switch between
 // Terminal → Logs → Inspect → Terminal and expect their shell + scroll

@@ -98,7 +98,7 @@ async function showTemplates() {
 
 // Build the Run-container call out of a template. We go through the
 // existing showRunModal() so the user can inspect + tweak values before
-// deploy — matches Portainer's "template → review → deploy" flow.
+// deploy — template → review → deploy, which the novice audits visually.
 function _deployTemplate(tmpl) {
   showPage('containers');
   // Wait a tick so showRunModal can find the containers page.

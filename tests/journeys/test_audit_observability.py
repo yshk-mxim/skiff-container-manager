@@ -77,7 +77,7 @@ def test_journey_audit_log_page_discloses_cap(audited_page, live_server, audit_o
 def test_journey_events_endpoint_bounds_since_secs(audited_page, live_server, audit_observer, persona):
     """GET /api/system/events?since_secs=5 must return a JSON array
     bounded by the since_secs parameter. hb-events-missing class —
-    docker events stream is a competitor-parity capability."""
+    docker events stream is an expected observability surface."""
     from tests.e2e_helpers import auth_headers
 
     with step("step_1_call_events_since_5"):

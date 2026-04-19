@@ -1,4 +1,4 @@
-finding_id,first_pass,last_pass,journey,persona,severity,category,zero_trust,status,fix_commit,regression_test,class_sweep_test,competitor_note,doc_update
+finding_id,first_pass,last_pass,journey,persona,severity,category,zero_trust,status,fix_commit,regression_test,class_sweep_test,expectation_note,doc_update
 pa-20260418-235420-ui_ux_auditor-test_journey_keyboard_reaches_every_sidebar_entry-step_3_tab_through_sidebar,1,1,test_journey_keyboard_reaches_every_sidebar_entry,ui_ux_auditor,medium,a11y,,open,,,,,
 pa-20260418-235451-ui_ux_auditor-test_journey_keyboard_reaches_every_sidebar_entry-step_3_tab_through_sidebar,1,1,test_journey_keyboard_reaches_every_sidebar_entry,ui_ux_auditor,medium,a11y,,open,,,,,
 pa-20260419-080252-novice-test_journey_zero_config_wizard_reachable-step_1_probe_setup_state,1,1,test_journey_zero_config_wizard_reachable,novice,medium,contract,,open,,,,,
@@ -304,3 +304,17 @@ pa-20260419-103135-security_reviewer-test_journey_csp_violation_reporting-step_1
 pa-20260419-103135-ui_ux_auditor-test_journey_csp_violation_reporting-step_1_post_csp_report,9,9,test_journey_csp_violation_reporting,ui_ux_auditor,medium,parity,,open,,,,,
 pa-20260419-103142-ui_ux_auditor-test_journey_first_run_tour_dismissable-step_2_check_tour_dismissable,9,9,test_journey_first_run_tour_dismissable,ui_ux_auditor,low,behaviour,,open,,,,,
 pa-20260419-103200-ui_ux_auditor-test_journey_keyboard_reaches_every_primary_page-step_2_tab_and_enter,9,9,test_journey_keyboard_reaches_every_primary_page,ui_ux_auditor,medium,a11y,,open,,,,,
+pa-20260419-103957-sre_ops-test_journey_events_endpoint_bounds_since_secs-step_2_bound_rejects_oversized,9,9,test_journey_events_endpoint_bounds_since_secs,sre_ops,medium,security,,open,,,,,
+pa-20260419-104318-hobbyist-test_journey_compose_env_secret_not_leaked-step_3_download_yaml_leaks_only_expected,9,9,test_journey_compose_env_secret_not_leaked,hobbyist,low,behaviour,,open,,,,,
+pa-20260419-104328-developer-test_journey_compose_env_secret_not_leaked-step_3_download_yaml_leaks_only_expected,9,9,test_journey_compose_env_secret_not_leaked,developer,low,behaviour,,open,,,,,
+pa-20260419-104432-sre_ops-test_journey_stats_endpoint_returns_shape-step_1_fetch_stats,9,9,test_journey_stats_endpoint_returns_shape,sre_ops,medium,contract,,open,,,,,
+pa-20260419-104507-security_reviewer-test_journey_rootless_exec_capability_check-step_0_schema_check,9,9,test_journey_rootless_exec_capability_check,security_reviewer,low,parity,,open,,,,,
+pa-20260419-104512-super_user-test_journey_rate_limit_headers_present-step_1_mutation_with_headers,9,9,test_journey_rate_limit_headers_present,super_user,low,contract,,open,,,,,
+pa-20260419-104520-super_user-test_journey_rate_limited_burst_returns_429-step_1_burst_30_requests,9,9,test_journey_rate_limited_burst_returns_429,super_user,low,parity,,open,,,,,
+pa-20260419-104546-ui_ux_auditor-test_journey_keyboard_reaches_every_sidebar_entry-step_3_tab_through_sidebar,9,9,test_journey_keyboard_reaches_every_sidebar_entry,ui_ux_auditor,medium,a11y,,open,,,,,
+pa-20260419-104551-developer-test_journey_developer_cmd_k_reaches_run-step_2_open_palette,9,9,test_journey_developer_cmd_k_reaches_run,developer,medium,behaviour,,open,,,,,
+pa-20260419-104600-security_reviewer-test_journey_forged_origin_rejected-step_1_forged_origin_http_path,9,9,test_journey_forged_origin_rejected,security_reviewer,low,parity,,open,,,,,
+pa-20260419-104601-security_reviewer-test_journey_csp_violation_reporting-step_1_post_csp_report,9,9,test_journey_csp_violation_reporting,security_reviewer,medium,parity,,open,,,,,
+pa-20260419-104601-ui_ux_auditor-test_journey_csp_violation_reporting-step_1_post_csp_report,9,9,test_journey_csp_violation_reporting,ui_ux_auditor,medium,parity,,open,,,,,
+pa-20260419-104609-ui_ux_auditor-test_journey_first_run_tour_dismissable-step_2_check_tour_dismissable,9,9,test_journey_first_run_tour_dismissable,ui_ux_auditor,low,behaviour,,open,,,,,
+pa-20260419-104627-ui_ux_auditor-test_journey_keyboard_reaches_every_primary_page-step_2_tab_and_enter,9,9,test_journey_keyboard_reaches_every_primary_page,ui_ux_auditor,medium,a11y,,open,,,,,

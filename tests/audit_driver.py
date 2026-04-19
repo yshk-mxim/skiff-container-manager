@@ -107,7 +107,7 @@ class Finding:
     expected: str
     observed: str
     evidence_paths: list[str] = field(default_factory=list)
-    competitor_note: str = ""
+    expectation_note: str = ""
     doc_mismatch: str = ""
     class_sweep: str = ""
     covers_historical: str = ""
@@ -224,7 +224,7 @@ class AuditObserver:
         expected: str,
         observed: str,
         zero_trust: bool = False,
-        competitor_note: str = "",
+        expectation_note: str = "",
         doc_mismatch: str = "",
         class_sweep: str = "",
         covers_historical: str = "",
@@ -249,7 +249,7 @@ class AuditObserver:
             evidence_paths=sorted(
                 str(p) for p in self.root.glob(f"{_safe_filename(step)}.*")
             ),
-            competitor_note=competitor_note,
+            expectation_note=expectation_note,
             doc_mismatch=doc_mismatch,
             class_sweep=class_sweep,
             covers_historical=covers_historical,

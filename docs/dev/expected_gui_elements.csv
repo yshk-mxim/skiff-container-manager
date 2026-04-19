@@ -1,0 +1,13 @@
+element,purpose,SKIFF_analogue,SKIFF_journey_exercising_it,novice_discoverable_via,expert_shortcut_via
+Home dashboard,Endpoint overview,Dashboard,test_journey_landing_on_dashboard,Sidebar entry,/
+Stacks page,Compose stacks list,Compose page,test_journey_upload_yaml_and_deploy,Sidebar entry,-
+App templates,One-click deploy,Templates page,test_journey_templates_catalog_visible,Sidebar entry,-
+Container Console,In-browser exec,Terminal tab,test_journey_terminal_survives_tab_switch,Detail tab,⌘K: term
+Images prune,Reclaim unused images,Images prune button,-,Images page header,-
+Containers tab,Running containers list,Containers page,test_journey_run_then_observe_on_list,Sidebar entry,-
+Volumes page,Volume management,Volumes page,test_journey_volume_create_accepts_full_params,Sidebar entry,-
+Dev Environments,Dev container templates,Templates page (partial),test_journey_template_python_dev_opens_modal,Sidebar entry,-
+Workloads tree,Grouped resource view,Sidebar,test_journey_sidebar_navigation_reaches_every_page,Collapsible sections,-
+Interactive compose,Edit stack YAML inline,Compose download + re-up,test_journey_compose_yaml_export_reimport_cycle,Stack detail page,-
+Template library,Community one-click apps,Templates page,test_journey_templates_catalog_visible,Sidebar entry,-
+Keybinding reference,TUI shortcut list,Help overlay / palette,test_journey_developer_cmd_k_reaches_run,? key / ⌘K,⌘K

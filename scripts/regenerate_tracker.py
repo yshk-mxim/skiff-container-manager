@@ -5,9 +5,9 @@
 
 The tracker is the user-facing dashboard for:
   1. findings (open / fixed / wontfix-security-NO)
-  2. parity (SKIFF vs Portainer / Docker Desktop / Lens / Dockge /
-     Yacht / LazyDocker)
-  3. GUI-elements seen in competitors
+  2. capability parity (SKIFF vs the industry baseline — single
+     `expectation` column; no named products)
+  3. expected GUI elements that tools of this class offer
   4. testing (per-test-type count + coverage + last-run)
   5. open-work (fixme / todo / deferred / security-justified)
 
@@ -30,7 +30,7 @@ ARTIFACT_ROOT = Path("tests/e2e-artifacts/persona-audit")
 DOCS_DEV = Path("docs/dev")
 
 FINDINGS_CSV = DOCS_DEV / "findings_tracker.csv"
-GUI_ELEMENTS_CSV = DOCS_DEV / "competitor_gui_elements.csv"
+GUI_ELEMENTS_CSV = DOCS_DEV / "expected_gui_elements.csv"
 TESTING_CSV = DOCS_DEV / "testing_tracker.csv"
 OPEN_WORK_CSV = DOCS_DEV / "open_work_tracker.csv"
 
@@ -41,7 +41,7 @@ _FINDING_FIELDS = (
     "finding_id", "first_pass", "last_pass", "journey", "persona",
     "severity", "category", "zero_trust", "status",
     "fix_commit", "regression_test", "class_sweep_test",
-    "competitor_note", "doc_update",
+    "expectation_note", "doc_update",
 )
 
 
@@ -83,7 +83,7 @@ def _regenerate_findings_csv() -> dict[str, int]:
                     "fix_commit": d.get("fix_commit", ""),
                     "regression_test": d.get("regression_test", ""),
                     "class_sweep_test": d.get("class_sweep", ""),
-                    "competitor_note": d.get("competitor_note", ""),
+                    "expectation_note": d.get("expectation_note", ""),
                     "doc_update": d.get("doc_mismatch", ""),
                 })
     FINDINGS_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -100,65 +100,61 @@ def _pass_number(dir_: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
-# ── 2 & 3. Competitor matrix + GUI elements ──────────────────────────
+# ── 2 & 3. Capability matrix + expected GUI elements ────────────────
 
 
 def _ensure_gui_elements_seed() -> int:
-    """Seed competitor_gui_elements.csv from published documentation
-    feature lists. One row per UI element per competitor with the
-    SKIFF-analogue column filled if the capability exists.
+    """Seed expected_gui_elements.csv with the UI elements commonly
+    found in docker-management tooling. One row per expected element
+    with the SKIFF_analogue column filled.
 
     This seed is idempotent: if the file already exists we don't
-    overwrite — only write a bootstrap skeleton on first run."""
+    overwrite — only write a bootstrap skeleton on first run. Product
+    names are deliberately omitted; each row describes an expectation
+    rather than a head-to-head comparison."""
     if GUI_ELEMENTS_CSV.exists():
         # Count rows for the rollup; leave contents alone.
         with GUI_ELEMENTS_CSV.open(encoding="utf-8") as fh:
             return sum(1 for _ in csv.DictReader(fh))
     GUI_ELEMENTS_CSV.parent.mkdir(parents=True, exist_ok=True)
     skeleton: list[list[str]] = [
-        ["competitor", "element", "purpose", "SKIFF_analogue",
+        ["element", "purpose", "SKIFF_analogue",
          "SKIFF_journey_exercising_it", "novice_discoverable_via",
          "expert_shortcut_via"],
-        # Portainer
-        ["portainer", "Home dashboard", "Endpoint overview",
+        ["Home dashboard", "Endpoint overview",
          "Dashboard", "test_journey_landing_on_dashboard",
          "Sidebar entry", "/"],
-        ["portainer", "Stacks page", "Compose stacks list",
+        ["Stacks page", "Compose stacks list",
          "Compose page", "test_journey_upload_yaml_and_deploy",
          "Sidebar entry", "-"],
-        ["portainer", "App templates", "One-click deploy",
+        ["App templates", "One-click deploy",
          "Templates page", "test_journey_templates_catalog_visible",
          "Sidebar entry", "-"],
-        ["portainer", "Container Console", "In-browser exec",
+        ["Container Console", "In-browser exec",
          "Terminal tab", "test_journey_terminal_survives_tab_switch",
          "Detail tab", "⌘K: term"],
-        ["portainer", "Images prune", "Reclaim unused images",
+        ["Images prune", "Reclaim unused images",
          "Images prune button", "-",
          "Images page header", "-"],
-        # Docker Desktop
-        ["docker_desktop", "Containers tab", "Running containers list",
+        ["Containers tab", "Running containers list",
          "Containers page", "test_journey_run_then_observe_on_list",
          "Sidebar entry", "-"],
-        ["docker_desktop", "Volumes page", "Volume management",
+        ["Volumes page", "Volume management",
          "Volumes page", "test_journey_volume_create_accepts_full_params",
          "Sidebar entry", "-"],
-        ["docker_desktop", "Dev Environments", "Dev container templates",
+        ["Dev Environments", "Dev container templates",
          "Templates page (partial)", "test_journey_template_python_dev_opens_modal",
          "Sidebar entry", "-"],
-        # Lens (Docker-relevant bits only)
-        ["lens", "Workloads tree", "Grouped resource view",
+        ["Workloads tree", "Grouped resource view",
          "Sidebar", "test_journey_sidebar_navigation_reaches_every_page",
          "Collapsible sections", "-"],
-        # Dockge
-        ["dockge", "Interactive compose", "Edit stack YAML inline",
+        ["Interactive compose", "Edit stack YAML inline",
          "Compose download + re-up", "test_journey_compose_yaml_export_reimport_cycle",
          "Stack detail page", "-"],
-        # Yacht
-        ["yacht", "Template library", "Community one-click apps",
+        ["Template library", "Community one-click apps",
          "Templates page", "test_journey_templates_catalog_visible",
          "Sidebar entry", "-"],
-        # LazyDocker
-        ["lazydocker", "Keybinding reference", "TUI shortcut list",
+        ["Keybinding reference", "TUI shortcut list",
          "Help overlay / palette", "test_journey_developer_cmd_k_reaches_run",
          "? key / ⌘K", "⌘K"],
     ]
@@ -298,7 +294,7 @@ def main() -> int:
 
 > Regenerated by `scripts/regenerate_tracker.py` (run `make tracker`).
 > Do not hand-edit — edit the source data (CSVs, `tests/journeys/_history.py`,
-> the competitor matrix) and rerun. Last commit: `{sha}`.
+> the capability matrix) and rerun. Last commit: `{sha}`.
 
 ## 1. Findings
 
@@ -310,20 +306,21 @@ def main() -> int:
 Per-finding table in [`docs/dev/findings_tracker.csv`](findings_tracker.csv)
 (regenerated).
 
-## 2. Parity matrix
+## 2. Capability matrix
 
-Source: [`docs/dev/competitor_matrix.csv`](competitor_matrix.csv). Seeded
-from Portainer / Docker Desktop / Lens / Dockge / Yacht / LazyDocker
-documentation. Freshness: `last_verified` per row; 90-day gate enforced
-by `tests/test_capability_parity.py::test_matrix_freshness_90_days`.
+Source: [`docs/dev/capability_matrix.csv`](capability_matrix.csv). Each
+row carries a single `expectation` column (Y = common in tools of this
+class, N = not a baseline feature). Product names are deliberately
+omitted. Freshness: `last_verified` per row; 90-day gate enforced by
+`tests/test_capability_parity.py::test_matrix_freshness_90_days`.
 
-## 3. GUI-elements catalogue
+## 3. Expected GUI-elements catalogue
 
-- competitor elements tracked: **{gui_rows}**
+- expected elements tracked: **{gui_rows}**
 
-Source: [`docs/dev/competitor_gui_elements.csv`](competitor_gui_elements.csv).
-One row per competitor UI element with a SKIFF-analogue column. Seeded
-from vendor docs — hand-extended as new competitors surface features.
+Source: [`docs/dev/expected_gui_elements.csv`](expected_gui_elements.csv).
+One row per UI element commonly found in docker-management tooling,
+with a SKIFF_analogue column.
 
 ## 4. Testing coverage
 
