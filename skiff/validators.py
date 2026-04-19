@@ -66,6 +66,25 @@ IMAGE_TAG_RE = _compile_ident("image_tag")
 # as a belt-and-braces filter before interpolating `repo` into the
 # upstream URL path.
 HUB_REPO_RE = re.compile(r"^[a-z0-9][a-z0-9_./\-]{0,199}$")
+
+# Docker image tag grammar (OCI spec): [A-Za-z0-9_][A-Za-z0-9_.-]*, max 128.
+# Used by /api/registry/tags when a server-side `name=` filter is passed
+# through to Docker Hub, so the filter string can't reach the upstream URL
+# as a new query param or path segment.
+HUB_TAG_FILTER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}$")
+
+# Volume / network label grammar. Shared between the volume and network
+# routers — both accept `labels=` and `driver_opts=` strings of the form
+# `key=value`. Keeps the validation logic in one place per AP011.
+DOCKER_LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$")
+DOCKER_LABEL_VAL_RE = re.compile(r"^[\x20-\x7e]{0,255}$")
+
+# Container-commit target image identifiers. Repo follows Docker's
+# lowercase-with-slashes hierarchy; tag follows OCI tag grammar. Moved
+# here so AP011 stays green — any new identifier regex should live in
+# this module.
+COMMIT_REPO_RE = re.compile(r"^[a-z0-9][a-z0-9._\-/]{0,199}$")
+COMMIT_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}$")
 _ENV_SENSITIVE_RE = re.compile(
     r"(SECRET|PASSWORD|PASSWD|TOKEN|KEY|CREDENTIAL|AUTH|CERT|PRIVATE|API_KEY)",
     re.IGNORECASE,

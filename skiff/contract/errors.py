@@ -120,14 +120,21 @@ _ERRORS: dict[str, _ErrorSpec] = {
     "image.registry_blocked": _ErrorSpec(400, "registry '{registry}' is not in the allowlist"),
     "image.pull_failed": _ErrorSpec(400, "image pull failed"),
     "image.push_failed": _ErrorSpec(400, "image push failed"),
+    "image.prune_failed": _ErrorSpec(400, "image prune failed"),
     # ── Volume ────────────────────────────────────────────────────────────
     "volume.not_found": _ErrorSpec(404, "volume not found"),
     "volume.bad_name": _ErrorSpec(400, "invalid volume name"),
+    "volume.bad_driver": _ErrorSpec(400, "unsupported volume driver"),
+    "volume.bad_labels": _ErrorSpec(400, "invalid volume labels"),
+    "volume.bad_driver_opts": _ErrorSpec(400, "invalid volume driver options"),
     "volume.in_use": _ErrorSpec(409, "volume is in use"),
     # ── Network ───────────────────────────────────────────────────────────
     "network.not_found": _ErrorSpec(404, "network not found"),
     "network.bad_name": _ErrorSpec(400, "invalid network name"),
     "network.bad_driver": _ErrorSpec(400, "unsupported network driver"),
+    "network.bad_labels": _ErrorSpec(400, "invalid network labels"),
+    "network.bad_subnet": _ErrorSpec(400, "invalid subnet"),
+    "network.bad_gateway": _ErrorSpec(400, "invalid gateway"),
     "network.builtin_protected": _ErrorSpec(400, "built-in network cannot be removed"),
     # ── Compose ───────────────────────────────────────────────────────────
     "compose.bad_yaml": _ErrorSpec(400, "invalid compose YAML"),

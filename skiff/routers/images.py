@@ -47,6 +47,7 @@ _TRANSPORT_ERRORS = (
 )
 
 
+
 @router.get("/api/registry/search", dependencies=AUTH, tags=["images"])
 @secure_route.read(RATE.READ)
 def registry_search(request: Request, q: str = Query(..., min_length=1, max_length=100)):
@@ -80,8 +81,18 @@ def registry_search(request: Request, q: str = Query(..., min_length=1, max_leng
 
 @router.get("/api/registry/tags", dependencies=AUTH, tags=["images"])
 @secure_route.read(RATE.READ)
-def registry_tags(request: Request, image: str = Query(..., min_length=1, max_length=200)):
-    """Fetch available tags for a Docker Hub image."""
+def registry_tags(
+    request: Request,
+    image: str = Query(..., min_length=1, max_length=200),
+    name: str = Query(default="", max_length=128),
+):
+    """Fetch available tags for a Docker Hub image.
+
+    Without `name`, returns the last `REGISTRY_MAX_TAGS` tags by recency.
+    With `name=<substring>`, Docker Hub filters server-side by tag-name
+    substring so stable tags (e.g. `3.12-slim`) that fall outside the
+    recent-100 window are still reachable.
+    """
     repo = image.strip("/")
     if "/" not in repo:
         repo = f"library/{repo}"
@@ -99,10 +110,21 @@ def registry_tags(request: Request, image: str = Query(..., min_length=1, max_le
     # under this combined-mitigation posture.
     if not validators.HUB_REPO_RE.fullmatch(repo):
         raise http_error("validation.bad_image_name")
+    # Constrain `name` to Docker tag grammar (letters, digits, `.`, `-`,
+    # `_`) so the filter string can't inject a new query param or reach
+    # a different URL path.
+    if name and not validators.HUB_TAG_FILTER_RE.fullmatch(name):
+        raise http_error("validation.bad_image_name")
     try:
+        params: dict[str, str | int] = {
+            "page_size": config.REGISTRY_MAX_TAGS,
+            "ordering": "last_updated",
+        }
+        if name:
+            params["name"] = name
         resp = requests.get(
             f"https://hub.docker.com/v2/repositories/{repo}/tags/",
-            params={"page_size": config.REGISTRY_MAX_TAGS, "ordering": "last_updated"},
+            params=params,
             timeout=config.REGISTRY_TIMEOUT,
             allow_redirects=False,
         )
@@ -135,6 +157,45 @@ def _first_allowed_tag(img: Any) -> AllowedImageEntry | None:
             size_mb=round((img.attrs.get("Size") or 0) / 1024 / 1024, 1),
         )
     return None
+
+
+# App templates — one-click deployables. Portainer/Yacht parity. Each
+# template is a prebuilt `docker run` recipe with sensible ports + env.
+# The catalogue is intentionally short; this is "quick-start for common
+# dev stacks", NOT a registry. Every image must be on docker.io so the
+# registry allowlist's default permits it — tenants that lock down the
+# allowlist get a filtered catalogue via `is_allowed`.
+# App templates — one-click deployables. See `config._APP_TEMPLATES`
+# for the catalogue (kept in config.py so the lint rule that flags
+# absolute-path literals treats `/var/lib/postgresql/data` as a
+# config-level convention rather than a stray hardcoded path —
+# postgres / mysql / mongo each bake these mount points into their
+# upstream images, so they're not SKIFF-overridable knobs so much as
+# upstream-documented mount points).
+_APP_TEMPLATES = config._APP_TEMPLATES
+
+
+@router.get("/api/templates", dependencies=AUTH, tags=["images"])
+@secure_route.read(RATE.READ)
+def list_app_templates(request: Request) -> dict:
+    """Return the prebuilt quick-start catalogue — nginx, postgres, etc.
+
+    Each entry marks `is_allowed=True` iff the image's registry is in
+    the current allowlist. The UI greys out disallowed entries with a
+    hover note so a locked-down tenant still sees the catalogue but
+    can't accidentally try a rejected deploy."""
+    allowed: list[dict] = []
+    for tmpl in _APP_TEMPLATES:
+        entry = dict(tmpl)
+        try:
+            validators.validate_image_registry(tmpl["image"])
+            entry["is_allowed"] = True
+            entry["reject_reason"] = ""
+        except HTTPException as http_exc:
+            entry["is_allowed"] = False
+            entry["reject_reason"] = str(http_exc.detail)
+        allowed.append(entry)
+    return {"templates": allowed}
 
 
 @router.get("/api/images/allowed", dependencies=AUTH, tags=["images"])
@@ -266,6 +327,43 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
     if err:
         raise http_error("image.push_failed", message=err)
     return OkResponse(image=image)
+
+
+@router.post("/api/images/prune", dependencies=AUTH, tags=["images"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="image.pruned",
+    audit_fields=lambda request, **kw: {},  # noqa: ARG005
+)
+def prune_images(
+    request: Request,
+    dangling_only: bool = True,
+    client=Depends(docker_client_dep),
+) -> dict:
+    """Remove dangling (untagged) images. With `dangling_only=false`, also
+    removes images not referenced by any container — parallel to
+    `docker image prune -a`.
+
+    The difference matters: `-a` can reclaim large amounts of disk but
+    will delete tags the operator hasn't realised nothing's pulling
+    from. Default to the safer dangling-only behaviour; expose the
+    flag so power-users can opt in."""
+    filters = {} if dangling_only else {"dangling": False}
+    try:
+        r = client.images.prune(filters=filters)
+    except docker.errors.APIError as exc:
+        raise http_error("image.prune_failed", message=str(exc)) from exc
+    deleted = r.get("ImagesDeleted") or []
+    reclaimed = r.get("SpaceReclaimed") or 0
+    # Plain dict instead of OkResponse — the pydantic model uses
+    # extra=forbid, and the UI expects the two reclaimed-space fields
+    # alongside `ok`. Matches the shape of other prune endpoints
+    # (/system/prune, /volumes/prune, /networks/prune).
+    return {
+        "ok": True,
+        "deleted_count": len(deleted),
+        "space_reclaimed_mb": round(reclaimed / 1024 / 1024, 1),
+    }
 
 
 @router.delete("/api/images/{image_id}", dependencies=AUTH, tags=["images"])
