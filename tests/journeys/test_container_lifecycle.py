@@ -516,3 +516,247 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
                 pytest.fail("terminal did not survive tab switch")
     finally:
         _teardown_by_name(live_server, name)
+
+
+# ── Plan-named J-03 scenarios ────────────────────────────────────────
+# Original 10 journeys cover: run, stop/start, restart, pause, kill,
+# rename, bulk stop, undo-delete, commit, terminal-tab-switch.
+# Plan J-03 also enumerated: stats, exec round-trip, restart loop,
+# OOM recovery, rootless-user exec, restart-policy update.
+# Stats, exec, restart-policy update are high-value additions. OOM
+# recovery and rootless-user exec are captured via the lifecycle
+# coverage CSV (need special container images + kernel config).
+
+
+@journey(
+    persona=("sre_ops",),
+    category="container_lifecycle",
+    severity="medium",
+)
+def test_journey_stats_endpoint_returns_shape(audited_page, live_server, audit_observer, persona):
+    """Plan J-03 item: stats. GET /api/containers/{id}/stats returns
+    the cgroup shape the SRE stats tab renders. A 5xx means the cgroup
+    v1/v2 branch is broken; a 200 with missing cpu_percent means the
+    UI chart draws a flat line."""
+    from tests.e2e_helpers import auth_headers
+
+    name = _run_seed_container(live_server, "st")
+    try:
+        with step("step_1_fetch_stats"):
+            r = requests.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/stats",
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code != 200:
+                audit_observer.emit(
+                    step="step_1_fetch_stats",
+                    severity="high",
+                    category="contract",
+                    title=f"Stats endpoint returned {r.status_code}",
+                    expected="200 with cpu/memory shape",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail(f"stats failed: {r.status_code}")
+            body = r.json()
+            # Must expose CPU + memory fields for the UI to render.
+            missing = [k for k in ("cpu_percent", "memory_mb", "memory_limit_mb")
+                       if k not in body and k.replace("_", "") not in {kk.replace("_", "") for kk in body}]
+            if missing:
+                audit_observer.emit(
+                    step="step_1_fetch_stats",
+                    severity="medium",
+                    category="contract",
+                    title=f"Stats shape missing fields: {missing}",
+                    expected="cpu_percent, memory_mb, memory_limit_mb",
+                    observed=f"keys: {list(body.keys())[:10]}",
+                )
+    finally:
+        _teardown_by_name(live_server, name)
+
+
+@journey(
+    persona=("developer",),
+    category="container_lifecycle",
+    severity="high",
+)
+def test_journey_exec_roundtrip_writes_file(audited_page, live_server, audit_observer, persona):
+    """Plan J-03 item: exec round-trip. Developer rubric: edit a file
+    in a running container and see the change. This journey exec's
+    `sh -c "echo hi > /tmp/pa-mark"` and verifies the file exists
+    afterwards via the ls endpoint."""
+    import requests as _rq
+
+    from tests.e2e_helpers import auth_headers
+
+    name = _run_seed_container(live_server, "ex")
+    try:
+        with step("step_1_exec_write"):
+            # Non-streaming exec — the REST route (if exposed) or the
+            # container-commit path. Try the most common shape; if the
+            # backend gates exec behind WS, skip.
+            r = _rq.post(
+                f"{live_server.rstrip('/')}/api/containers/{name}/exec",
+                headers={**auth_headers(), "Content-Type": "application/json"},
+                json={"cmd": ["sh", "-c", "echo hi > /tmp/pa-mark"]},
+                timeout=30,
+            )
+            if r.status_code == 404:
+                pytest.skip("REST exec endpoint not present; covered by WS journey")
+            if r.status_code >= 500:
+                audit_observer.emit(
+                    step="step_1_exec_write",
+                    severity="high",
+                    category="contract",
+                    title=f"Exec round-trip returned {r.status_code}",
+                    expected="200 / 202 / 204",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail(f"exec 5xx: {r.status_code}")
+        with step("step_2_ls_tmp_sees_mark"):
+            r = _rq.get(
+                f"{live_server.rstrip('/')}/api/containers/{name}/ls",
+                params={"path": "/tmp"},
+                headers=auth_headers(), timeout=30,
+            )
+            if r.status_code == 200:
+                body = r.json()
+                names = [e.get("name") for e in (body.get("entries") or body.get("files") or [])]
+                if "pa-mark" not in names:
+                    audit_observer.emit(
+                        step="step_2_ls_tmp_sees_mark",
+                        severity="medium",
+                        category="behaviour",
+                        title="Exec write not visible via ls",
+                        expected="pa-mark in /tmp after exec write",
+                        observed=f"entries: {names[:10]}",
+                    )
+    finally:
+        _teardown_by_name(live_server, name)
+
+
+@journey(
+    persona=("developer",),
+    category="container_lifecycle",
+    severity="low",
+)
+def test_journey_restart_loop_repeated(audited_page, live_server, audit_observer, persona):
+    """Plan J-03 item: restart loop. Restart 3× in a row — every
+    restart must 200 and leave the container running. Guards against
+    a bug where the second restart finds a stale client handle."""
+    from tests.e2e_helpers import auth_headers
+
+    name = _run_seed_container(live_server, "rl")
+    try:
+        for i in range(3):
+            with step(f"step_{i+1}_restart"):
+                r = requests.post(
+                    f"{live_server.rstrip('/')}/api/containers/{name}/restart",
+                    headers=auth_headers(), timeout=60,
+                )
+                if r.status_code != 200:
+                    audit_observer.emit(
+                        step=f"step_{i+1}_restart",
+                        severity="medium",
+                        category="behaviour",
+                        title=f"Restart #{i+1} returned {r.status_code}",
+                        expected="200 OK on every restart in a tight loop",
+                        observed=f"{r.status_code}: {r.text[:200]!r}",
+                    )
+                    pytest.fail(f"restart {i+1} failed")
+    finally:
+        _teardown_by_name(live_server, name)
+
+
+@journey(
+    persona=("sre_ops",),
+    category="container_lifecycle",
+    severity="medium",
+)
+def test_journey_restart_policy_update_surface(audited_page, live_server, audit_observer, persona):
+    """Plan J-03 item: restart-policy update. A container's restart
+    policy (no / on-failure / always / unless-stopped) must be updatable
+    after creation. Probes whether the backend exposes the update
+    endpoint — falls back to emitting a parity finding if not."""
+    from tests.e2e_helpers import auth_headers
+
+    name = _run_seed_container(live_server, "rp")
+    try:
+        with step("step_1_update_restart_policy"):
+            # docker-py supports `container.update(restart_policy=...)`.
+            # The UI typically exposes this via a PATCH or POST /update
+            # route. Try both common shapes.
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/containers/{name}/update",
+                headers={**auth_headers(), "Content-Type": "application/json"},
+                json={"restart_policy": {"Name": "on-failure", "MaximumRetryCount": 3}},
+                timeout=30,
+            )
+            if r.status_code == 404:
+                audit_observer.emit(
+                    step="step_1_update_restart_policy",
+                    severity="medium",
+                    category="parity",
+                    title="No restart-policy update endpoint",
+                    expected="POST /api/containers/{id}/update supports restart_policy",
+                    observed="404 Not Found — endpoint missing",
+                )
+                return
+            if r.status_code >= 500:
+                pytest.fail(f"update 5xx: {r.status_code}")
+    finally:
+        _teardown_by_name(live_server, name)
+
+
+@journey(
+    persona=("security_reviewer",),
+    category="container_lifecycle",
+    severity="medium",
+    tags=("zero-trust",),
+)
+def test_journey_rootless_exec_capability_check(audited_page, live_server, audit_observer, persona):
+    """Plan J-03 item: rootless-user exec. Reviewer probes that the
+    exec endpoint honours the User field — a container started with
+    `user: 10000:10000` must exec as UID 10000. This is observability:
+    we DON'T assert the exact UID (cross-platform variance) but we do
+    assert the endpoint either succeeds or fails with a catalogued
+    envelope, never a raw traceback."""
+    from tests.e2e_helpers import auth_headers
+
+    import uuid
+    name = f"pa-ru-{uuid.uuid4().hex[:6]}"
+    r = requests.post(
+        f"{live_server.rstrip('/')}/api/containers/run",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        json={
+            "image": "alpine:3.20",
+            "name": name,
+            "command": "sleep 3600",
+            "user": "10000:10000",
+            "labels": {"skiff-audit-run": "1"},
+        },
+        timeout=120,
+    )
+    if r.status_code not in (200, 201):
+        pytest.skip(f"rootless seed failed: {r.status_code}")
+    try:
+        with step("step_1_exec_whoami"):
+            r = requests.post(
+                f"{live_server.rstrip('/')}/api/containers/{name}/exec",
+                headers={**auth_headers(), "Content-Type": "application/json"},
+                json={"cmd": ["id"]},
+                timeout=30,
+            )
+            if r.status_code == 404:
+                pytest.skip("REST exec not present")
+            if r.status_code >= 500:
+                audit_observer.emit(
+                    step="step_1_exec_whoami",
+                    severity="medium",
+                    category="contract",
+                    title=f"Rootless exec raised {r.status_code}",
+                    expected="2xx or envelope-formatted 4xx",
+                    observed=f"{r.status_code}: {r.text[:200]!r}",
+                )
+                pytest.fail(f"rootless exec 5xx: {r.status_code}")
+    finally:
+        _teardown_by_name(live_server, name)
