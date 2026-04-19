@@ -282,6 +282,43 @@ _EVENTS: dict[str, _EventSpec] = {
         description="Image deletion queued under the undo window.",
     ),
     "image.deleted": _EventSpec(required=("id",), description="Image deleted."),
+    "container.cp_get": _EventSpec(
+        required=("id", "path"),
+        optional=("size_bytes",),
+        description="Container file / directory streamed out via `docker cp`-equivalent.",
+    ),
+    "container.cp_get_truncated": _EventSpec(
+        severity="warning",
+        required=("id", "path", "cap_mb"),
+        description=(
+            "`docker cp`-out truncated at the configured size cap; "
+            "raise CONTAINER_CP_MAX_MB or tar a smaller path."
+        ),
+    ),
+    "container.cp_put": _EventSpec(
+        required=("id", "path"),
+        description="Tar archive uploaded into a container via POST /api/containers/{id}/files.",
+    ),
+    "container.cp_put_ok": _EventSpec(
+        required=("id", "path", "size_bytes"),
+        description="Container cp-put succeeded.",
+    ),
+    "container.committed": _EventSpec(
+        required=("id", "repository", "tag"),
+        description="Running container committed to a new local image.",
+    ),
+    "container.upload_ok": _EventSpec(
+        required=("id", "path", "filename", "size_bytes"),
+        description="Multipart file upload accepted into a container via /api/containers/{id}/upload.",
+    ),
+    "image.pruned": _EventSpec(
+        description="Dangling / unused images pruned via /api/images/prune.",
+    ),
+    "system.events_failed": _EventSpec(
+        severity="warning",
+        optional=("error",),
+        description="`docker events` poll returned an unexpected shape; returning best-effort partial.",
+    ),
     # ── Volume ────────────────────────────────────────────────────────────
     "volume.created": _EventSpec(required=("name",), description="Volume created."),
     "volume.delete_queued": _EventSpec(
@@ -326,6 +363,27 @@ _EVENTS: dict[str, _EventSpec] = {
         required=("project", "service"),
         optional=("container_id",),
         description="Single compose service restarted.",
+    ),
+    "compose.started": _EventSpec(
+        required=("project",),
+        description="Compose stack `start`ed (containers resumed without re-create).",
+    ),
+    "compose.stopped": _EventSpec(
+        required=("project",),
+        description="Compose stack `stop`ed (containers halted, not removed).",
+    ),
+    "compose.pulled": _EventSpec(
+        required=("project",),
+        description="Compose stack images pulled (latest tags fetched).",
+    ),
+    "compose.scaled": _EventSpec(
+        required=("project", "service", "replicas"),
+        description="Compose service scaled to N replicas.",
+    ),
+    "compose.subcommand_failed": _EventSpec(
+        severity="warning",
+        required=("project", "subcommand", "stderr"),
+        description="A compose subcommand (stop/start/pull/scale) returned non-zero.",
     ),
     "compose.service_logs_failed": _EventSpec(
         severity="warning",

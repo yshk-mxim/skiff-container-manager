@@ -299,6 +299,33 @@ def _find_compose_containers(client, project_name: str, service_name: str | None
     return containers
 
 
+@router.get("/api/compose/{project_name}/download", dependencies=AUTH, tags=["compose"])
+@secure_route.read(RATE.READ)
+def compose_download_yaml(request: Request, project_name: str):
+    """Serve the stored `docker-compose.yml` for a deployed project.
+
+    Useful for backups or for pasting into another SKIFF / CI pipeline.
+    Returns 404 if the project has never been deployed here."""
+    from fastapi.responses import FileResponse
+
+    validators.validate_project_name(project_name)
+    safe_name = _sanitize_project_name(project_name)
+    project_dir = _find_project_dir(safe_name)
+    if project_dir is None:
+        raise http_error("compose.not_found", project=project_name)
+    compose_path = project_dir / "docker-compose.yml"
+    if not compose_path.exists():
+        raise http_error("compose.file_missing")
+    # Stream from disk — the file has passed every policy check at deploy
+    # time (size, forbidden keys, registry allowlist), so downloading it
+    # back out is safe regardless of caller trust.
+    return FileResponse(
+        path=str(compose_path),
+        media_type="application/x-yaml",
+        filename=f"{project_name}.docker-compose.yml",
+    )
+
+
 @router.get("/api/compose/{project_name}/logs", dependencies=AUTH, tags=["compose"])
 @secure_route.read(RATE.READ)
 def compose_project_logs(
@@ -412,3 +439,131 @@ def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
     # way for the operator to know whether cleanup needs a manual rm -rf.
     shutil.rmtree(project_dir, ignore_errors=True)
     return OkResponse(output=str(result.stdout) if result.stdout is not None else None)
+
+
+# ── Stack-level lifecycle: stop / start / pull / scale / validate ─────────
+#
+# All share a common shape: find the project dir, run `docker compose -p
+# <project> -f <file> <subcommand>`, surface stderr as a catalogued envelope
+# on failure. The helpers below let each endpoint stay ~10 lines.
+
+
+def _compose_stack_op(
+    project_name: str,
+    subcommand: list[str],
+    timeout: int,
+    *,
+    require_existing_dir: bool = True,
+) -> OkResponse:
+    """Run a `docker compose -p <name> -f <file> <subcommand>` invocation.
+
+    Shared with: stop, start, pull, scale, and the stack-level validate.
+    Raises `compose.not_found` when the project has never been deployed
+    (no project dir on disk) and `require_existing_dir=True`."""
+    validators.validate_project_name(project_name)
+    safe_name = _sanitize_project_name(project_name)
+    project_dir = _find_project_dir(safe_name)
+    if project_dir is None and require_existing_dir:
+        raise http_error("compose.not_found", project=project_name)
+    compose_path = project_dir / "docker-compose.yml" if project_dir else None
+    cmd = [*config.COMPOSE_CMD, "-p", project_name]
+    if compose_path and compose_path.exists():
+        cmd.extend(["-f", str(compose_path)])
+    cmd.extend(subcommand)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=_compose_subprocess_env(),
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise http_error("compose.timeout", message=f"{subcommand[0]} timed out") from exc
+    if result.returncode != 0:
+        log.warning(
+            "compose.subcommand_failed",
+            project=project_name,
+            subcommand=subcommand[0],
+            stderr=result.stderr[:500],
+        )
+        detail = validators._sanitize_stderr(result.stderr) if result.stderr else f"{subcommand[0]} failed"
+        raise http_error("compose.deploy_failed", message=detail)
+    return OkResponse(output=str(result.stdout) if result.stdout is not None else None)
+
+
+@router.post("/api/compose/{project_name}/stop", dependencies=AUTH, tags=["compose"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="compose.stopped",
+    audit_fields=lambda request, project_name, **kw: {"project": project_name},  # noqa: ARG005
+)
+def compose_stop(request: Request, project_name: str) -> OkResponse:
+    """Stop every service container in a stack without removing them.
+
+    Paired with `/start`. Keeps the containers so a later `/start` brings
+    them back with the same state — useful for temporarily halting a dev
+    stack without losing per-container state."""
+    return _compose_stack_op(project_name, ["stop"], config.COMPOSE_DOWN_TIMEOUT)
+
+
+@router.post("/api/compose/{project_name}/start", dependencies=AUTH, tags=["compose"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="compose.started",
+    audit_fields=lambda request, project_name, **kw: {"project": project_name},  # noqa: ARG005
+)
+def compose_start(request: Request, project_name: str) -> OkResponse:
+    """Bring a stopped stack back up. Paired with `/stop`."""
+    return _compose_stack_op(project_name, ["start"], config.COMPOSE_DOWN_TIMEOUT)
+
+
+@router.post("/api/compose/{project_name}/pull", dependencies=AUTH, tags=["compose"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="compose.pulled",
+    audit_fields=lambda request, project_name, **kw: {"project": project_name},  # noqa: ARG005
+)
+def compose_pull(request: Request, project_name: str) -> OkResponse:
+    """Pull the latest versions of every service image in a stack.
+
+    Runs `docker compose pull` — updates image refs without redeploying.
+    A subsequent `/up` picks up the new tags."""
+    return _compose_stack_op(project_name, ["pull"], config.IMAGE_PULL_TIMEOUT * 2)
+
+
+@router.post("/api/compose/{project_name}/scale", dependencies=AUTH, tags=["compose"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="compose.scaled",
+    audit_fields=lambda request, project_name, service_name, replicas, **kw: (  # noqa: ARG005
+        {"project": project_name, "service": service_name, "replicas": replicas}
+    ),
+)
+def compose_scale(
+    request: Request,
+    project_name: str,
+    service_name: str,
+    replicas: int,
+) -> OkResponse:
+    """Scale a service to N replicas.
+
+    `replicas` is bounded by `COMPOSE_MAX_REPLICAS` (host policy) to
+    prevent a runaway ask from exhausting the engine. Docker compose
+    itself will reject N=0 on some versions — we allow it here for
+    "stop without removing the service definition"."""
+    if not validators.SERVICE_NAME_RE.fullmatch(service_name):
+        raise http_error("validation.bad_input")
+    max_replicas = config.COMPOSE_MAX_REPLICAS
+    if replicas < 0 or replicas > max_replicas:
+        raise http_error(
+            "validation.bad_input",
+            message=f"replicas must be between 0 and {max_replicas}",
+        )
+    spec = f"{service_name}={replicas}"
+    return _compose_stack_op(
+        project_name,
+        ["up", "-d", "--scale", spec, "--no-recreate"],
+        config.COMPOSE_UP_TIMEOUT,
+    )

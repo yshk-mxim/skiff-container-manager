@@ -26,6 +26,8 @@ MAX_AUDIT_LINES = 2000                # lines in a single /audit-log response
 MAX_CONTAINERS = 50                   # max containers the UI enumerates
 MAX_COMPOSE_SIZE = 262144             # 256 KiB — compose file upload cap
 MAX_PORT_MAPPINGS = 10                # max published ports per `docker run`
+CONTAINER_CP_MAX_MB = 64              # file copy in/out cap per request
+CONTAINER_LS_MAX_ENTRIES = 2000       # max dir entries returned by /api/containers/{id}/ls
 
 # ── Docker client (HTTP timeouts, connection pool) ────────
 DOCKER_CLIENT_TIMEOUT = 15            # seconds per Docker SDK HTTP request
@@ -51,6 +53,7 @@ PROBE_DOCKER_TIMEOUT = 2              # seconds for the wizard's ping probe
 # ── Compose subprocess budgets ────────────────────────────
 COMPOSE_UP_TIMEOUT = 120              # seconds — pull + up -d can be slow
 COMPOSE_DOWN_TIMEOUT = 60             # seconds — tear-down is faster
+COMPOSE_MAX_REPLICAS = 10             # max service replicas via /scale
 
 # ── Shutdown + per-call budgets ───────────────────────────
 SHUTDOWN_FLUSH_TIMEOUT = 20           # cap the undo-queue flush on SIGTERM
@@ -86,7 +89,7 @@ SETUP_LOCKOUT_SECS = 300              # lockout window seconds
 
 # ── Docker Hub registry proxy ─────────────────────────────
 REGISTRY_SEARCH_PAGE_SIZE = 10        # results per /api/registry/search call
-REGISTRY_MAX_TAGS = 20                # tags per /api/registry/tags call
+REGISTRY_MAX_TAGS = 100               # tags per /api/registry/tags call (Hub's max page size)
 REGISTRY_TIMEOUT = 8                  # seconds for Docker Hub API requests
 REGISTRY_DESC_MAX = 200               # chars of description echoed back
 

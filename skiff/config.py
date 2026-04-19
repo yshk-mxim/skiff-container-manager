@@ -581,6 +581,11 @@ MAX_LOG_TAIL = _int_knob("MAX_LOG_TAIL", doc="Max lines in a single /logs respon
 MAX_AUDIT_LINES = _int_knob("MAX_AUDIT_LINES", doc="Max lines in a single /audit-log response.")
 MAX_CONTAINERS = _int_knob("MAX_CONTAINERS", doc="Max containers the UI enumerates.")
 MAX_PORT_MAPPINGS = _int_knob("MAX_PORT_MAPPINGS", doc="Max published ports per `docker run`.")
+CONTAINER_CP_MAX_MB = _int_knob("CONTAINER_CP_MAX_MB", doc="Max MB for /api/containers/{id}/files get/put (cp).")
+CONTAINER_LS_MAX_ENTRIES = _int_knob(
+    "CONTAINER_LS_MAX_ENTRIES",
+    doc="Max dir entries returned by /api/containers/{id}/ls.",
+)
 # Security-policy caps (intentional — operator change = fork): changing
 # these weakens the sandbox, so they stay Python. See
 # docs/hardening/production.md §Sandbox caps for rationale.
@@ -654,6 +659,7 @@ COMPOSE_PATH_FALLBACK = "/usr/bin"
 COMPOSE_HOME_FALLBACK = "/root"
 COMPOSE_UP_TIMEOUT = _int_knob("COMPOSE_UP_TIMEOUT", doc="Seconds for `docker compose up -d`.")
 COMPOSE_DOWN_TIMEOUT = _int_knob("COMPOSE_DOWN_TIMEOUT", doc="Seconds for `docker compose down`.")
+COMPOSE_MAX_REPLICAS = _int_knob("COMPOSE_MAX_REPLICAS", doc="Max replicas per service via /scale.")
 SHUTDOWN_FLUSH_TIMEOUT = _int_knob(
     "SHUTDOWN_FLUSH_TIMEOUT",
     doc="Max seconds the lifespan shutdown will spend draining the undo queue.",
@@ -915,3 +921,121 @@ def _limit(spec: str) -> str:
 
 
 limiter = Limiter(key_func=get_remote_address)
+
+
+# ── App-templates catalogue — see routers/images.py::list_app_templates ──
+#
+# Each entry is a "one-click deploy" recipe. `mount` paths are upstream
+# image conventions (postgres stores data at /var/lib/postgresql/data
+# by virtue of its own Dockerfile — making them SKIFF-level knobs would
+# misleadingly imply they're overridable). Keeping the catalogue here
+# also makes AP010 happy: config.py is the sanctioned home for path
+# constants, even when they're informational rather than operational.
+_APP_TEMPLATES: list[dict] = [
+    {
+        "id": "nginx",
+        "name": "nginx",
+        "description": "Lightweight web server. Serves static files out of the box.",
+        "image": "nginx:alpine",
+        "category": "web",
+        "ports": [{"host": 8080, "container": 80, "protocol": "tcp"}],
+        "env": [],
+        "volumes": [],
+        "command": None,
+    },
+    {
+        "id": "postgres",
+        "name": "PostgreSQL",
+        "description": "PostgreSQL 16 with persistent volume and password-protected admin account.",
+        "image": "postgres:16-alpine",
+        "category": "database",
+        "ports": [{"host": 5432, "container": 5432, "protocol": "tcp"}],
+        "env": [
+            {
+                "key": "POSTGRES_PASSWORD", "value": "changeme", "required": True,
+                "help": "Admin password — CHANGE THIS before use.",
+            },
+            {
+                "key": "POSTGRES_DB", "value": "app", "required": False,
+                "help": "Default database name.",
+            },
+        ],
+        "volumes": [{"mount": "/var/lib/postgresql/data", "type": "volume", "name_hint": "pg-data"}],
+        "command": None,
+    },
+    {
+        "id": "redis",
+        "name": "Redis",
+        "description": "In-memory key/value store. Ephemeral by default.",
+        "image": "redis:7-alpine",
+        "category": "cache",
+        "ports": [{"host": 6379, "container": 6379, "protocol": "tcp"}],
+        "env": [],
+        "volumes": [],
+        "command": None,
+    },
+    {
+        "id": "mysql",
+        "name": "MySQL",
+        "description": "MySQL 8 with persistent data volume.",
+        "image": "mysql:8",
+        "category": "database",
+        "ports": [{"host": 3306, "container": 3306, "protocol": "tcp"}],
+        "env": [
+            {
+                "key": "MYSQL_ROOT_PASSWORD", "value": "changeme", "required": True,
+                "help": "Root password — CHANGE THIS before use.",
+            },
+            {
+                "key": "MYSQL_DATABASE", "value": "app", "required": False,
+                "help": "Default database name.",
+            },
+        ],
+        "volumes": [{"mount": "/var/lib/mysql", "type": "volume", "name_hint": "mysql-data"}],
+        "command": None,
+    },
+    {
+        "id": "mongo",
+        "name": "MongoDB",
+        "description": "MongoDB document database. Volume-backed.",
+        "image": "mongo:7",
+        "category": "database",
+        "ports": [{"host": 27017, "container": 27017, "protocol": "tcp"}],
+        "env": [],
+        "volumes": [{"mount": "/data/db", "type": "volume", "name_hint": "mongo-data"}],
+        "command": None,
+    },
+    {
+        "id": "python",
+        "name": "Python dev shell",
+        "description": "Python 3.12 slim with pip. Runs `sleep infinity` so you can exec in and experiment.",
+        "image": "python:3.12-slim",
+        "category": "dev",
+        "ports": [],
+        "env": [],
+        "volumes": [],
+        "command": "sleep infinity",
+    },
+    {
+        "id": "node",
+        "name": "Node.js dev shell",
+        "description": "Node 22 LTS slim. Runs `sleep infinity`.",
+        "image": "node:22-slim",
+        "category": "dev",
+        "ports": [],
+        "env": [],
+        "volumes": [],
+        "command": "sleep infinity",
+    },
+    {
+        "id": "alpine",
+        "name": "Alpine shell",
+        "description": "Minimal Alpine Linux. Useful for quick debugging.",
+        "image": "alpine:latest",
+        "category": "dev",
+        "ports": [],
+        "env": [],
+        "volumes": [],
+        "command": "sleep infinity",
+    },
+]
