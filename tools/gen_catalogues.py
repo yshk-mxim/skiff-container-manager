@@ -96,13 +96,22 @@ def _config_knobs_md() -> str:
         "|---|---|---|---|---|---|",
     ]
     home = os.environ.get("HOME", "")
+    # The per-user state root is platform-specific (macOS Application
+    # Support, Linux XDG state, or $XDG_STATE_HOME when set). If we
+    # leave the real path in the catalogue, every regeneration on a
+    # different OS churns the file and CI's --check fails. Collapse
+    # BOTH variants to the same platform-neutral placeholder so the
+    # committed file is reproducible regardless of which OS ran the
+    # generator.
+    state_root = str(_config._STATE_ROOT)
     for name in sorted(_config.knobs()):
         spec = _config.knobs()[name]
         default = spec.default if spec.default is not None else ""
-        # Normalize any default that embeds the generator's home dir back
-        # to the portable `$HOME` form so the catalogue isn't machine-
-        # specific (and doesn't leak the generator's username).
-        if home and default.startswith(home):
+        if default.startswith(state_root):
+            default = "<skiff-state-dir>" + default[len(state_root) :]
+        elif home and default.startswith(home):
+            # Non-state-root default that happens to start at $HOME
+            # (unlikely but keep the original normalisation).
             default = "$HOME" + default[len(home) :]
         if len(default) > 48:
             default = default[:45] + "…"

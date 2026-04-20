@@ -15,11 +15,11 @@ every knob with its default, type, and one-line doc. See
 | `ALLOWED_REGISTRIES` | `docker.io,ghcr.io` | _csv_list | yes | no | Comma-separated image-registry allowlist. Pull/push reject images outside this list. |
 | `API_TOKEN` | `` |  | no | yes | Shared bearer token for every authenticated request. Empty ⇒ no auth (localhost-only). |
 | `AUDIT_BACKUP_COUNT` | `5` | int | yes | no | Number of rotated audit log files to keep. Higher = longer retention, more disk. |
-| `AUDIT_LOG` | `$HOME/Library/Application Support/skiff/audit…` |  | yes | no | Path to the rotating JSON-lines audit log. Set to /dev/null to disable file logging. |
+| `AUDIT_LOG` | `<skiff-state-dir>/audit.jsonl` |  | yes | no | Path to the rotating JSON-lines audit log. Set to /dev/null to disable file logging. |
 | `AUDIT_MAX_MB` | `10` | lambda | yes | no | Audit log rotation file size in MiB. Multiplied by AUDIT_BACKUP_COUNT for total retention. |
 | `BIND_HOST` | `127.0.0.1` |  | yes | no | Interface uvicorn binds to. Use 127.0.0.1 for local; override only with an explicit front proxy. |
 | `BODY_READ_TIMEOUT_SECS` | `30` | int | yes | no | Per-chunk timeout (seconds) for reading a request body. A client that drips one byte every 5 s would otherwise hold an ASGI worker open for minutes; at this timeout the middleware responds 408 `validation.body_timeout` instead. Set higher for very slow uploads over WAN links; lower for tighter slow-POST defence. |
-| `COMPOSE_DIR` | `$HOME/Library/Application Support/skiff/compose` |  | yes | no | Directory where uploaded docker-compose.yml files are stored (one subdir per project). |
+| `COMPOSE_DIR` | `<skiff-state-dir>/compose` |  | yes | no | Directory where uploaded docker-compose.yml files are stored (one subdir per project). |
 | `COMPOSE_DOWN_TIMEOUT` | `60` | int | yes | no | Seconds for `docker compose down`. |
 | `COMPOSE_MAX_REPLICAS` | `10` | int | yes | no | Max replicas per service via /scale. |
 | `COMPOSE_UP_TIMEOUT` | `120` | int | yes | no | Seconds for `docker compose up -d`. |
