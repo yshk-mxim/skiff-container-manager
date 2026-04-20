@@ -153,6 +153,26 @@ def test_inspect_image(client, mock_docker):
     assert "tags" in data
     assert "history" in data
     assert len(data["history"]) > 0
+    # Envelope must disclose whether the layer list was clipped so the
+    # UI can say "showing 20 of 43". Was previously silent — 30-layer
+    # multi-stage builds rendered as if they had 20.
+    assert data["history_total"] == len(data["history"])
+    assert data["history_truncated"] is False
+
+
+def test_inspect_image_history_truncates_and_reports(client, mock_docker):
+    """Images with >20 build steps surface the total depth + truncation flag."""
+    img = _make_image()
+    img.history.return_value = [
+        {"Created": "2026-01-01T00:00:00Z", "CreatedBy": f"step {i}", "Size": 1024} for i in range(30)
+    ]
+    mock_docker.images.get.return_value = img
+    resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["history"]) == 20
+    assert data["history_total"] == 30
+    assert data["history_truncated"] is True
 
 
 def test_inspect_image_history_error(client, mock_docker):
@@ -161,4 +181,7 @@ def test_inspect_image_history_error(client, mock_docker):
     mock_docker.images.get.return_value = img
     resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 200
-    assert resp.json()["history"] == []
+    data = resp.json()
+    assert data["history"] == []
+    assert data["history_total"] == 0
+    assert data["history_truncated"] is False

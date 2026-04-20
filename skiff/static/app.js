@@ -3,6 +3,10 @@
 "use strict";
 const API = '/api';
 let currentPage = 'dashboard';
+// Expose on window so core/palette.js and other modules can read the
+// active page without the app.js module boundary. Kept in sync by the
+// only writer (showPage below).
+window.currentPage = currentPage;
 let refreshTimer = null;
 let dockerOk = false;
 let _lastContainers = null;
@@ -86,9 +90,10 @@ async function undoableDelete(url, kindLabel, refresh) {
         labelSpan.textContent = t('undo.pending_label', { kind: kindLabel, seconds: remainingS });
       }
     }, 500);
-    // After the window expires server-side, tear down the toast and
-    // re-fetch so the row actually disappears from the list.
-    var reloadMs = windowSecs * 1000 + 500;
+    // Fixed 1500 ms buffer after the window — absorbs server-side
+    // Timer jitter + Docker SDK RTT. Not proportional because the
+    // jitter is bounded, not proportional to window length.
+    var reloadMs = windowSecs * 1000 + 1500;
     setTimeout(function() {
       if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
       clearInterval(tick);
@@ -101,6 +106,122 @@ async function undoableDelete(url, kindLabel, refresh) {
   // tells the user they have time to click Undo. The final re-fetch above
   // keeps the view honest once the window actually expires.
   if (refresh) refresh();
+}
+
+
+/**
+ * Shared undo-toast renderer for queued destructive ops. Every page
+ * that triggers a prune/down/delete that returns {undo_token,
+ * expires_in} from the server routes through this helper so the
+ * countdown, progress bar, Undo-link, and expiry-refresh are identical
+ * everywhere. Call sites:
+ *   - System prune (undoableSystemPrune wraps it below)
+ *   - Images prune (dangling + all-unused)
+ *   - Volumes prune
+ *   - Networks prune
+ *   - Build cache prune
+ *   - Compose down
+ *
+ * `label` names the op ("System prune", "Volume prune", …).
+ * `undoToken` / `windowSecs` come from the server envelope.
+ * `refreshFn` is called once the window expires so the listing
+ * refreshes after the op actually fires.
+ */
+function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
+  // Zero / missing window means undo is disabled (UNDO_DELAY_SECS=0).
+  // Skip the toast entirely — the op fired inline — and just refresh.
+  // Proportional timing collapses to 0 here and this guard is the
+  // reason the refresh buffer never needs to handle the zero case.
+  if (!windowSecs || windowSecs <= 0) {
+    if (refreshFn) refreshFn();
+    return;
+  }
+  windowSecs = Math.max(1, windowSecs);
+  var container = document.querySelector('.toast-container') ||
+    document.body.appendChild(UI.el('div', { class: 'toast-container' }));
+  var undone = false;
+  var labelSpan = UI.el('span', {
+    class: 'toast-label',
+    text: label + ' in ' + windowSecs + 's — click Undo to cancel',
+  });
+  var undoLink = UI.el('span', {
+    class: 'undo-link', text: t('undo.button'),
+    on: {
+      click: function() {
+        if (undone) return;
+        undone = true;
+        apiFetch(API + '/undo/' + encodeURIComponent(undoToken),
+                 { method: 'POST' })
+          .then(function() {
+            if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+            UI.toast(t('undo.toast'), 'success');
+          })
+          .catch(function() { UI.toast(t('undo.window_passed'), 'error'); });
+      },
+    },
+  });
+  var bar = UI.el('div', { class: 'toast-progress-bar' });
+  var progress = UI.el('div', { class: 'toast-progress' }, bar);
+  var toastEl = UI.el('div', { class: 'toast info toast-undo' },
+    UI.el('div', { class: 'toast-row' }, labelSpan, undoLink),
+    progress,
+  );
+  container.appendChild(toastEl);
+  requestAnimationFrame(function() {
+    bar.style.transition = 'width ' + windowSecs + 's linear';
+    bar.style.width = '0%';
+  });
+  var startedAt = Date.now();
+  var tick = setInterval(function() {
+    if (undone) { clearInterval(tick); return; }
+    var remainingMs = windowSecs * 1000 - (Date.now() - startedAt);
+    var remainingS = Math.max(0, Math.ceil(remainingMs / 1000));
+    if (remainingS <= 0) {
+      labelSpan.textContent = label + ' firing…';
+      undoLink.style.display = 'none';
+      clearInterval(tick);
+    } else {
+      labelSpan.textContent = label + ' in ' + remainingS + 's — click Undo to cancel';
+    }
+  }, 500);
+  // Post-window refresh buffer: the server's `threading.Timer` fires
+  // a fixed amount late (Python scheduling + Docker SDK RTT), not
+  // proportional to the window. 1500 ms covers jitter at every window
+  // length — the user's short-window case (UNDO_DELAY_SECS=1) stopped
+  // refreshing because a 500 ms buffer raced the rm; long windows
+  // don't need more buffer than short ones.
+  var postBufferMs = 1500;
+  setTimeout(function() {
+    if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+    clearInterval(tick);
+    if (!undone && refreshFn) refreshFn();
+  }, windowSecs * 1000 + postBufferMs);
+}
+
+window.renderUndoToast = renderUndoToast;
+
+
+/**
+ * System-prune variant. Server returns {undo_token, expires_in} by
+ * default; if the queue is full it returns the legacy counts shape —
+ * render both cleanly.
+ */
+async function undoableSystemPrune() {
+  var resp = await apiFetch(API + '/system/prune', { method: 'POST' });
+  if (resp && resp.undo_token) {
+    renderUndoToast('System prune', resp.undo_token, resp.expires_in, loadSystem);
+    return;
+  }
+  // Queue was full — server ran it synchronously. Render the legacy
+  // counts summary so the user still sees what happened.
+  var parts = [];
+  if (resp && resp.containers_deleted) parts.push(resp.containers_deleted + ' container(s)');
+  if (resp && resp.images_deleted) parts.push(resp.images_deleted + ' image(s)');
+  if (resp && resp.networks_deleted) parts.push(resp.networks_deleted + ' network(s)');
+  var m = parts.length ? 'Pruned ' + parts.join(', ') : 'Nothing to prune';
+  if (resp && resp.space_reclaimed_mb > 0) m += '. Reclaimed ' + resp.space_reclaimed_mb + ' MB';
+  toast(m, parts.length ? 'success' : 'info');
+  loadSystem();
 }
 
 
@@ -159,6 +280,20 @@ function closeDetailWS() {
 // (e.g. for requests fired before the initial config fetch).
 var SESSION_IDLE_MS = 15 * 60 * 1000;
 var SESSION_ABSOLUTE_MS = 8 * 60 * 60 * 1000;
+// UNDO_WINDOW_SECS mirrors config.UNDO_DELAY_SECS. The fallback of 5 matches
+// defaults.toml so a first-paint confirm() prompt doesn't tell the user
+// "undo for ~10s" while the server actually applies 5s — that was the bug
+// before UNDO_DELAY_SECS was exposed. _applySessionTimeoutsFromConfig()
+// refreshes this from /api/config once it resolves.
+var UNDO_WINDOW_SECS = 5;
+// Browser-side polling + fetch-timeout knobs. Each shadows a server-side
+// value of the same name; _applySessionTimeoutsFromConfig() updates them
+// once /api/config resolves. Fallbacks match defaults.toml so first-paint
+// behaviour matches steady-state before the config round-trip completes.
+var CONTAINERS_POLL_MS = 5000;
+var DASHBOARD_POLL_MS = 8000;
+var EVENTS_POLL_MS = 5000;
+var FETCH_TIMEOUT_MS = 30000;
 var _idleTimer = null;
 
 function _applySessionTimeoutsFromConfig(appCfg) {
@@ -178,6 +313,24 @@ function _applySessionTimeoutsFromConfig(appCfg) {
     SESSION_ABSOLUTE_MS = abs_ * 1000;
     changed = true;
   }
+  // Pull the authoritative undo window so confirm() prompts and bulk-
+  // action labels match what the server will actually enforce.
+  var undo = Number(appCfg.undo_delay_secs);
+  if (isFinite(undo) && undo >= 0 && undo <= 3600) {
+    UNDO_WINDOW_SECS = undo;
+  }
+  // Browser-side poll intervals + fetch timeout. All reads are
+  // bounds-clamped so a misconfigured /api/config can't jam the UI
+  // (e.g. 0 would make setInterval fire as fast as the event loop
+  // allows; 10^9 would feel like no polling at all).
+  function _applyMs(field, current, lo, hi) {
+    var n = Number(appCfg[field]);
+    return (isFinite(n) && n >= lo && n <= hi) ? n : current;
+  }
+  CONTAINERS_POLL_MS = _applyMs("containers_poll_ms", CONTAINERS_POLL_MS, 500, 600000);
+  DASHBOARD_POLL_MS  = _applyMs("dashboard_poll_ms",  DASHBOARD_POLL_MS,  500, 600000);
+  EVENTS_POLL_MS     = _applyMs("events_poll_ms",     EVENTS_POLL_MS,     500, 600000);
+  FETCH_TIMEOUT_MS   = _applyMs("fetch_timeout_ms",   FETCH_TIMEOUT_MS,   1000, 3600000);
   // Re-arm the idle timer if the value changed after setToken() already
   // scheduled one with the hardcoded default. Without this, an operator
   // who sets SESSION_IDLE_SECS=60 stays signed-in for 900 s because the
@@ -384,7 +537,8 @@ function showLogin() {
 }
 
 // ── Fetch wrapper ──
-var FETCH_TIMEOUT_MS = 30000;
+// FETCH_TIMEOUT_MS is declared + refreshed from /api/config up near the
+// other session-timing knobs. No duplicate `var` here.
 /**
  * Authenticated fetch wrapper. Injects the API token and CSRF header, enforces session
  * expiry, and surfaces HTTP errors as thrown Error objects with the server's detail message.
@@ -495,6 +649,7 @@ function showPage(page) {
   clearAllIntervals();
   closeDetailWS();
   currentPage = page;
+  window.currentPage = page;
   var main = document.getElementById('main');
   document.querySelectorAll('.sidebar a').forEach(function(a) { a.classList.remove('active'); });
   document.querySelectorAll('.sidebar a').forEach(function(a) {
@@ -511,6 +666,7 @@ function showPage(page) {
     networks: loadNetworks,
     compose: showCompose,
     system: loadSystem,
+    settings: showSettings,
   };
   (pages[page] || loadContainers)();
 }
@@ -533,6 +689,8 @@ function showPage(page) {
     { id: 'system',     label: 'System',     order: 60,
       personas: ['dev', 'sre', 'reviewer', 'ci'],
       keywords: ['prune', 'metrics', 'audit'] },
+    { id: 'settings',   label: 'Settings',   order: 70,
+      keywords: ['config', 'configuration', 'knob', 'env', 'toml', 'rate limit', 'session'] },
   ].forEach(function(d) { UI.registerPage(d); });
 })();
 
@@ -789,7 +947,7 @@ async function loadContainers() {
     if (document.getElementById('detail-content')) return;
     renderContainers(containers);
     clearInterval(refreshTimer);
-    refreshTimer = managedInterval(loadContainers, 5000);
+    refreshTimer = managedInterval(loadContainers, CONTAINERS_POLL_MS);
   } catch (e) {
     _refreshInFlight = false;
     // If apiFetch already redirected to login (401), showLogin() has written
@@ -809,7 +967,7 @@ async function loadContainers() {
       _renderUnreachableDocker(main);
     }
     clearInterval(refreshTimer);
-    refreshTimer = managedInterval(loadContainers, 5000);
+    refreshTimer = managedInterval(loadContainers, CONTAINERS_POLL_MS);
   }
 }
 
@@ -927,14 +1085,28 @@ function renderContainers(containers) {
     var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:13px;font-weight:500';
     lbl.textContent = _bulkSelected.size + ' selected';
     bar.appendChild(lbl);
+    // Capture each per-item rejection with its server envelope message, then
+    // summarise: N succeeded + list of failed names + the first server-side
+    // reason. The user reads WHY one container refused to stop (e.g.
+    // "container already stopped") and can act per-item.
     function _doBulk(label, path, successVerb) {
       bar.appendChild(makeActionBtn(label, function() {
         var ids = [..._bulkSelected];
         if (!confirm(label + ' ' + ids.length + ' container(s)?')) throw new Error('Cancelled');
         return Promise.all(ids.map(function(id) {
-          return apiFetch(API + '/containers/' + id + '/' + path, { method: 'POST' }).catch(function() {});
-        })).then(function() {
-          toast(successVerb + ' ' + ids.length + ' container(s)', 'success');
+          return apiFetch(API + '/containers/' + id + '/' + path, { method: 'POST' })
+            .then(function() { return { id: id, ok: true }; })
+            .catch(function(e) { return { id: id, ok: false, err: (e && e.message) || 'failed' }; });
+        })).then(function(results) {
+          var failed = results.filter(function(r) { return !r.ok; });
+          var okCount = results.length - failed.length;
+          if (failed.length === 0) {
+            toast(successVerb + ' ' + okCount + ' container(s)', 'success');
+          } else if (okCount === 0) {
+            toast(label + ' failed for all ' + failed.length + ' container(s): ' + failed[0].err, 'error');
+          } else {
+            toast(successVerb + ' ' + okCount + ', ' + failed.length + ' failed: ' + failed[0].err, 'error');
+          }
           _bulkSelected = new Set();
           loadContainers();
         });
@@ -948,9 +1120,19 @@ function renderContainers(containers) {
       if (!confirm('Delete ' + ids.length + ' container(s)? Running ones will be force-killed and CANNOT be undone.'))
         throw new Error('Cancelled');
       return Promise.all(ids.map(function(id) {
-        return apiFetch(API + '/containers/' + id + '?force=true', { method: 'DELETE' }).catch(function() {});
-      })).then(function() {
-        toast('Deleted ' + ids.length + ' container(s)', 'success');
+        return apiFetch(API + '/containers/' + id + '?force=true', { method: 'DELETE' })
+          .then(function() { return { id: id, ok: true }; })
+          .catch(function(e) { return { id: id, ok: false, err: (e && e.message) || 'failed' }; });
+      })).then(function(results) {
+        var failed = results.filter(function(r) { return !r.ok; });
+        var okCount = results.length - failed.length;
+        if (failed.length === 0) {
+          toast('Deleted ' + okCount + ' container(s)', 'success');
+        } else if (okCount === 0) {
+          toast('Delete failed for all ' + failed.length + ': ' + failed[0].err, 'error');
+        } else {
+          toast('Deleted ' + okCount + ', ' + failed.length + ' failed: ' + failed[0].err, 'error');
+        }
         _bulkSelected = new Set();
         loadContainers();
       });
@@ -1032,10 +1214,19 @@ function renderContainers(containers) {
     }
     _item('Commit to image\u2026', function() { _showCommitModal(c); });
     _item('Delete', function() {
-      var needsForce = c.state === 'running' || c.state === 'paused';
-      var q = needsForce ? '?force=true' : '';
+      var needsStop = c.state === 'running' || c.state === 'paused';
       if (!confirm('Delete "' + c.name + '"?')) return;
-      undoableDelete(API + '/containers/' + c.id + q, c.name, loadContainers);
+      // For running/paused containers, stop first so soft-delete (no
+      // force) can take the undoable path. Undo restores the container
+      // in its stopped state; user can start it back with one click.
+      var stopStep = needsStop
+        ? apiFetch(API + '/containers/' + c.id + '/stop', { method: 'POST' })
+        : Promise.resolve();
+      stopStep
+        .catch(function() { /* tolerate already-stopping races */ })
+        .then(function() {
+          undoableDelete(API + '/containers/' + c.id, c.name, loadContainers);
+        });
     }, 'danger');
     menu.style.left = Math.min(ev.clientX, window.innerWidth - 180) + 'px';
     menu.style.top = Math.min(ev.clientY, window.innerHeight - 200) + 'px';
@@ -1147,17 +1338,22 @@ function renderContainers(containers) {
     }
     bg.appendChild(makeActionBtn('Delete', function() {
       // Backend short-circuits the undo queue when `force=true` is set
-      // (see containers.py::delete_container). Only pass force for
-      // running/paused containers where Docker requires it; stopped
-      // containers take the normal undoable delete path with the toast.
-      var needsForce = c.state === 'running' || c.state === 'paused';
-      var prompt = needsForce
-        ? 'Container "' + c.name + '" is ' + c.state + '. Force-delete now? This cannot be undone.'
+      // (see containers.py::delete_container). Running/paused containers
+      // are stopped first so the subsequent soft-delete takes the
+      // undoable path; undo restores the container in stopped state.
+      var needsStop = c.state === 'running' || c.state === 'paused';
+      var prompt = needsStop
+        ? 'Container "' + c.name + '" is ' + c.state + '. Stop and delete? (Undo available for ~' + UNDO_WINDOW_SECS + 's.)'
         : 'Delete container "' + c.name + '"?';
       if (!confirm(prompt)) throw new Error('Cancelled');
       return guardedAction('del-c-' + c.id, function() {
-        var q = needsForce ? '?force=true' : '';
-        return undoableDelete(API + '/containers/' + c.id + q, c.name, loadContainers);
+        var stopStep = needsStop
+          ? apiFetch(API + '/containers/' + c.id + '/stop', { method: 'POST' })
+              .catch(function() { /* tolerate already-stopping races */ })
+          : Promise.resolve();
+        return stopStep.then(function() {
+          return undoableDelete(API + '/containers/' + c.id, c.name, loadContainers);
+        });
       });
     }, 'btn danger'));
     tdActions.appendChild(bg);
@@ -2068,31 +2264,62 @@ async function _renderFileBrowser(id, panel) {
         tdMode.style.cssText = 'font-family:monospace;font-size:11px;color:var(--muted)';
         tdMode.textContent = e.mode || '';
         var tdAct = document.createElement('td');
-        if (e.type === 'file' || e.type === 'link') {
-          var dlBtn = makeBtn('Download', (function(n) {
+        tdAct.style.cssText = 'display:flex;gap:4px';
+        if (e.type === 'file' || e.type === 'link' || e.type === 'dir') {
+          if (e.type !== 'dir') {
+            var dlBtn = makeBtn('Download', (function(n) {
+              return function() {
+                var fullPath = path.replace(/\/+$/, '') + '/' + n;
+                // apiFetch sends Authorization; we need raw fetch + download.
+                fetch(API + '/containers/' + id + '/files?path=' + encodeURIComponent(fullPath),
+                      { headers: { 'Authorization': 'Bearer ' + getToken(),
+                                   'X-Requested-With': 'ContainerManager' } })
+                  .then(function(r) {
+                    if (!r.ok) throw new Error('Download failed: ' + r.status);
+                    return r.blob();
+                  })
+                  .then(function(blob) {
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = n + '.tar';
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                    setTimeout(function() { URL.revokeObjectURL(url); }, 500);
+                    toast('Downloaded ' + n, 'success');
+                  })
+                  .catch(function(err) { toast(err.message, 'error'); });
+              };
+            })(e.name), 'btn small');
+            tdAct.appendChild(dlBtn);
+          }
+          // Delete (soft by default — server preserves the bytes for the
+          // undo window and rm-rfs on expiry). Directories also deletable,
+          // same cap applies. Uses the shared renderUndoToast so the UX
+          // matches prune / compose down / container delete.
+          tdAct.appendChild(makeActionBtn('Delete', (function(n, etype) {
             return function() {
               var fullPath = path.replace(/\/+$/, '') + '/' + n;
-              // apiFetch sends Authorization; we need raw fetch + download.
-              fetch(API + '/containers/' + id + '/files?path=' + encodeURIComponent(fullPath),
-                    { headers: { 'Authorization': 'Bearer ' + getToken(),
-                                 'X-Requested-With': 'ContainerManager' } })
-                .then(function(r) {
-                  if (!r.ok) throw new Error('Download failed: ' + r.status);
-                  return r.blob();
-                })
-                .then(function(blob) {
-                  var url = URL.createObjectURL(blob);
-                  var a = document.createElement('a');
-                  a.href = url;
-                  a.download = n + '.tar';
-                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                  setTimeout(function() { URL.revokeObjectURL(url); }, 500);
-                  toast('Downloaded ' + n, 'success');
-                })
-                .catch(function(err) { toast(err.message, 'error'); });
+              var label = etype === 'dir' ? 'directory' : 'file';
+              if (!confirm('Delete ' + label + ' "' + n + '"? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+                throw new Error('Cancelled');
+              return guardedAction('del-file-' + id + '-' + fullPath, function() {
+                return apiFetch(
+                  API + '/containers/' + id + '/files?path=' + encodeURIComponent(fullPath),
+                  { method: 'DELETE' },
+                ).then(function(r) {
+                  if (r && r.undo_token) {
+                    window.renderUndoToast(
+                      'Delete "' + n + '"', r.undo_token, r.expires_in,
+                      function() { _renderFileBrowser(id, panel); },
+                    );
+                    return;
+                  }
+                  toast('Deleted ' + n, 'info');
+                  _renderFileBrowser(id, panel);
+                });
+              });
             };
-          })(e.name), 'btn small');
-          tdAct.appendChild(dlBtn);
+          })(e.name, e.type), 'btn danger small'));
         }
         tr.append(tdIcon, tdName, tdSize, tdMode, tdAct);
         tbody.appendChild(tr);
@@ -2265,7 +2492,16 @@ function buildHubSearch(onSelect) {
         header.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;gap:8px';
         var nameSpan = document.createElement('span'); nameSpan.textContent = imageName + ' — pick a tag:';
         var count = document.createElement('span'); count.style.cssText = 'font-size:11px;font-weight:400;color:var(--muted)';
-        count.textContent = tags.length + (tags.length >= 100 ? '+ tags (scroll to see all)' : ' tags');
+        // Use the explicit `truncated` + `upstream_total` fields now that
+        // the server surfaces them; fall back to the length heuristic
+        // (`length >= 100`) if an older server's response is in play.
+        if (data.truncated && data.upstream_total) {
+          count.textContent = 'showing ' + tags.length + ' of ' + data.upstream_total + ' tags — type to filter beyond the recent window';
+        } else if (data.truncated) {
+          count.textContent = tags.length + '+ tags (type to filter for older tags)';
+        } else {
+          count.textContent = tags.length + ' tags';
+        }
         header.append(nameSpan, count);
         results.appendChild(header);
         if (!tags.length) {
@@ -2417,6 +2653,21 @@ function showRunModal(prefillImage, prefillSource) {
     box.appendChild(sub);
   }
 
+  // Sticky error banner — persistent replacement for the ephemeral toast.
+  // Volume/port/env format errors used to flash for 3s then vanish, leaving
+  // the user to reopen the modal with no idea what they'd entered wrong.
+  // Now the banner sits under the header until the next submit clears it.
+  var runErrorBanner = document.createElement('div');
+  runErrorBanner.className = 'field-error';
+  runErrorBanner.style.display = 'none';
+  runErrorBanner.setAttribute('role', 'alert');
+  runErrorBanner.setAttribute('aria-live', 'polite');
+  box.appendChild(runErrorBanner);
+  function _runError(msg) {
+    if (msg) { runErrorBanner.textContent = msg; runErrorBanner.style.display = 'block'; }
+    else     { runErrorBanner.textContent = ''; runErrorBanner.style.display = 'none'; }
+  }
+
   // Available images quick-pick
   var pickSection = document.createElement('div');
   pickSection.style.cssText = 'margin-bottom:16px';
@@ -2459,6 +2710,14 @@ function showRunModal(prefillImage, prefillSource) {
   var portsInp = addField('Ports (e.g. 8080:80)','run-ports','host-port:container-port');
   var envInp = addField('Environment variables (one per line)','run-env','KEY=VALUE','textarea');
   var volInp = addField('Volume mounts (one per line)','run-volumes','volume_name:/container/path','textarea');
+  // Inline hint — users kept submitting a bare volume name (e.g. "test_volume")
+  // and seeing a transient toast; the mount-point syntax wasn't obvious. This
+  // static hint sits directly under the field so it's visible while the user
+  // is still filling it in.
+  var volHint = document.createElement('p');
+  volHint.style.cssText = 'font-size:11px;color:var(--muted);margin:-6px 0 10px';
+  volHint.textContent = 'Format: NAME:/absolute/path — one per line. Example: test_volume:/data. The volume must already exist or will be created on first run.';
+  box.appendChild(volHint);
   var labelsInp = addField('Labels (one per line, key=value)','run-labels','app=myapp','textarea');
   var lbl3 = document.createElement('label'); lbl3.textContent = 'Restart policy'; box.appendChild(lbl3);
   var selRestart = document.createElement('select'); selRestart.id = 'run-restart';
@@ -2593,8 +2852,22 @@ function showRunModal(prefillImage, prefillSource) {
   var actions = document.createElement('div'); actions.className = 'actions';
   actions.append(makeBtn('Cancel', function() { modal.remove(); loadContainers(); }),
     makeActionBtn('Run', async function() {
+      _runError(null);
       var image = document.getElementById('run-image').value.trim();
-      if (!image) { toast('Image name is required', 'error'); throw new Error('no image'); }
+      if (!image) { _runError('Image name is required'); throw new Error('no image'); }
+      // Pre-flight volume format check — catches "test_volume" (no mount
+      // path) and similar so the user gets an explanation without a round
+      // trip to the server. Server still validates authoritatively.
+      var volRawPreflight = document.getElementById('run-volumes').value;
+      if (volRawPreflight) {
+        var lines = volRawPreflight.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].indexOf(':') < 0) {
+            _runError('Volume mount line ' + (i + 1) + ' is missing a mount path. Use NAME:/path (e.g. ' + lines[i] + ':/data).');
+            throw new Error('bad volume spec');
+          }
+        }
+      }
       var name = document.getElementById('run-name').value || null;
       var cmd = document.getElementById('run-cmd').value || null;
       var portsRaw = document.getElementById('run-ports').value;
@@ -2625,11 +2898,20 @@ function showRunModal(prefillImage, prefillSource) {
         body.inherit_from = prefillSource.id;
         if (replaceCb && replaceCb.checked) body.replace_id = prefillSource.id;
       }
-      var resp = await apiFetch(API+'/containers/run?'+params, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body),
-      });
+      var resp;
+      try {
+        resp = await apiFetch(API+'/containers/run?'+params, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        // Surface the server's envelope message in the sticky banner so
+        // the user can read it while scrolling the modal. Re-throw so
+        // the button re-enables and the user can fix + retry.
+        _runError((err && err.message) ? err.message : 'Run failed');
+        throw err;
+      }
       if (document.body.contains(modal)) modal.remove();
       var msg = prefillSource
         ? (resp && resp.replaced_old ? 'Cloned and replaced ' + prefillSource.name : 'Cloned from ' + prefillSource.name)

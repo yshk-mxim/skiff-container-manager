@@ -47,7 +47,10 @@ intent for SIEM rule authors.
 | `compose.up` | info | `project` | — | Compose stack deployed. |
 | `compose.up_failed` | warning | `project`, `stderr` | — | compose up returned non-zero; stderr truncated at 500 chars. |
 | `compose.upload` | info | `project`, `services` | — | Compose YAML accepted; stack about to deploy. |
+| `config.knob_updated` | info | `name`, `old`, `new` | — | Operator edited a LIVE-editable knob via the Settings page (PUT /api/config/knobs/<name>). Ephemeral — the change holds until the next process restart. Secret knobs render their old/new values as '[redacted]'. |
 | `container.committed` | info | `id`, `repository`, `tag` | — | Running container committed to a new local image. |
+| `container.cp_delete` | info | `id`, `path` | — | File or directory deleted from a container's filesystem via DELETE /api/containers/{id}/files. Fired when the rm actually runs — either inline (undo=false) or at the end of the undo window. Scope includes volume-backed paths (a delete under /data where a named volume is mounted removes the volume's content), so this event is the audit trail for volume-data mutations that don't touch the volume itself. |
+| `container.cp_delete_ok` | info | `id`, `path` | — | Container cp-delete (inline or post-undo-window) succeeded. |
 | `container.cp_get` | info | `id`, `path` | `size_bytes` | Container file / directory streamed out via `docker cp`-equivalent. |
 | `container.cp_get_truncated` | warning | `id`, `path`, `cap_mb` | — | `docker cp`-out truncated at the configured size cap; raise CONTAINER_CP_MAX_MB or tar a smaller path. |
 | `container.cp_put` | info | `id`, `path` | — | Tar archive uploaded into a container via POST /api/containers/{id}/files. |
@@ -115,6 +118,11 @@ intent for SIEM rule authors.
 | `undo.fired_on_shutdown` | info | `token_suffix`, `kind`, `id` | — | Server shutdown (SIGTERM, lifespan exit) flushed a pending undo op before the window would have elapsed naturally. Distinguishable from `undo.fired` so an incident reviewer can tell scheduled fires from shutdown-flush fires. |
 | `undo.queue_full` | warning | `depth`, `kind` | — | Undo queue at cap; new deletions run synchronously. |
 | `undo.shutdown_flush_timeout` | error | `remaining`, `timeout` | — | Lifespan shutdown hit SHUTDOWN_FLUSH_TIMEOUT while draining the undo queue. `remaining` ops stay in-memory and are lost when the process exits. |
+| `volume.browse_closed` | info | `volume` | — | Operator closed a file-browse session — DELETE /api/volumes/{name}/browse removed the helper that was created for the session. |
+| `volume.browse_helper_removed` | info | `volume`, `container_id` | — | Alpine browse-helper cleanly removed by DELETE /browse. |
+| `volume.browse_helper_spawned` | info | `volume`, `container_id`, `name` | — | Alpine helper created so an orphan volume can be browsed. |
+| `volume.browse_opened` | info | `volume` | — | Operator opened a file-browse session for a volume via POST /api/volumes/{name}/browse. Either surfaces an already-attached container or spawns a short-lived alpine helper with the volume mounted. |
+| `volume.browse_via_attached` | info | `volume`, `container_id`, `path` | — | Browse session reused an already-attached container instead of spawning a helper (no new container created). |
 | `volume.created` | info | `name` | — | Volume created. |
 | `volume.delete_queued` | info | `name`, `token_suffix` | — | Volume deletion queued under the undo window. |
 | `volume.deleted` | info | `name` | — | Volume deleted. |

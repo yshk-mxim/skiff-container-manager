@@ -359,6 +359,13 @@ class ImageInspectResponse(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     layers: int = 0
     history: list[_ImageHistoryEntry] = Field(default_factory=list)
+    # Total history depth from the engine, before the display cap is
+    # applied. Previously the inspect response silently returned only the
+    # top-20 layer records, so UIs rendered "Layers: 20" for any image
+    # with ≥20 build steps — including multi-stage Python/node images
+    # with 30+. Caller decides whether to render "showing 20 of 43".
+    history_total: int = 0
+    history_truncated: bool = False
 
     @classmethod
     def from_docker(
@@ -366,6 +373,7 @@ class ImageInspectResponse(BaseModel):
         img: Any,
         *,
         history: list[_ImageHistoryEntry],
+        history_total: int,
         redacted_config: dict[str, Any],
     ) -> ImageInspectResponse:
         """Build from a Docker SDK Image object.
@@ -388,6 +396,8 @@ class ImageInspectResponse(BaseModel):
             config=redacted_config,
             layers=len((attrs.get("RootFS") or {}).get("Layers") or []),
             history=history,
+            history_total=history_total,
+            history_truncated=history_total > len(history),
         )
 
 

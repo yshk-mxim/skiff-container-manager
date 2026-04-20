@@ -950,13 +950,15 @@ def test_network_connect_modal_shows_containers(page, live_server, docker_client
 
 @pytest.mark.e2e
 def test_keyboard_shortcut_navigation(page, live_server):
-    """Verify number keys 1-5 navigate to their respective sections."""
+    """Verify number keys 1-8 navigate in sidebar order: Dashboard,
+    Containers, Images, Templates, Volumes, Networks, Compose, System.
+    Matches the NUMBER_NAV map in skiff/static/core/palette.js."""
     sections = {
-        "1": "Containers",
-        "2": "Images",
-        "3": "Volumes",
-        "4": "Networks",
-        "5": "Compose",
+        "2": "Containers",
+        "3": "Images",
+        "5": "Volumes",
+        "6": "Networks",
+        "7": "Compose",
     }
     for key, heading in sections.items():
         page.keyboard.press(key)
@@ -966,8 +968,12 @@ def test_keyboard_shortcut_navigation(page, live_server):
 
 @pytest.mark.e2e
 def test_keyboard_shortcut_run_modal(page, live_server):
-    """'r' key opens the Run container modal."""
+    """'r' key opens the Run container modal when on the Containers
+    page. Palette guards the shortcut to avoid accidental fires on
+    other pages."""
     _nav_to(page, "containers")
+    # Give window.currentPage a tick to update after the navigation.
+    page.wait_for_timeout(200)
     page.keyboard.press("r")
     page.wait_for_selector(".modal", timeout=SHORT)
     assert page.locator(".modal").count() > 0
@@ -1545,12 +1551,29 @@ def test_container_files_diff_tab(page, live_server, docker_client):
 
     # Click the Files tab
     page.locator(".detail-tab:has-text('Files')").click()
+    # Files tab has Browse/Changes sub-views. Click Changes explicitly
+    # so we inspect the docker-diff output, not the live filesystem
+    # browser (which also renders a table).
+    # Button label is "Changes (docker diff)" — match on the Changes prefix.
+    changes_sub = page.locator("#detail-content button", has_text="Changes")
+    if changes_sub.count() > 0:
+        changes_sub.first.click()
+        page.wait_for_timeout(500)
 
-    # Wait for diff content to load
+    # Wait for diff content to load — either the table OR the empty-
+    # state message. Loading text must clear.
     page.wait_for_function(
         "() => {"
         "  var el = document.getElementById('detail-content');"
-        "  return el && !el.textContent.includes('Loading filesystem changes');"
+        "  if (!el) return false;"
+        "  var t = el.textContent || '';"
+        "  if (t.includes('Loading filesystem changes')) return false;"
+        "  // Diff view is ready when either a diff badge renders OR"
+        "  // the empty-state copy appears.\n"
+        "  var hasBadge = el.querySelector('.status');"
+        "  var hasEmpty = t.includes('No files have changed')"
+        "              || t.includes('No filesystem changes');"
+        "  return !!(hasBadge || hasEmpty);"
         "}",
         timeout=MEDIUM,
     )
@@ -1558,17 +1581,22 @@ def test_container_files_diff_tab(page, live_server, docker_client):
     content = page.locator("#detail-content")
     content_text = content.text_content()
 
-    # Either a table with diff rows or 'No filesystem changes'
-    has_table = content.locator("table tbody tr").count() > 0
-    has_empty = "No filesystem changes" in content_text
-    assert has_table or has_empty, f"Expected diff table or empty state, got: {content_text[:200]}"
+    # Browse + Changes panels both live in #detail-content with
+    # display:none toggling — so `content.locator('table')` would match
+    # the hidden Browse table too. Look for the diff-specific badge
+    # (`.status` class only populated by _renderDiff) OR the friendly
+    # empty-state copy ("No files have changed…" / legacy "No filesystem
+    # changes"). Both prove the Changes sub-view actually rendered.
+    has_badge = content.locator(".status").count() > 0
+    has_empty = "No filesystem changes" in content_text or "No files have changed" in content_text
+    assert has_badge or has_empty, f"Expected diff badge or empty-state copy, got: {content_text[:200]}"
 
-    if has_table:
-        # Each diff row should have a change kind badge (Added/Modified/Deleted)
-        # and a path column
-        first_row = content.locator("table tbody tr").first
-        row_text = first_row.text_content()
-        assert any(kw in row_text for kw in ("Added", "Modified", "Deleted"))
+    if has_badge:
+        # Any kind badge should be one of the three verbs.
+        first_badge_text = content.locator(".status").first.text_content()
+        assert first_badge_text in ("Added", "Modified", "Deleted"), (
+            f"diff badge had unexpected text: {first_badge_text!r}"
+        )
 
     if docker_client:
         for c in docker_client.containers.list(all=True):
@@ -2147,14 +2175,17 @@ def test_network_prune_unused(page, live_server, docker_client):
     page.on("dialog", lambda d: d.accept())
     page.locator("button:has-text('Prune unused')").click()
 
-    # Wait for the network to disappear from the list
-    page.wait_for_selector(f"text={net_name}", state="detached", timeout=MEDIUM)
-
-    # Toast should have appeared with prune result
-    # (The UI shows either "Pruned N networks" or "No unused custom networks")
+    # Network prune now defaults to the undo queue — the undo toast
+    # renders immediately after the POST. Assert it's visible NOW
+    # (before the window elapses and the toast auto-dismisses).
     page.wait_for_selector(".toast", timeout=SHORT)
-    toast_text = page.locator(".toast").first.text_content()
-    assert any(kw in toast_text.lower() for kw in ("prune", "network", "no unused"))
+    toast_text = page.locator(".toast").first.text_content() or ""
+    assert any(kw in toast_text.lower() for kw in ("prune", "network", "undo")), (
+        f"toast text missing prune/network/undo: {toast_text!r}"
+    )
+    # Wait for the server-side op to fire + the list to re-render.
+    # LONG covers the UNDO_DELAY_SECS + jitter buffer + refresh RTT.
+    page.wait_for_selector(f"text={net_name}", state="detached", timeout=LONG)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2488,8 +2519,12 @@ def test_compose_page_empty_state(page, live_server):
     # The project name input should be visible
     assert page.locator("#compose-project").count() > 0
 
-    # Running Stacks section should NOT be present
-    assert page.locator("h3:has-text('Running Stacks')").count() == 0
+    # Running Stacks header IS present with (0) count so the page offers
+    # a consistent search-bar placement across every list page (see
+    # tests/journeys/test_ui_ux.py::test_journey_every_list_page_has_search).
+    heading = page.locator("h3:has-text('Running Stacks')")
+    assert heading.count() == 1
+    assert "(0)" in (heading.text_content() or "")
 
     page.unroute("**/api/compose/stacks")
 
@@ -3029,10 +3064,12 @@ def test_container_stats_tab_all_fields(page, live_server, docker_client):
 
 
 @pytest.mark.e2e
-def test_keyboard_shortcut_6_navigates_system(page, live_server):
-    """'6' key should navigate to the System page."""
+def test_keyboard_shortcut_8_navigates_system(page, live_server):
+    """'8' key should navigate to the System page. Map ordered by
+    sidebar position: 1=dashboard, 2=containers, 3=images,
+    4=templates, 5=volumes, 6=networks, 7=compose, 8=system."""
     _nav_to(page, "containers")
-    page.keyboard.press("6")
+    page.keyboard.press("8")
     page.wait_for_selector("h2:has-text('System')", timeout=SHORT)
     assert page.locator("h2:has-text('System')").count() > 0
 

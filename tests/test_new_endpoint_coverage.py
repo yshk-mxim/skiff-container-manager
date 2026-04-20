@@ -177,7 +177,7 @@ def test_image_prune_returns_reclaimed_space():
         "ImagesDeleted": [{"Deleted": "sha256:abc"}] * 3,
         "SpaceReclaimed": 5 * 1024 * 1024,  # 5 MB
     }
-    r = _invoke(mc, "POST", "/api/images/prune")
+    r = _invoke(mc, "POST", "/api/images/prune?undo=false")
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body["deleted_count"] == 3
@@ -185,10 +185,13 @@ def test_image_prune_returns_reclaimed_space():
 
 
 def test_image_prune_envelope_on_api_error():
-    """Docker's APIError → catalogued `image.prune_failed`."""
+    """Docker's APIError → catalogued `image.prune_failed`.
+    Exercise the immediate-fire path (undo=false) so the validator
+    actually runs during this unit test; the undo-queued path defers
+    the SDK call to a timer which wouldn't fire in the test harness."""
     mc = _mock_client()
     mc.images.prune.side_effect = docker.errors.APIError("prune explosion")
-    r = _invoke(mc, "POST", "/api/images/prune")
+    r = _invoke(mc, "POST", "/api/images/prune?undo=false")
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "image.prune_failed"
 

@@ -7,8 +7,9 @@ carries the narrative and threat-model context.
 
 | Method | Path | Audit event | Rate tier | CSRF | Handler | Description |
 |---|---|---|---|---|---|---|
-| POST | `/api/compose/down` | `compose.down` | 5/minute | ✓ | `compose_down` | Tear down a running Compose stack. |
+| POST | `/api/compose/down` | `compose.down` | 5/minute | ✓ | `compose_down` | Tear down a running Compose stack. Destructive — removes every |
 | GET | `/api/compose/stacks` | — | 60/minute | — | `list_compose_stacks` | List running compose stacks by inspecting container labels. |
+| GET | `/api/compose/templates` | — | 60/minute | — | `list_compose_templates` | Return the curated docker-compose stack catalogue. |
 | POST | `/api/compose/up` | `compose.up` | 5/minute | ✓ | `compose_up` | Deploy a Compose stack (upload a new file or redeploy an existing one). |
 | GET | `/api/compose/{project_name}/download` | — | 60/minute | — | `compose_download_yaml` | Serve the stored `docker-compose.yml` for a deployed project. |
 | GET | `/api/compose/{project_name}/logs` | — | 60/minute | — | `compose_project_logs` | Aggregated logs for a compose project, optionally filtered to one service. |

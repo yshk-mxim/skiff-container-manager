@@ -252,7 +252,7 @@ def test_journey_volume_prune_returns_reclaimed(audited_page, live_server, audit
 
     with step("step_1_prune_volumes"):
         r = requests.post(
-            f"{live_server.rstrip('/')}/api/volumes/prune",
+            f"{live_server.rstrip('/')}/api/volumes/prune?undo=false",
             headers=auth_headers(),
             timeout=60,
         )
@@ -510,7 +510,7 @@ def test_journey_prune_safety_only_hits_unused(audited_page, live_server, audit_
     try:
         with step("step_1_prune"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/volumes/prune",
+                f"{live_server.rstrip('/')}/api/volumes/prune?undo=false",
                 headers=auth_headers(),
                 timeout=60,
             )

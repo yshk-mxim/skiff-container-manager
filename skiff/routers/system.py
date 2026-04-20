@@ -13,12 +13,16 @@ module.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
+from dataclasses import replace
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from skiff import config, docker_client
 from skiff.auth import AUTH  # decorator arg — direct import for readability
@@ -26,6 +30,11 @@ from skiff.contract.errors import http_error
 from skiff.rate import RATE
 from skiff.secure import secure_route
 from skiff.validators import safe_docker_call
+
+# Used by the config-knob PUT handler that lives above the rest of the
+# module's structlog logger definition (line ~900). Same instance, hoisted
+# so early routes can audit-log without forward references.
+log = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -38,10 +47,13 @@ _LOOPBACK_BINDS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 def _resolve_knob(knob_name: str, spec) -> Any:
     """Return the current value of an exposed knob.
 
-    Three sources, in priority order:
-      1. live _cfg.<attr> for mutable knobs (setup-wizard edits visible)
-      2. validator(env_value) when env is set and the knob has a validator
-      3. spec.default otherwise
+    Four sources, in priority order:
+      1. live _cfg.<attr> for wizard-managed knobs (api_token / docker_host)
+      2. config.<NAME> module attribute — catches runtime edits through
+         PUT /api/config/knobs/<name> that write to the module, so the
+         viewer reflects the new value immediately.
+      3. validator(env_value) when env is set and the knob has a validator
+      4. spec.default otherwise
 
     Validator errors fall back to the default so a bad env entry can't
     500 /api/config.
@@ -49,6 +61,11 @@ def _resolve_knob(knob_name: str, spec) -> Any:
     attr = knob_name.lower()
     if hasattr(config._cfg, attr):
         return getattr(config._cfg, attr)
+    # Uppercase module attribute is the canonical live value. Both the
+    # import-time assignment AND runtime PUT edits go here, so this is
+    # the most accurate read for almost every knob.
+    if hasattr(config, knob_name):
+        return getattr(config, knob_name)
     raw = os.environ.get(knob_name, spec.default)
     if raw is None or spec.validator is None:
         return raw
@@ -56,6 +73,191 @@ def _resolve_knob(knob_name: str, spec) -> Any:
         return spec.validator(raw)
     except (ValueError, TypeError):
         return spec.default
+
+
+# Knob grouping for the GUI viewer mirrors the section headers in
+# `skiff/config.py` itself (`# ── Docker client ──`, `# ── WebSocket ──`,
+# etc.) — see config.knob_section(). That's the single place to look
+# when adding a knob, so the viewer follows suit automatically.
+
+# Hide-from-GUI list. A knob can stay `expose=True` for CLI/SIEM scrapers
+# while still being stripped from the Settings viewer when its presence
+# would clutter the operator experience (e.g. a knob that's only
+# interesting during a specific troubleshooting workflow). Empty today
+# — the seam lets a future audit close a visibility concern without
+# touching config_knob() call sites.
+_KNOBS_HIDDEN_FROM_GUI: frozenset[str] = frozenset()
+
+
+# Three-state editability taxonomy for the Settings viewer.
+#
+# Every exposed knob MUST land in exactly one set. A knob missing from
+# all three renders as "LIFECYCLE" by default (restart required) — the
+# safe, conservative choice — but tests enforce the explicit assignment
+# so an addition is deliberate.
+#
+# LIVE        — the server reads the knob on every use (middleware,
+#               per-request validator, per-new-WS-session). A PUT via
+#               /api/config/knobs/<name> updates it immediately and
+#               subsequent requests see the new value. Existing long-
+#               lived state (already-open WS sessions, etc.) keeps the
+#               old value — acceptable, documented in the tooltip.
+#
+# SECURITY    — changing at runtime would weaken a security control
+#               (origin allowlist, rate-limit scale that was registered
+#               at import, debug endpoint flag). GUI never edits these;
+#               the operator must set the env var / TOML and restart.
+#               This is POLICY — not a technical limitation.
+#
+# LIFECYCLE   — the server reads the knob ONCE at import (SDK client
+#               construction, uvicorn bind, logging handler open). A
+#               runtime edit would update the registry but have no
+#               operational effect until restart. Rather than lie, the
+#               viewer tells the operator exactly why.
+_LIVE_EDITABLE: frozenset[str] = frozenset(
+    {
+        # Re-read per-request by middleware, validators, or query-param
+        # checkers — editing updates the live behaviour immediately.
+        "MAX_BODY_BYTES",
+        "MAX_COMPOSE_SIZE",
+        "MAX_LOG_TAIL",
+        "MAX_AUDIT_LINES",
+        "MAX_CONTAINERS",
+        "MAX_PORT_MAPPINGS",
+        "CONTAINER_CP_MAX_MB",
+        "CONTAINER_LS_MAX_ENTRIES",
+        "BODY_READ_TIMEOUT_SECS",
+        # Session timeouts — /api/config serves the live value; the UI
+        # picks it up on its next config poll.
+        "SESSION_IDLE_SECS",
+        "SESSION_ABS_TIMEOUT",
+        # Undo queue — enqueue reads config.UNDO_DELAY_SECS per call.
+        "UNDO_DELAY_SECS",
+        "UNDO_QUEUE_MAX_DEPTH",
+        # Compose + per-call budgets read per call.
+        "COMPOSE_UP_TIMEOUT",
+        "COMPOSE_DOWN_TIMEOUT",
+        "COMPOSE_MAX_REPLICAS",
+        "SHUTDOWN_FLUSH_TIMEOUT",
+        "DF_TIMEOUT",
+        # WebSocket — new sessions pick up new value; existing keep old.
+        "WS_LOG_TAIL",
+        "WS_KEEPALIVE_INTERVAL",
+        "WS_LOG_IDLE_TIMEOUT",
+        "WS_EXEC_IDLE_TIMEOUT",
+        "WS_EXEC_RECV_TIMEOUT",
+        "WS_TOKEN_TIMEOUT",
+        "WS_MAX_PER_IP",
+        "WS_AUTH_MAX_ATTEMPTS",
+        "WS_AUTH_LOCKOUT_SECS",
+        "WS_KEEPALIVE_REVALIDATE_EVERY",
+        # Container op budgets — read per-call.
+        "CONTAINER_STOP_TIMEOUT",
+        "CONTAINER_RESTART_TIMEOUT",
+        "CONTAINER_STATS_TIMEOUT",
+        "IMAGE_PULL_TIMEOUT",
+        # Audit log line cap is re-read; rotation size/backup count are
+        # lifecycle (file handler constructed at import).
+        # Docker Hub proxy timeouts — per-call.
+        "REGISTRY_TIMEOUT",
+        "REGISTRY_MAX_TAGS",
+        "REGISTRY_DESC_MAX",
+        "REGISTRY_SEARCH_PAGE_SIZE",
+        # Setup wizard window — read on wizard probes.
+        "SETUP_WINDOW_SECS",
+        "SETUP_MAX_ATTEMPTS",
+        "SETUP_LOCKOUT_SECS",
+        # Docker probe + health.
+        "PROBE_DOCKER_TIMEOUT",
+        # Browser polling intervals — the JS re-reads these from /api/config
+        # on every session refresh, so a runtime edit takes effect on the
+        # next config poll (within a second for an active session).
+        "CONTAINERS_POLL_MS",
+        "DASHBOARD_POLL_MS",
+        "EVENTS_POLL_MS",
+        "FETCH_TIMEOUT_MS",
+    }
+)
+
+_SECURITY_READONLY: frozenset[str] = frozenset(
+    {
+        # Origin / network exposure — runtime change would silently widen
+        # attack surface or let an insider evade audits.
+        "ALLOWED_ORIGINS",
+        "ALLOWED_REGISTRIES",
+        "TRUST_FORWARDED_HEADERS",
+        "BIND_HOST",
+        # DOCKER_HOST has a dedicated runtime mutation path through the
+        # setup wizard (/api/setup). Editing via the generic knob endpoint
+        # would bypass wizard validation (tunnel probe, SSH config).
+        "DOCKER_HOST",
+        "DOCKER_VM_HOST",
+        # Debug endpoint flag — policy toggle.
+        "SKIFF_DEBUG_THREADS",
+        # Rate-limit scale — slowapi buckets register at import time, so a
+        # runtime edit would update the display without actually re-bucketing.
+        # Keeping it policy-locked avoids misleading the operator.
+        "RATE_LIMIT_SCALE",
+        # Profile switch has a dedicated one-way endpoint.
+        "PROFILE",
+    }
+)
+
+_LIFECYCLE_READONLY: frozenset[str] = frozenset(
+    {
+        # Audit logging handler constructed at import; runtime edit would
+        # update the registry but leave the file rotator on old values.
+        "AUDIT_LOG",
+        "AUDIT_MAX_MB",
+        "AUDIT_BACKUP_COUNT",
+        # Filesystem paths resolved at import.
+        "COMPOSE_DIR",
+        "TUNNEL_DEFAULT_SOCKET",
+        # Docker SDK client constructed at import with these params.
+        "DOCKER_CLIENT_TIMEOUT",
+        "DOCKER_POOL_SIZE",
+        "DOCKER_PING_TTL",
+        "DOCKER_BACKOFF",
+        # TCP keepalive set at socket open.
+        "TCP_KEEPALIVE_IDLE",
+        "TCP_KEEPALIVE_INTERVAL",
+        "TCP_KEEPALIVE_COUNT",
+        # SSH tunnel params set at connection open.
+        "TUNNEL_CONNECT_TIMEOUT",
+        "TUNNEL_SOCKET_WAIT",
+        "TUNNEL_SOCKET_POLL",
+        "TUNNEL_SERVER_ALIVE_INTERVAL",
+        "TUNNEL_SERVER_ALIVE_COUNT",
+        "TUNNEL_STOP_TIMEOUT",
+        # Uvicorn wiring — read by the boot script.
+        "PORT",
+        "UVICORN_WORKERS",
+        "UVICORN_LOG_LEVEL",
+    }
+)
+
+
+def _knob_edit_classification(name: str) -> tuple[str, str]:
+    """Return `(status, reason)` for the GUI viewer.
+
+    `status` is one of "live" / "security" / "lifecycle". `reason` is a
+    one-line tooltip explaining why a non-live knob can't be edited
+    here. Every exposed knob lands in exactly one of the three sets;
+    tests/test_config_precedence.py::test_every_exposed_knob_has_edit_classification
+    enforces the invariant.
+    """
+    if name in _LIVE_EDITABLE:
+        return ("live", "Read on every use — edits apply immediately.")
+    if name in _SECURITY_READONLY:
+        return ("security", "Policy-locked — changes must go through an env/TOML edit + restart.")
+    if name in _LIFECYCLE_READONLY:
+        return (
+            "lifecycle",
+            "Read once at process start — changing here would not take effect until restart.",
+        )
+    # Unclassified: default to lifecycle (the conservative choice) and
+    # let the test enforcing classification catch the omission.
+    return ("lifecycle", "Unclassified — defaulting to restart-required.")
 
 
 def _is_insecure_mode(bind: str) -> bool:
@@ -118,6 +320,182 @@ def get_config(request: Request):
         "insecure_mode": _is_insecure_mode(bind),
         "ws_auth_locked_remaining_secs": ws_lockout,
     }
+
+
+@router.get("/api/config/knobs", dependencies=AUTH, tags=["auth"])
+@secure_route.read(RATE.READ)
+def get_config_knobs(request: Request):
+    """Return every exposed knob with metadata, for the GUI config viewer.
+
+    Shape per entry:
+      name        : "SESSION_IDLE_SECS"  (env-var / registry name)
+      value       : live value, JSON-safe. `null` when `secret=True`.
+      default     : fleet default (from TOML or inline). String or null.
+      source      : "env" | "toml" | "default" | "unset" — where the
+                    current value came from. Lets the operator tell at a
+                    glance whether an override is in effect.
+      doc         : human-readable description (same string that gen-
+                    erates docs/config-knobs.md).
+      category    : grouping label for the UI (Docker client, Session, …).
+      secret      : true when the knob is marked secret (never show the
+                    value).
+      editable    : true when this knob is safely editable at runtime via
+                    a future /api/config/knobs/<name> PUT. Empty today;
+                    the viewer still shows the restart-required note.
+      hidden      : true when the GUI should hide this knob from the
+                    viewer even though it's exposed via /api/config (for
+                    the minority of operator-only values).
+
+    Non-exposed knobs (no `expose=True`) are NEVER returned by this
+    endpoint — they are intentionally not part of the GUI surface. The
+    ordered list is stable: sorted by category, then by name.
+    """
+    seen_categories: dict[str, list[dict]] = {}
+    for knob_name, spec in config.knobs().items():
+        if not spec.expose:
+            continue
+        cat = config.knob_section(knob_name)
+        # Secrets never leave the server with a value. The browser has
+        # a second-line defence (settings.js renders "(redacted)" even
+        # if a future bug populates `value` for a secret), but the
+        # authoritative protection is right here.
+        value = None if spec.secret else _resolve_knob(knob_name, spec)
+        status, reason = _knob_edit_classification(knob_name)
+        # An env-sourced value is never editable via the generic PUT —
+        # precedence rule: env always wins. Fold that into `edit_status`
+        # so the UI renders "LIFECYCLE" (with an env-specific reason)
+        # rather than offering a control that would 409 on submit.
+        if spec.source == "env" and status == "live":
+            status = "lifecycle"
+            reason = (
+                "Overridden by an environment variable. Env-var values are "
+                "immutable at runtime — unset / change the env and restart."
+            )
+        entry = {
+            "name": knob_name,
+            "value": value,
+            "default": spec.default,
+            "source": spec.source,
+            "doc": spec.doc,
+            "category": cat,
+            "secret": spec.secret,
+            "edit_status": status,
+            "edit_reason": reason,
+            "hidden": knob_name in _KNOBS_HIDDEN_FROM_GUI,
+        }
+        seen_categories.setdefault(cat, []).append(entry)
+    grouped = [
+        {
+            "category": cat,
+            "knobs": sorted(seen_categories[cat], key=lambda k: k["name"]),
+        }
+        for cat in sorted(seen_categories)
+    ]
+    return {
+        "groups": grouped,
+        "counts": {
+            "live": sum(1 for k in config.knobs() if k in _LIVE_EDITABLE),
+            "security": sum(1 for k in config.knobs() if k in _SECURITY_READONLY),
+            "lifecycle": sum(1 for k in config.knobs() if k in _LIFECYCLE_READONLY),
+        },
+    }
+
+
+# ── Runtime knob edit (LIVE-editable subset only) ────────────────
+#
+# The viewer flags a small whitelist of knobs as runtime-editable — those
+# whose value the server re-reads on every use, so a PUT here takes
+# effect immediately for subsequent requests. Everything else either
+# needs a restart (lifecycle) or is policy-locked (security) and rejects
+# with a catalogued envelope.
+#
+# Security posture:
+#  - Strict auth (same gate as audit log download).
+#  - Env-sourced values refuse (env-wins precedence — consistency with
+#    /api/setup's env_managed lock).
+#  - Secrets refuse (defense-in-depth; secrets never carry expose=True
+#    so they shouldn't reach this code path anyway).
+#  - Every successful change is audit-logged with before/after values
+#    under the `config.knob_updated` event.
+#  - Value is validated through the knob's declared validator — an
+#    invalid value returns the envelope the validator raises without
+#    mutating any state.
+
+
+class _KnobUpdateBody(BaseModel):
+    """PUT body — `value` is the new value as a STRING. Server parses it
+    through the knob's declared validator so every knob gets the same
+    input handling as its env var would have at boot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=0, max_length=2048)
+
+
+@router.put("/api/config/knobs/{knob_name}", dependencies=AUTH, tags=["auth"])
+@secure_route.mutate(RATE.WRITE, audit="config.knob_updated")
+def update_config_knob(
+    request: Request,
+    knob_name: str,
+    body: _KnobUpdateBody,
+):
+    """Update a LIVE-editable knob in-memory for this process.
+
+    Rejects with a specific envelope when the knob is unknown, secret,
+    env-sourced, policy-locked, or lifecycle-only. Validator errors are
+    surfaced unchanged so the user sees WHY their value was rejected.
+
+    Persistence: ephemeral. The change survives until the next process
+    restart, matching the setup-wizard layer. Operators who need the
+    change across restarts edit the env var or defaults.toml.
+    """
+    # Same identifier grammar as env-var names — reject anything else up
+    # front so a malformed URL can't slip through the registry lookup.
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", knob_name):
+        raise http_error("validation.bad_input", message=f"invalid knob name: {knob_name!r}")
+    spec = config.knobs().get(knob_name)
+    if spec is None or not spec.expose:
+        raise http_error("config.knob_not_found", name=knob_name)
+    if spec.secret:
+        raise http_error("config.knob_secret_locked", name=knob_name)
+    if spec.source == "env":
+        raise http_error("config.knob_env_sourced", name=knob_name)
+    if knob_name in _SECURITY_READONLY:
+        raise http_error("config.knob_security_locked", name=knob_name)
+    if knob_name not in _LIVE_EDITABLE:
+        raise http_error("config.knob_lifecycle_locked", name=knob_name)
+    # Validate through the knob's declared validator. If the knob was
+    # registered without one, write the raw string.
+    raw = body.value
+    if spec.validator is not None:
+        try:
+            new_value = spec.validator(raw)
+        except (ValueError, TypeError) as exc:
+            raise http_error(
+                "validation.bad_input",
+                message=f"invalid value for {knob_name}: {exc}",
+            ) from exc
+    else:
+        new_value = raw
+    # Capture the old value for the audit trail BEFORE mutating, so a
+    # reviewer can reconstruct the change. Never audit a secret's value;
+    # `spec.secret=False` here (rejected above), so it's fine.
+    old_value = getattr(config, knob_name, None)
+    # Mutate both the module attribute (what routes read via
+    # `config.SESSION_IDLE_SECS`) AND the registry source-tracking so
+    # subsequent /api/config responses reflect the change.
+    setattr(config, knob_name, new_value)
+    config._KNOBS[knob_name] = replace(spec, source="runtime")
+    log.info(
+        "config.knob_updated",
+        name=knob_name,
+        old=old_value if not spec.secret else "[redacted]",
+        new=new_value if not spec.secret else "[redacted]",
+    )
+    return {"name": knob_name, "value": new_value, "source": "runtime"}
+
+
+# ── Runtime profile switch ────────────────────────────────
 
 
 # ── Runtime profile switch ────────────────────────────────
@@ -536,10 +914,8 @@ async def system_disk_usage(request: Request, client=Depends(docker_client.docke
 
 
 # ── Prune ──────────────────────────────────────────────────
-
-import structlog  # noqa: E402 — log is only used by the prune handlers below
-
-log = structlog.get_logger(__name__)
+# `log` is initialised at module top for use by the config-knob PUT handler
+# above; same instance re-used here.
 
 
 @router.get("/api/system/overview", dependencies=AUTH, tags=["system"])
@@ -667,10 +1043,12 @@ def system_events(
     return {"since_secs": since_secs, "count": len(events), "events": events}
 
 
-@router.post("/api/system/prune", dependencies=AUTH, tags=["system"])
-@secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed counts)
-def system_prune(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
-    """Remove all stopped containers, dangling images, and unused networks."""
+def _do_system_prune(client) -> dict:
+    """Run the three Docker prune calls + return counts + reclaimed bytes.
+
+    Pulled out so both the immediate-fire path and the undo-queued path
+    run the exact same sequence.
+    """
     containers = safe_docker_call(client.containers.prune)
     images = safe_docker_call(client.images.prune)
     networks = safe_docker_call(client.networks.prune)
@@ -691,14 +1069,78 @@ def system_prune(request: Request, client=Depends(docker_client.docker_client_de
     }
 
 
-@router.post("/api/system/prune-build-cache", dependencies=AUTH, tags=["system"])
-@secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed size)
-def prune_build_cache(request: Request, client=Depends(docker_client.docker_client_dep)) -> dict:
-    """Clear Docker build cache and return the amount of space reclaimed."""
+@router.post("/api/system/prune", dependencies=AUTH, tags=["system"])
+@secure_route.mutate(RATE.BURST)  # audit emitted inline (needs computed counts)
+def system_prune(
+    request: Request,
+    undo: bool = True,
+    client=Depends(docker_client.docker_client_dep),
+):
+    """Remove all stopped containers, dangling images, and unused networks.
+
+    With `undo=true` (default) the three prune calls are queued for
+    `UNDO_DELAY_SECS` seconds; the response carries an `undo_token` the
+    caller can POST to cancel. Parallels every other destructive op in
+    the app — a mistaken click on "Prune system" is no longer instantly
+    irreversible. Scripts that want immediate execution can pass
+    `undo=false` to preserve the legacy shape.
+    """
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "system",
+            "prune",
+            _do_system_prune,
+            client,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+        # Queue full — fall back to synchronous so the user's click still works.
+    return _do_system_prune(client)
+
+
+def _do_prune_build_cache(client) -> dict:
     result = safe_docker_call(client.api.prune_builds)
     space = result.get("SpaceReclaimed", 0)
     log.info("build_cache.pruned", space_mb=round(space / 1024 / 1024, 1))
     return {"space_reclaimed_mb": round(space / 1024 / 1024, 1)}
+
+
+@router.post("/api/system/prune-build-cache", dependencies=AUTH, tags=["system"])
+@secure_route.mutate(RATE.BURST)
+def prune_build_cache(
+    request: Request,
+    undo: bool = True,
+    client=Depends(docker_client.docker_client_dep),
+):
+    """Clear the Docker build cache. Default queues the op so a misclick
+    is reversible within the undo window; `undo=false` fires now. Cache
+    rebuilds automatically so the data-loss risk is low — but an ongoing
+    build could still hit the "cache miss" wall unnecessarily. Safer by
+    default, consistent with every other prune."""
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "system",
+            "prune:build_cache",
+            _do_prune_build_cache,
+            client,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    return _do_prune_build_cache(client)
 
 
 # ── Frontend (SPA + MIT license) ──────────────────────────

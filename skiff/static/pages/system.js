@@ -208,6 +208,7 @@ async function _renderConnectPanel(main) {
 
 var _makeCopyableBlock = UI.copyBlock;
 
+
 // ── System ──
 async function loadSystem() {
   var main = document.getElementById('main');
@@ -220,7 +221,17 @@ async function loadSystem() {
     var header = document.createElement('div'); header.className = 'page-header';
     var h2 = document.createElement('h2'); h2.textContent = 'System';
     var ha = document.createElement('div'); ha.className = 'header-actions';
-    ha.appendChild(makeActionBtn('Prune system', function() { if(!confirm('Remove stopped containers, dangling images, and unused networks?'))throw new Error('Cancelled'); return guardedAction('prune-system', function() { return apiFetch(API+'/system/prune',{method:'POST'}).then(function(r){ var parts = []; if(r.containers_deleted) parts.push(r.containers_deleted+' container'+(r.containers_deleted===1?'':'s')); if(r.images_deleted) parts.push(r.images_deleted+' image'+(r.images_deleted===1?'':'s')); if(r.networks_deleted) parts.push(r.networks_deleted+' network'+(r.networks_deleted===1?'':'s')); var msg = parts.length ? 'Pruned '+parts.join(', ') : 'Nothing to prune'; if(r.space_reclaimed_mb > 0) msg += '. Reclaimed '+r.space_reclaimed_mb+' MB'; toast(msg, parts.length ? 'success' : 'info'); loadSystem();}); }); }, 'btn danger', 'Pruning\u2026'));
+    ha.appendChild(makeActionBtn('Prune system', function() {
+      if (!confirm('Remove stopped containers, dangling images, and unused networks?\n(Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+        throw new Error('Cancelled');
+      // Server defaults to undo=true — returns {undo_token, expires_in}.
+      // Re-use the same undo-toast pattern as destructive deletes so the
+      // user has a window to cancel. Refreshes system info after the
+      // window expires (prune actually fires at that point).
+      return guardedAction('prune-system', function() {
+        return undoableSystemPrune();
+      });
+    }, 'btn danger', 'Pruning\u2026'));
     header.append(h2, ha); main.appendChild(header);
 
     var grid = document.createElement('div'); grid.className = 'info-grid';
@@ -245,7 +256,20 @@ async function loadSystem() {
       card.append(l, v);
       if (item[2]) { var sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = item[2]; card.appendChild(sub); }
       if (item[3] === 'build_cache' && df.build_cache_reclaimable_mb > 0) {
-        card.appendChild(makeActionBtn('Prune', function() { if(!confirm('Prune build cache?'))throw new Error('Cancelled'); return guardedAction('prune-build-cache', function() { return apiFetch(API+'/system/prune-build-cache',{method:'POST'}).then(function(r){toast('Reclaimed '+r.space_reclaimed_mb+' MB','success');loadSystem();}); }); }, 'btn danger small', 'Pruning\u2026'));
+        card.appendChild(makeActionBtn('Prune', function() {
+          if (!confirm('Prune build cache? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+            throw new Error('Cancelled');
+          return guardedAction('prune-build-cache', function() {
+            return apiFetch(API + '/system/prune-build-cache', { method: 'POST' }).then(function(r) {
+              if (r && r.undo_token) {
+                window.renderUndoToast('Build cache prune', r.undo_token, r.expires_in, loadSystem);
+                return;
+              }
+              toast('Reclaimed ' + r.space_reclaimed_mb + ' MB', 'success');
+              loadSystem();
+            });
+          });
+        }, 'btn danger small', 'Pruning\u2026'));
       }
       dfGrid.appendChild(card);
     });
@@ -305,7 +329,7 @@ async function loadSystem() {
       }).catch(function() { /* keep last-good */ });
     }
     _refreshEvents();
-    managedInterval(_refreshEvents, 5000);
+    managedInterval(_refreshEvents, EVENTS_POLL_MS);
 
     // Audit log
     var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; auditH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px'; main.appendChild(auditH);
@@ -315,6 +339,7 @@ async function loadSystem() {
     // Showing only 200 with no affordance to see more was silent truncation.
     var tailSelect = document.createElement('select');
     tailSelect.setAttribute('data-testid', 'audit-tail-select');
+    tailSelect.setAttribute('aria-label', 'Audit log tail size');
     tailSelect.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:13px';
     [200, 500, 1000, 2000].forEach(function(n) {
       var opt = document.createElement('option'); opt.value = String(n); opt.textContent = 'Last ' + n;
@@ -432,71 +457,7 @@ function _paintAuditRow(row, tbody) {
       tbody.appendChild(tr);
 }
 
-// ── Keyboard shortcuts ──
-document.addEventListener('keydown', function(e) {
-  // Don't fire when typing in an input/textarea/select or inside a modal
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-  if (!getToken()) return;
-
-  // Esc — close any open modal
-  if (e.key === 'Escape') {
-    var modal = document.querySelector('.modal-overlay');
-    if (modal) { modal.remove(); return; }
-  }
-
-  // Don't fire if a modal is open (other keys)
-  if (document.querySelector('.modal-overlay')) return;
-
-  var key = e.key;
-  // 1-6 — sidebar navigation
-  var navMap = {'1':'containers','2':'images','3':'volumes','4':'networks','5':'compose','6':'system'};
-  if (navMap[key]) { showPage(navMap[key]); return; }
-
-  // r — Run new container
-  if (key === 'r' && currentPage === 'containers') { showRunModal(); return; }
-
-  // / — focus search bar
-  if (key === '/') {
-    e.preventDefault();
-    var searchInput = document.querySelector('#container-search, #image-search, input[placeholder*="Search"]');
-    if (searchInput) searchInput.focus();
-    return;
-  }
-
-  // ? — show shortcut help. Built via UI.el (no innerHTML, no inline
-  // onclick) so the strict CSP `script-src 'self'` actually lets the
-  // Close button work.
-  if (key === '?') {
-    var SHORTCUTS = [
-      ['1–6',  'Navigate sections'],
-      ['r',    'Run new container'],
-      ['/',    'Focus search'],
-      ['Esc',  'Close modal'],
-      ['?',    'Show this help'],
-    ];
-    var kbdStyle = 'background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px';
-    var rows = SHORTCUTS.map(function(row) {
-      return UI.el('tr', null,
-        UI.el('td', { style: 'padding:5px 0' }, UI.el('kbd', { style: kbdStyle, text: row[0] })),
-        UI.el('td', { style: 'padding:5px 0 5px 12px', text: row[1] }),
-      );
-    });
-    var closeBtn = UI.el('button', { class: 'btn', style: 'margin-top:20px;width:100%', text: 'Close' });
-    var box = UI.el('div', {
-      style: 'background:var(--card);border-radius:12px;padding:28px 32px;min-width:320px;max-width:480px',
-    },
-      UI.el('h3', { style: 'margin-bottom:16px;font-size:16px', text: 'Keyboard shortcuts' }),
-      UI.el('table', { style: 'width:100%;border-collapse:collapse;font-size:13px' }, rows),
-      closeBtn,
-    );
-    var overlay = UI.el('div', {
-      class: 'modal-overlay',
-      style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000',
-    }, box);
-    function dismiss() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-    overlay.addEventListener('click', function(ev) { if (ev.target === overlay) dismiss(); });
-    closeBtn.addEventListener('click', dismiss);
-    document.body.appendChild(overlay);
-    return;
-  }
-});
+// Keyboard shortcuts are owned by `core/palette.js` — one handler, one
+// help modal. Do NOT add a second keydown listener here; an earlier
+// version did, which produced two help modals when the user pressed
+// `?` and two different 1-N nav maps that overwrote each other.

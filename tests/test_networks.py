@@ -61,7 +61,7 @@ def test_delete_custom_network(client, mock_docker):
 @pytest.mark.unit
 def test_prune_networks(client, mock_docker):
     mock_docker.networks.prune.return_value = {"NetworksDeleted": ["oldnet"]}
-    resp = client.post("/api/networks/prune", headers=AUTH_CSRF)
+    resp = client.post("/api/networks/prune?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     assert resp.json()["deleted"] == ["oldnet"]
 

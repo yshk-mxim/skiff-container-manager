@@ -30,23 +30,89 @@ async function loadImages() {
     var h2 = document.createElement('h2'); h2.textContent = 'Images (' + images.length + ')';
     var ha = document.createElement('div'); ha.className = 'header-actions';
     var imgSearch = document.createElement('input'); imgSearch.className = 'search-bar'; imgSearch.placeholder = 'Search images...';
-    ha.append(
-      imgSearch,
-      makeBtn('Pull image', showPullModal, 'btn primary'),
-      makeActionBtn('Prune', function() {
-        if (!confirm('Remove dangling (untagged) images? Used-by-container images will be kept.'))
-          throw new Error('Cancelled');
-        return guardedAction('prune-images', function() {
-          return apiFetch(API + '/images/prune?dangling_only=true', { method: 'POST' }).then(function(r) {
-            var n = r.deleted_count || 0;
-            var msg = n ? 'Pruned ' + n + ' image' + (n === 1 ? '' : 's')
-                        + ' (' + (r.space_reclaimed_mb || 0) + ' MB reclaimed)'
-                        : 'No dangling images to prune';
+    // Two distinct prune modes:
+    //   "Prune dangling" → `docker image prune`  (only untagged)
+    //   "Prune all unused" → `docker image prune -a`  (tagged-but-no-running-
+    //   containers too; aggressive, matches the `-a` flavour of prune).
+    // The "all unused" variant uses an in-app confirm modal instead of
+    // native confirm() — native confirms can be dismissed by browsers
+    // that remember a prior "don't ask" click or auto-allowed modals, and
+    // a destructive one-way operation needs an unmissable warning.
+    function _pruneImages(danglingOnly, label) {
+      var doPrune = function() {
+        return guardedAction('prune-images-' + (danglingOnly ? 'd' : 'a'), function() {
+          var url = API + '/images/prune?dangling_only=' + (danglingOnly ? 'true' : 'false');
+          return apiFetch(url, { method: 'POST' }).then(function(r) {
+            // Server defaults to undo=true, so the response carries an
+            // undo_token + expires_in. Route through the shared undo
+            // toast helper: matches system prune / delete container UX
+            // — the user sees "Prune queued — Ns to undo" and the op
+            // fires when the timer expires. Counts + reclaimed bytes
+            // aren't known until firing; the UI refreshes via
+            // loadImages() after the window.
+            if (r && r.undo_token) {
+              window.renderUndoToast(
+                'Image prune (' + label + ')',
+                r.undo_token, r.expires_in, loadImages,
+              );
+              return;
+            }
+            // Queue was full — server executed synchronously. Show
+            // the legacy counts summary.
+            var n = (r && r.deleted_count) || 0;
+            var mb = (r && r.space_reclaimed_mb) || 0;
+            var msg = n
+              ? 'Pruned ' + n + ' image' + (n === 1 ? '' : 's') + ' — reclaimed ' + mb + ' MB (not reversible)'
+              : 'No ' + label + ' images to prune';
             toast(msg, n ? 'success' : 'info');
             loadImages();
           });
         });
+      };
+      if (danglingOnly) {
+        if (!confirm('Remove dangling (untagged) images only? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.) Tagged images are kept.'))
+          throw new Error('Cancelled');
+        return doPrune();
+      }
+      // "All unused" — render an in-app warning modal.
+      return new Promise(function(resolve, reject) {
+        var bg = document.createElement('div');
+        bg.className = 'modal-bg';
+        bg.onclick = function(ev) { if (ev.target === bg) { bg.remove(); reject(new Error('Cancelled')); } };
+        var box = document.createElement('div'); box.className = 'modal';
+        box.style.maxWidth = '440px';
+        var h3 = document.createElement('h3'); h3.textContent = 'Prune all unused images?';
+        var p1 = document.createElement('p');
+        p1.style.cssText = 'font-size:13px;color:var(--text);margin:8px 0';
+        p1.textContent = 'This removes ALL images not used by a running container — including tagged images (nginx:alpine, postgres:16, etc). Pulling them later will re-download from the registry.';
+        var p2 = document.createElement('p');
+        p2.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:14px';
+        p2.textContent = 'An undo toast will give you ~'
+          + (window.UNDO_WINDOW_SECS || 5)
+          + 's to cancel. After that, bytes are gone — Docker does not'
+          + ' support un-pruning; you would have to re-pull each image.';
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+        var cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = 'Cancel';
+        cancel.onclick = function() { bg.remove(); reject(new Error('Cancelled')); };
+        var go = document.createElement('button'); go.className = 'btn danger'; go.textContent = 'Prune all unused';
+        go.onclick = function() { bg.remove(); resolve(doPrune()); };
+        row.append(cancel, go);
+        box.append(h3, p1, p2, row);
+        bg.appendChild(box);
+        document.body.appendChild(bg);
+        setTimeout(function() { cancel.focus(); }, 0);
+      });
+    }
+    ha.append(
+      imgSearch,
+      makeBtn('Pull image', showPullModal, 'btn primary'),
+      makeActionBtn('Prune dangling', function() {
+        return _pruneImages(true, 'dangling');
       }, 'btn small', 'Pruning\u2026'),
+      makeActionBtn('Prune all unused', function() {
+        return _pruneImages(false, 'unused');
+      }, 'btn small danger', 'Pruning\u2026'),
     );
     header.append(h2, ha);
     main.appendChild(header);
@@ -206,7 +272,12 @@ function showPullModal(prefillImage) {
   apiFetch(API + '/config').then(function(cfg) {
     var regs = cfg.allowed_registries || [];
     hint.textContent = regs.length ? 'Allowed: ' + regs.join(', ') : 'No registry restriction configured.';
-  }).catch(function() {});
+  }).catch(function(e) {
+    // Config load failed — surface the reason in the hint instead of
+    // leaving the user staring at "Loading registry configuration…".
+    hint.textContent = 'Registry configuration unavailable: ' + (e && e.message ? e.message : 'fetch failed') + '. The pull may still succeed.';
+    hint.style.color = 'var(--red)';
+  });
   var hubSearch = buildHubSearch(function(name) { inp.value = name; });
 
   var cancelBtn, pullBtn;
@@ -218,7 +289,13 @@ function showPullModal(prefillImage) {
   pullBtn = makeActionBtn('Pull', async function() {
     var image = inp.value.trim();
     if (!image) { toast('Image name is required', 'error'); throw new Error('no image'); }
-    await apiFetch(API + '/images/pull?image=' + encodeURIComponent(image), { method: 'POST' });
+    // Server's IMAGE_PULL_TIMEOUT is 300s; default fetch timeout is 30s.
+    // Without this override, a slow registry would make the client abort
+    // while the server happily completed the pull — user sees "timed out"
+    // on a successful operation. +10s margin so the server's own timeout
+    // fires first and returns a proper envelope.
+    await apiFetch(API + '/images/pull?image=' + encodeURIComponent(image),
+                   { method: 'POST', _timeout: 310000 });
     m.close();
     toast('Image pulled: ' + image, 'success');
     loadImages();

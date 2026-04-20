@@ -100,6 +100,11 @@ class _KnobSpec:
     doc: str
     expose: bool  # surface via /api/config?
     secret: bool  # redact value in audit/config dumps?
+    # Provenance — "env" | "toml" | "default" | "unset". Recorded at
+    # resolution time so the config viewer can tell the operator where
+    # the live value came from without guessing. Never mutated after
+    # config_knob() returns.
+    source: str = "default"
 
 
 _KNOBS: dict[str, _KnobSpec] = {}
@@ -128,7 +133,16 @@ def config_knob(
     """
     if name in _KNOBS:
         raise ValueError(f"config_knob({name!r}) already registered")
-    raw = os.environ.get(name, default) if default is not None else os.environ.get(name)
+    env_raw = os.environ.get(name)
+    if env_raw is not None:
+        raw = env_raw
+        source = "env"
+    elif default is not None:
+        raw = default
+        source = "toml" if name in _TOML_DEFAULTS else "default"
+    else:
+        raw = None
+        source = "unset"
     _KNOBS[name] = _KnobSpec(
         name=name,
         default=default,
@@ -136,6 +150,7 @@ def config_knob(
         doc=doc,
         expose=expose,
         secret=secret,
+        source=source,
     )
     if raw is None:
         return None
@@ -149,6 +164,67 @@ def knobs() -> dict[str, _KnobSpec]:
     return dict(_KNOBS)
 
 
+# Section header lookup for the GUI config viewer — derived from this
+# module's own source so there's nothing to maintain twice. Every `# ──
+# <Label> ──` comment starts a new section; a subsequent
+# `NAME = config_knob("NAME", ...)` / `_int_knob("NAME", ...)` /
+# `_float_knob("NAME", ...)` declaration is tagged with that label.
+#
+# Build-time parse (once, at import). If a knob is declared without a
+# preceding section header (shouldn't happen — tests/test_config_*
+# enforce it) the section falls back to "Other".
+def _build_knob_sections() -> dict[str, str]:
+    import re as _re
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    current = "Other"
+    result: dict[str, str] = {}
+    header_re = _re.compile(r"#\s*──+\s*(.+?)\s*──+")
+    # Permits multi-line calls: `<helper>(\n  "NAME",\n  ...\n)` is the
+    # dominant shape in this file. DOTALL-style dot by using `[\s\S]` so
+    # newlines between the paren and the quoted name don't break the
+    # match. The \n in source.splitlines() below gives us one call per
+    # iteration; we look ahead across the whole remaining source.
+    knob_re = _re.compile(
+        r"""(?:config_knob|_int_knob|_float_knob|_str_knob)\(\s*["']([A-Z_][A-Z0-9_]*)["']""",
+    )
+    # Walk line-by-line for section headers + declarations.
+    lines = source.split("\n")
+    offsets = [0]
+    for ln in lines:
+        offsets.append(offsets[-1] + len(ln) + 1)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            hm = header_re.search(stripped)
+            if hm:
+                label = hm.group(1).strip()
+                current = _re.sub(r"\s*\(.*?\)\s*$", "", label).strip()
+                continue
+        # For each call that STARTS at or after `pos` and whose paren
+        # opens on this line or earlier-but-still-open, bind to `current`.
+        if "config_knob(" in line or "_int_knob(" in line or "_float_knob(" in line or "_str_knob(" in line:
+            window = source[offsets[idx] : offsets[idx] + 800]
+            m = knob_re.match(window) or knob_re.search(window)
+            if m:
+                result[m.group(1)] = current
+    return result
+
+
+_KNOB_SECTIONS: dict[str, str] = {}
+
+
+def knob_section(name: str) -> str:
+    """Return the section label for `name`, lazily building the map on first
+    call so config_knob declarations happening later in this module are
+    visible. An unparsed/unknown knob falls back to 'Other' — tests
+    enforce every registered knob has a section header preceding it."""
+    global _KNOB_SECTIONS
+    if not _KNOB_SECTIONS:
+        _KNOB_SECTIONS = _build_knob_sections()
+    return _KNOB_SECTIONS.get(name, "Other")
+
+
 # ── Package paths ──────────────────────────────────────────
 _PKG_DIR = Path(__file__).parent
 _STATIC_DIR = _PKG_DIR / "static"
@@ -158,7 +234,7 @@ _LICENSE_FILE = _PKG_DIR.parent / "LICENSE"
 _INDEX_HTML: bytes = (_STATIC_DIR / "index.html").read_bytes()
 
 
-# ── Runtime configuration ──────────────────────────────────
+# ── Security & Docker host ─────────────────────────────────
 def _csv_list(raw: str) -> list[str]:
     """Split a comma-separated string into a list of non-empty stripped entries."""
     return [x.strip() for x in raw.split(",") if x.strip()]
@@ -361,7 +437,7 @@ class _ComposeCmd:
 COMPOSE_CMD: _ComposeCmd = _ComposeCmd()
 
 
-# ── Runtime-tunable environment knobs ─────────────────────
+# ── Server bind / uvicorn ─────────────────────────────────
 # Every env var the server reads flows through `config_knob()` so the
 # knob's name, default, validator, and doc live in ONE place (the call
 # below). _KNOBS is queryable at runtime for /api/config, docs gen,
@@ -485,7 +561,7 @@ _APP_VERSION = _resolve_app_version()
 APP_START_MONOTONIC = time.monotonic()  # used for setup window enforcement
 APP_START_WALL = time.time()  # used for uptime display in /health
 
-# ── Tunable knobs (TOML-sourced defaults + env-var override) ──────────────
+# ── TOML-sourced env-var knobs ────────────────────────────
 # Every operational tunable below goes through config_knob() so operators
 # can override via env var; the default values live in skiff/_config/defaults.toml
 # so a fleet-wide tweak is a TOML edit + restart, not a source patch.
@@ -550,11 +626,18 @@ def _positive_int_knob(
     )
 
 
-# ── Operational caps ───────────────────────────────────────
+# ── Request + response caps ───────────────────────────────
 MAX_COMPOSE_SIZE = _int_knob("MAX_COMPOSE_SIZE", doc="Max compose file upload size in bytes.")
 MAX_BODY_BYTES = config_knob(
     "MAX_BODY_BYTES",
-    default=str(1024 * 512),
+    # 16 MiB — headroom for realistic compose files, bulk JSON, and the
+    # 64 MB file-upload cap in /api/containers/{id}/upload (the upload
+    # route uses streaming + its own inner cap; this outer gate just
+    # keeps honest Content-Length header bodies bounded so a 10 GB
+    # declared body can't chew worker memory before the inner cap rejects
+    # it). The previous 512 KiB default silently undercut every larger
+    # inner cap.
+    default=str(16 * 1024 * 1024),
     validator=_positive_int_validator("MAX_BODY_BYTES", minimum=1024),
     doc=(
         "Maximum request body size in bytes (min 1024). 413 returned "
@@ -632,6 +715,7 @@ PROBE_DOCKER_TIMEOUT = _int_knob(
 UNDO_DELAY_SECS = _float_knob(
     "UNDO_DELAY_SECS",
     doc="Grace period in seconds before an undo-queued destructive op fires.",
+    expose=True,
 )
 UNDO_QUEUE_MAX_DEPTH = _int_knob(
     "UNDO_QUEUE_MAX_DEPTH",
@@ -657,9 +741,13 @@ DEBUG_THREADS_ENABLED = config_knob(
 # in a shell that supplies PATH/HOME.
 COMPOSE_PATH_FALLBACK = "/usr/bin"
 COMPOSE_HOME_FALLBACK = "/root"
+
+# ── Compose timeouts ──────────────────────────────────────
 COMPOSE_UP_TIMEOUT = _int_knob("COMPOSE_UP_TIMEOUT", doc="Seconds for `docker compose up -d`.")
 COMPOSE_DOWN_TIMEOUT = _int_knob("COMPOSE_DOWN_TIMEOUT", doc="Seconds for `docker compose down`.")
 COMPOSE_MAX_REPLICAS = _int_knob("COMPOSE_MAX_REPLICAS", doc="Max replicas per service via /scale.")
+
+# ── Lifecycle + DF ───────────────────────────────────────
 SHUTDOWN_FLUSH_TIMEOUT = _int_knob(
     "SHUTDOWN_FLUSH_TIMEOUT",
     doc="Max seconds the lifespan shutdown will spend draining the undo queue.",
@@ -705,7 +793,7 @@ WS_KEEPALIVE_REVALIDATE_EVERY = _int_knob(
     doc="Revalidate session age every N keepalive ticks.",
 )
 
-# ── Auth policy (Python-only: weakening these weakens auth) ──
+# ── Session + auth policy ─────────────────────────────────
 MIN_TOKEN_LENGTH = 16  # minimum API token length enforced by setup
 TOKEN_AUDIT_SUFFIX_LEN = 8  # chars of token shown in audit log
 _SESSION_CACHE_MAX = 1000  # safety cap on in-memory session cache entries
@@ -735,7 +823,7 @@ SESSION_IDLE_SECS = config_knob(
     expose=True,
 )
 
-# ── Audit log rotation ─────────────────────────────────────
+# ── Audit log ─────────────────────────────────────────────
 # Default: 10 MiB x 5 files ~= 50 MiB (~13 days). For 1-year retention:
 #   AUDIT_MAX_MB=200 AUDIT_BACKUP_COUNT=20  → ~4 GiB (covers 13 months).
 AUDIT_MAX_BYTES = config_knob(
@@ -765,7 +853,7 @@ REGISTRY_DESC_MAX = _int_knob(
     doc="Max chars of registry description echoed back.",
 )
 
-# ── Container operation budgets ───────────────────────────
+# ── Container timeouts ────────────────────────────────────
 CONTAINER_STOP_TIMEOUT = _int_knob(
     "CONTAINER_STOP_TIMEOUT",
     doc="Seconds for graceful stop before kill.",
@@ -893,6 +981,34 @@ PROFILE = _apply_profile_result = (
 # token but leaves PROFILE) and every post-wizard mutation 403s with
 # no UI recovery.
 _BOOT_PROFILE: str = PROFILE
+
+
+# ── Browser polling + fetch timeout ───────────────────────
+# These govern how often the SPA refreshes list views, how long it
+# waits before aborting a stalled fetch, and how long its local
+# fallbacks are while /api/config is still resolving. Values in
+# milliseconds because that's what the browser's setTimeout/setInterval
+# take — avoids per-call `* 1000` multiplications.
+CONTAINERS_POLL_MS = _int_knob(
+    "CONTAINERS_POLL_MS",
+    doc="Containers list auto-refresh interval (ms).",
+    expose=True,
+)
+DASHBOARD_POLL_MS = _int_knob(
+    "DASHBOARD_POLL_MS",
+    doc="Dashboard counters/events refresh interval (ms).",
+    expose=True,
+)
+EVENTS_POLL_MS = _int_knob(
+    "EVENTS_POLL_MS",
+    doc="System Events tail auto-refresh interval (ms).",
+    expose=True,
+)
+FETCH_TIMEOUT_MS = _int_knob(
+    "FETCH_TIMEOUT_MS",
+    doc="Browser-side fetch() abort timeout in ms (long ops override per-call).",
+    expose=True,
+)
 
 
 # ── Rate limiting ──────────────────────────────────────────
@@ -1045,5 +1161,215 @@ _APP_TEMPLATES: list[dict] = [
         "env": [],
         "volumes": [],
         "command": "sleep infinity",
+    },
+]
+
+
+# ── Compose stack templates ──────────────────────────────────────────
+#
+# Curated multi-service docker-compose blueprints, exposed via
+# `GET /api/compose/templates` and rendered on the Templates page
+# beside the single-container _APP_TEMPLATES catalogue. Clicking a
+# stack deploys it via `POST /api/compose/up` with the embedded YAML.
+#
+# Design constraints (enforced by the existing compose validator, so
+# any template that violates them is rejected at deploy time with the
+# same envelope a user's own YAML would get):
+#   - No `build:` directive — images must be pullable from the
+#     allowlisted registries.
+#   - No `privileged: true`, no host-path bind mounts, no host network
+#     namespace sharing.
+#   - Environment placeholders use `${VAR}` so the UI can render the
+#     knobs for the user to fill in before deploy (passwords, etc).
+#
+# `images` is enumerated so the UI can pre-check registry allowlist
+# coverage (same `is_allowed` badge logic as _APP_TEMPLATES), and so
+# the deploy modal can show exactly what will be pulled.
+_COMPOSE_TEMPLATES: list[dict] = [
+    {
+        "id": "wordpress",
+        "name": "WordPress + MySQL",
+        "description": "Classic blog / CMS stack: WordPress PHP app + MySQL 8.",
+        "category": "cms",
+        "images": ["wordpress:6-apache", "mysql:8"],
+        "env": [
+            {"key": "MYSQL_ROOT_PASSWORD", "description": "DB root password", "secret": True},
+            {"key": "MYSQL_PASSWORD", "description": "WordPress DB password", "secret": True},
+        ],
+        "ports": [{"host": 8080, "container": 80, "service": "wordpress"}],
+        "yaml": """services:
+  db:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+  wordpress:
+    image: wordpress:6-apache
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_DB_NAME: wordpress
+    ports:
+      - "8080:80"
+    volumes:
+      - wp_content:/var/www/html
+volumes:
+  db_data:
+  wp_content:
+""",
+    },
+    {
+        "id": "monitoring",
+        "name": "Prometheus + Grafana",
+        "description": "Metrics stack — Prometheus scrapes, Grafana visualises. Dashboard on :3000.",
+        "category": "monitoring",
+        "images": ["prom/prometheus:latest", "grafana/grafana:latest"],
+        "env": [
+            {"key": "GRAFANA_ADMIN_PASSWORD", "description": "Grafana admin password", "secret": True},
+        ],
+        "ports": [
+            {"host": 3000, "container": 3000, "service": "grafana"},
+            {"host": 9090, "container": 9090, "service": "prometheus"},
+        ],
+        "yaml": """services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prom_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+volumes:
+  prom_data:
+  grafana_data:
+""",
+    },
+    {
+        "id": "pihole",
+        "name": "Pi-hole",
+        "description": "Network-wide ad blocker. DNS on :53, web admin on :8053.",
+        "category": "network",
+        "images": ["pihole/pihole:latest"],
+        "env": [
+            {"key": "PIHOLE_WEBPASSWORD", "description": "Admin UI password", "secret": True},
+        ],
+        "ports": [
+            {"host": 53, "container": 53, "service": "pihole", "protocol": "udp"},
+            {"host": 8053, "container": 80, "service": "pihole"},
+        ],
+        "yaml": """services:
+  pihole:
+    image: pihole/pihole:latest
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "8053:80/tcp"
+    environment:
+      TZ: UTC
+      WEBPASSWORD: ${PIHOLE_WEBPASSWORD}
+    volumes:
+      - pihole_etc:/etc/pihole
+      - pihole_dnsmasq:/etc/dnsmasq.d
+volumes:
+  pihole_etc:
+  pihole_dnsmasq:
+""",
+    },
+    {
+        "id": "nextcloud",
+        "name": "Nextcloud + Postgres",
+        "description": "Self-hosted file sharing + collaboration suite. Web on :8081.",
+        "category": "productivity",
+        "images": ["nextcloud:29-apache", "postgres:16"],
+        "env": [
+            {"key": "POSTGRES_PASSWORD", "description": "Postgres password", "secret": True},
+            {"key": "NEXTCLOUD_ADMIN_PASSWORD", "description": "Admin UI password", "secret": True},
+        ],
+        "ports": [{"host": 8081, "container": 80, "service": "app"}],
+        "yaml": """services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  app:
+    image: nextcloud:29-apache
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+    ports:
+      - "8081:80"
+    volumes:
+      - app_data:/var/www/html
+volumes:
+  db_data:
+  app_data:
+""",
+    },
+    {
+        "id": "redis-commander",
+        "name": "Redis + Redis-Commander",
+        "description": "Redis cache + web UI for inspection on :8082.",
+        "category": "dev",
+        "images": ["redis:7", "rediscommander/redis-commander:latest"],
+        "env": [],
+        "ports": [
+            {"host": 6379, "container": 6379, "service": "redis"},
+            {"host": 8082, "container": 8081, "service": "commander"},
+        ],
+        "yaml": """services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+  commander:
+    image: rediscommander/redis-commander:latest
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8082:8081"
+volumes:
+  redis_data:
+""",
     },
 ]

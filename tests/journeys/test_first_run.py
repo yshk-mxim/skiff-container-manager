@@ -84,7 +84,7 @@ def test_journey_templates_catalog_visible(audited_page, live_server, audit_obse
 
     with step("step_2_navigate_to_templates"):
         page.locator(".sidebar a:has-text('Templates')").click()
-        page.wait_for_selector("h2:has-text('App templates')", timeout=SHORT)
+        page.wait_for_selector("h2:has-text('Templates')", timeout=SHORT)
 
     with step("step_3_all_known_templates_render"):
         # The 8 seeded templates from config._APP_TEMPLATES.
@@ -117,7 +117,7 @@ def test_journey_sidebar_navigation_reaches_every_page(audited_page, live_server
         ("Dashboard", "Overview"),
         ("Containers", "Containers"),
         ("Images", "Images"),
-        ("Templates", "App templates"),
+        ("Templates", "Templates"),
         ("Volumes", "Volumes"),
         ("Networks", "Networks"),
         ("Compose", "Compose"),

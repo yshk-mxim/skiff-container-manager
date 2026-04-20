@@ -132,10 +132,12 @@ def test_system_metrics_tolerates_null_sizes(client, mock_docker):
 
 
 def test_system_prune(client, mock_docker):
+    """Default path returns an undo envelope (safety net); pass
+    undo=false to exercise the immediate-fire counts shape."""
     mock_docker.containers.prune.return_value = {"ContainersDeleted": ["abc"], "SpaceReclaimed": 1024}
     mock_docker.images.prune.return_value = {"ImagesDeleted": [], "SpaceReclaimed": 0}
     mock_docker.networks.prune.return_value = {"NetworksDeleted": []}
-    resp = client.post("/api/system/prune", headers=AUTH_CSRF)
+    resp = client.post("/api/system/prune?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     data = resp.json()
     assert data["containers_deleted"] == 1
@@ -146,7 +148,7 @@ def test_system_prune(client, mock_docker):
 
 def test_prune_build_cache(client, mock_docker):
     mock_docker.api.prune_builds.return_value = {"SpaceReclaimed": 50 * 1024 * 1024}
-    resp = client.post("/api/system/prune-build-cache", headers=AUTH_CSRF)
+    resp = client.post("/api/system/prune-build-cache?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     assert resp.json()["space_reclaimed_mb"] == 50.0
 

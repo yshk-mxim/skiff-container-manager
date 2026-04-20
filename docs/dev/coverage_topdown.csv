@@ -132,3 +132,37 @@ hobbyist,test_journey_volume_backup_via_cp,"Backup marker out",GET /api/containe
 sre_ops,test_journey_images_prune_returns_reclaimed,"Images → Prune",POST /api/images/prune,images.prune,"POST /images/prune",Y
 developer,test_journey_image_tag_search_finds_stable_tag,"Image inspect modal tag filter",GET /api/registry/tags,-,GET /images/search,Y
 developer,test_journey_context_menu_on_container_row,"Right-click on row",-,-,-,Y
+developer,test_journey_files_ls_preserves_spaces_in_filenames,"Files tab → Download","GET /api/containers/{id}/ls, GET /api/containers/{id}/files","container.exec_run, get_archive","POST /containers/{id}/exec, GET /containers/{id}/archive",Y
+sre_ops,test_journey_system_prune_offers_undo_window,"System → Prune system",POST /api/system/prune,containers.prune+images.prune+networks.prune,"POST /containers/prune, /images/prune, /networks/prune",Y
+sre_ops,test_journey_system_prune_undo_expiry_actually_fires,"System → Prune system (wait past window)",POST /api/system/prune,containers.prune+images.prune+networks.prune,"POST /containers/prune, /images/prune, /networks/prune",Y
+security_reviewer,test_journey_filename_edge_cases_survive_ls_roundtrip,"Files tab Browse view with edge-case names","POST + GET /api/containers/{id}/files, GET /api/containers/{id}/ls","put_archive, exec_run",POST /containers/{id}/archive + /containers/{id}/exec,Y
+developer,test_journey_container_delete_undo_returns_token,"Containers → row Delete",DELETE /api/containers/{id}?undo=1,containers.get+remove,DELETE /containers/{id},Y
+developer,test_journey_volume_delete_undo_returns_token,"Volumes → row Delete",DELETE /api/volumes/{name}?undo=1,volumes.get+remove,DELETE /volumes/{name},Y
+developer,test_journey_image_delete_undo_returns_token,"Images → row Delete",DELETE /api/images/{id}?undo=true,images.get+remove,DELETE /images/{id},Y
+sre_ops,test_journey_image_prune_dangling_reports_summary,"Images → Prune dangling",POST /api/images/prune?dangling_only=true,images.prune,POST /images/prune,Y
+sre_ops,test_journey_image_prune_all_unused_has_explicit_flag,"Images → Prune all unused",POST /api/images/prune?dangling_only=false,images.prune,POST /images/prune,Y
+sre_ops,test_journey_build_cache_prune_reports_reclaim,"System → Prune build cache",POST /api/system/prune-build-cache,api.prune_builds,POST /build/prune,Y
+sre_ops,test_journey_bulk_stop_reports_per_item_failures,"Containers bulk-bar → Stop","POST /api/containers/{id}/stop x N",containers.get+stop,POST /containers/{id}/stop,Y
+developer,test_journey_running_container_delete_goes_through_stop_then_soft_delete,"Containers → row Delete (running)","POST /containers/{id}/stop then DELETE ?undo=1",containers.get+stop+remove,"POST + DELETE /containers/{id}",Y
+developer,test_journey_file_bytes_roundtrip_exact_content,"Files tab → Upload + Download","POST + GET /api/containers/{id}/files","put_archive, get_archive","POST + GET /containers/{id}/archive",Y
+developer,test_journey_env_vars_roundtrip_through_run_and_inspect,"Run modal → Inspect","POST /api/containers/run, GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+security_reviewer,test_journey_sensitive_env_values_redacted_in_inspect,"Run modal with sensitive env → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+developer,test_journey_labels_roundtrip_preserved_in_inspect,"Run modal labels → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+developer,test_journey_port_bindings_roundtrip,"Run modal ports → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+sre_ops,test_journey_restart_policy_roundtrip,"Run modal restart policy → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+sre_ops,test_journey_volume_data_persists_across_container_recreation,"Volume create + two containers","POST /api/volumes/create + POST /api/containers/run x 2",volumes.create+containers.run+put_archive+get_archive,"POST /volumes/create + /containers/create + /containers/{id}/archive",Y
+sre_ops,test_journey_network_attach_inspect_detach_roundtrip,"Network create + attach + inspect","POST /api/networks/create + /connect + GET /inspect",networks.create+connect+inspect,"POST /networks/create + /connect + GET /networks/{id}",Y
+developer,test_journey_volume_create_space_in_name_shows_reason,"Volumes → Create modal (bad name)",POST /api/volumes/create,-,"400 envelope",Y
+sre_ops,test_journey_network_create_bad_subnet_shows_cidr_format,"Networks → Create modal (bad subnet)",POST /api/networks/create,-,"400 envelope",Y
+developer,test_journey_image_pull_bad_ref_shows_registry_error,"Images → Pull modal (bad ref)",POST /api/images/pull,images.pull,"POST /images/create with error",Y
+novice,test_journey_wizard_short_token_error_is_readable,"Wizard submit-short-token",POST /api/setup,-,"400 envelope",Y
+developer,test_journey_container_run_no_image_shows_banner,"Run modal submit (no image)",client-side preflight,-,-,Y
+developer,test_journey_run_modal_bare_volume_name_shows_format_hint,"Run modal volumes (no :/path)",client-side preflight,-,-,Y
+developer,test_journey_cmd_k_opens_palette,"⌘K keyboard",-,-,-,Y
+developer,test_journey_cmd_k_twice_does_not_stack,"⌘K twice",-,-,-,Y
+novice,test_journey_question_mark_opens_help_exactly_once,"? keyboard",-,-,-,Y
+novice,test_journey_question_mark_ignored_inside_input,"? inside input",-,-,-,Y
+developer,test_journey_slash_focuses_search_on_list_page,"/ keyboard",-,-,-,Y
+developer,test_journey_number_key_navigates_to_sidebar_page,"1-8 keyboard",-,-,-,Y
+developer,test_journey_number_key_ignored_inside_input,"digits inside input",-,-,-,Y
+developer,test_journey_escape_closes_open_modal,"Esc keyboard",-,-,-,Y

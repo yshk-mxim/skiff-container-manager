@@ -210,7 +210,7 @@ def _existing_compose_dir():
 def test_compose_down_success(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="down", stderr="")
-        resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
+        resp = client.post("/api/compose/down?project_name=myproject&undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
@@ -218,14 +218,14 @@ def test_compose_down_success(client, _existing_compose_dir):
 def test_compose_down_failure(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="/some/path: not found")
-        resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
+        resp = client.post("/api/compose/down?project_name=myproject&undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 400
 
 
 def test_compose_down_no_stderr(client, _existing_compose_dir):
     with patch("skiff.routers.compose.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
-        resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
+        resp = client.post("/api/compose/down?project_name=myproject&undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 400
 
 
@@ -233,7 +233,7 @@ def test_compose_down_timeout(client, _existing_compose_dir):
     import subprocess
 
     with patch("skiff.routers.compose.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=60)):
-        resp = client.post("/api/compose/down?project_name=myproject", headers=AUTH_CSRF)
+        resp = client.post("/api/compose/down?project_name=myproject&undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 504
 
 
@@ -241,7 +241,7 @@ def test_compose_down_missing_project_returns_404(client):
     """Teardown on a name that was never deployed returns 404 without creating a dir."""
     import skiff.config as _cfg
 
-    resp = client.post("/api/compose/down?project_name=nonexistent-xyz", headers=AUTH_CSRF)
+    resp = client.post("/api/compose/down?project_name=nonexistent-xyz&undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "compose.not_found"
     # Prove the handler did NOT create the project dir as a side effect.

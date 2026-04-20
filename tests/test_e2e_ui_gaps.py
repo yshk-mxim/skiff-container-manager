@@ -395,11 +395,25 @@ def test_compose_service_restart_via_ui(page, live_server, docker_client):
         svc_row = page.locator(f"h4:has-text('{project}') + .stack-services div:has-text('web')").first
         svc_row.locator("button:has-text('Restart')").click()
         page.wait_for_selector("text=web restarted", timeout=LONG)
-        # Verify via Docker SDK that the service is still running (restart preserved it)
-        containers = docker_client.containers.list(
-            filters={"label": f"com.docker.compose.project={project}"},
+        # Verify via Docker SDK that the service came back up. Docker's
+        # compose restart stops then starts; there's a brief exited
+        # window between the two. Poll for up to 5 s.
+        import time
+
+        deadline = time.time() + 15.0
+        running = False
+        while time.time() < deadline:
+            containers = docker_client.containers.list(
+                filters={"label": f"com.docker.compose.project={project}"},
+            )
+            if any(c.attrs["State"]["Status"] == "running" for c in containers):
+                running = True
+                break
+            time.sleep(0.3)
+        assert running, (
+            f"no running container for project={project!r} within 15 s of "
+            f"the restart toast — compose restart may have left the stack down"
         )
-        assert any(c.attrs["State"]["Status"] == "running" for c in containers)
     finally:
         _teardown_compose_stack(project)
 
@@ -751,7 +765,7 @@ def test_compose_output_shown_on_success(page, live_server):
     # Pre-clean any leftover dev stack (best-effort; ignore if nothing to clean)
     try:
         requests.post(
-            f"{BASE_URL}/api/compose/down?project_name=dev",
+            f"{BASE_URL}/api/compose/down?project_name=dev&undo=false",
             headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
             timeout=30,
         )
@@ -786,7 +800,7 @@ def test_compose_output_shown_on_success(page, live_server):
     # Tear down the stack after the test (best-effort)
     try:
         requests.post(
-            f"{BASE_URL}/api/compose/down?project_name=dev",
+            f"{BASE_URL}/api/compose/down?project_name=dev&undo=false",
             headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
             timeout=30,
         )
@@ -800,7 +814,7 @@ def test_compose_project_name_field(page, live_server):
     # Pre-clean (best-effort)
     try:
         requests.post(
-            f"{BASE_URL}/api/compose/down?project_name=e2e-test-proj",
+            f"{BASE_URL}/api/compose/down?project_name=e2e-test-proj&undo=false",
             headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
             timeout=30,
         )
@@ -841,7 +855,7 @@ def test_compose_project_name_field(page, live_server):
     # Tear down (best-effort)
     try:
         requests.post(
-            f"{BASE_URL}/api/compose/down?project_name=e2e-test-proj",
+            f"{BASE_URL}/api/compose/down?project_name=e2e-test-proj&undo=false",
             headers={"X-Requested-With": "ContainerManager", "Authorization": f"Bearer {E2E_TOKEN}"},
             timeout=30,
         )

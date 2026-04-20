@@ -93,10 +93,22 @@ async function showDashboard() {
     var data = await apiFetch(API + '/system/overview');
     _render(data);
     // Refresh counts + events every 8s. Uses managedInterval so
-    // showPage() tears it down when the user navigates away.
+    // showPage() tears it down when the user navigates away. Consecutive
+    // failure counter: a single transient blip is silent (common for 8s
+    // polling over a tunnel), but three in a row posts a sticky banner so
+    // the user knows data is stale rather than fresh-but-empty.
+    var _overviewFailStreak = 0;
     managedInterval(function() {
-      apiFetch(API + '/system/overview').then(_render).catch(function() {});
-    }, 8000);
+      apiFetch(API + '/system/overview').then(function(d) {
+        _overviewFailStreak = 0;
+        _render(d);
+      }).catch(function(e) {
+        _overviewFailStreak += 1;
+        if (_overviewFailStreak === 3) {
+          toast('Dashboard refresh failing: ' + (e && e.message ? e.message : 'network error'), 'error');
+        }
+      });
+    }, DASHBOARD_POLL_MS);
   } catch (e) {
     main.innerHTML = '';
     var p = document.createElement('p'); p.style.color = 'var(--red)';

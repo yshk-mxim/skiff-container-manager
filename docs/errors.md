@@ -37,6 +37,11 @@ Client switches on `code` (stable); displays `message` (human).
 | `compose.teardown_failed` | 400 | compose down failed |  |
 | `compose.timeout` | 504 | compose operation timed out |  |
 | `compose.too_large` | 400 | compose file exceeds size limit |  |
+| `config.knob_env_sourced` | 409 | knob {name!r} is currently set by an environment variable, which wins over runtime edits. Unset the env var and restart to make this knob GUI-editable. |  |
+| `config.knob_lifecycle_locked` | 409 | knob {name!r} is read once at process start — editing at runtime would have no effect. Restart the server after changing the env var / defaults.toml. |  |
+| `config.knob_not_found` | 404 | knob {name!r} is not exposed via the config API |  |
+| `config.knob_secret_locked` | 403 | knob {name!r} is a secret — never editable via this endpoint; set the env var directly. |  |
+| `config.knob_security_locked` | 403 | knob {name!r} is policy-locked (security) — changing at runtime is not permitted. Edit the env var or defaults.toml and restart. |  |
 | `container.bad_id` | 400 | invalid container id |  |
 | `container.bad_name` | 400 | invalid container name (alphanumeric, dots, hyphens, underscores) |  |
 | `container.bad_signal` | 400 | unsupported signal |  |
@@ -55,7 +60,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `container.op_failed` | 400 | container operation failed |  |
 | `container.pids_limit_bad` | 400 | pids_limit must be an integer in [1, {cap}] |  |
 | `container.port_count_exceeds_cap` | 400 | too many port mappings (max {limit}) |  |
-| `container.port_format` | 400 | invalid port format |  |
+| `container.port_format` | 400 | invalid port format — expected 'HOST:CONTAINER' with ports in 1-65535 (e.g. 8080:80). |  |
 | `container.port_host_privileged` | 400 | host port {port} is privileged (< {threshold}) |  |
 | `container.restart_policy_shape` | 400 | restart_policy must be an object |  |
 | `container.restart_retry_bad` | 400 | MaximumRetryCount must be an integer in [0, {cap}] |  |
@@ -76,10 +81,10 @@ Client switches on `code` (stable); displays `message` (human).
 | `image.registry_search_failed` | 502 | registry search failed |  |
 | `image.tag_fetch_failed` | 502 | tag fetch failed |  |
 | `network.bad_driver` | 400 | unsupported network driver |  |
-| `network.bad_gateway` | 400 | invalid gateway |  |
-| `network.bad_labels` | 400 | invalid network labels |  |
-| `network.bad_name` | 400 | invalid network name |  |
-| `network.bad_subnet` | 400 | invalid subnet |  |
+| `network.bad_gateway` | 400 | invalid gateway — expected an IPv4/IPv6 address inside the subnet. |  |
+| `network.bad_labels` | 400 | invalid network label — expected 'key=value' per line; keys must be alphanumeric with '.', '-', '_'. |  |
+| `network.bad_name` | 400 | invalid network name — use letters, digits, '.', '-', '_' (max 64 chars). No spaces, slashes, or leading punctuation. |  |
+| `network.bad_subnet` | 400 | invalid subnet — expected CIDR form like 10.0.0.0/24 or 2001:db8::/32. |  |
 | `network.builtin_protected` | 400 | built-in network cannot be removed |  |
 | `network.not_found` | 404 | network not found |  |
 | `resource.in_use` | 409 | resource is in use: {detail} |  |
@@ -94,6 +99,7 @@ Client switches on `code` (stable); displays `message` (human).
 | `setup.tcp_host_bad` | 400 | tcp:// docker_host must specify an IP address, not a hostname |  |
 | `setup.tcp_port_bad` | 400 | tcp:// docker_host must include a valid port |  |
 | `setup.token_bad_charset` | 400 | api_token contains characters HTTP Authorization can't carry | Use `openssl rand -hex 32` (or similar). Allowed: letters, digits, and `. _ ~ + / = -`. Unicode / bidi / control chars would travel in the HTTP header but can't be sent back on subsequent requests, silently locking the operator out. |
+| `setup.token_too_long` | 400 | api_token exceeds the {maximum}-character length cap |  |
 | `setup.token_too_short` | 400 | api_token must be at least {minimum} characters |  |
 | `setup.window_expired` | 403 | setup window has expired; restart the server to re-enable |  |
 | `system.debug_disabled` | 403 | debug endpoint disabled — set SKIFF_DEBUG_THREADS=1 on the server to enable |  |
@@ -105,14 +111,14 @@ Client switches on `code` (stable); displays `message` (human).
 | `tunnel.already_connected` | 409 | Docker host is already reachable — no reconnect needed | The socket is present and a Docker ping succeeded. The server-side Docker client was invalidated so the next request opens a fresh connection. |
 | `tunnel.manual_reconnect_required` | 503 | Docker host is unreachable. The tunnel was not opened by SKIFF so it can't be re-opened server-side — re-run your `ssh -fNL …` command (or equivalent) to restore the socket. | SKIFF only auto-reconnects tunnels it opened itself (via the setup wizard). A manual `ssh -fNL` tunnel needs to be re-opened by the operator. The DOCKER_HOST socket path is included in the response so you can pass it back to ssh. |
 | `tunnel.not_configured` | 404 | no managed tunnel configured | The server has no stored SSH target. Run setup again via the wizard. |
-| `validation.bad_cpu` | 400 | invalid cpu quantity |  |
+| `validation.bad_cpu` | 400 | invalid cpu quantity — expected a positive decimal (e.g. 0.5, 1, 2.0). |  |
 | `validation.bad_env` | 400 | environment variable must be KEY=VALUE |  |
 | `validation.bad_image_name` | 400 | invalid image name format |  |
 | `validation.bad_input` | 400 | invalid input |  |
-| `validation.bad_memory` | 400 | invalid memory quantity |  |
+| `validation.bad_memory` | 400 | invalid memory quantity — expected an integer with optional suffix (e.g. 512m, 2g, 1024). |  |
 | `validation.bad_mount_target` | 400 | volume mount target must be an absolute path |  |
 | `validation.bad_project_name` | 400 | invalid project name |  |
-| `validation.bad_restart_policy` | 400 | unsupported restart policy |  |
+| `validation.bad_restart_policy` | 400 | unsupported restart policy — must be one of: no, on-failure, unless-stopped, always. |  |
 | `validation.bad_tmpfs_shape` | 400 | tmpfs must be an object mapping paths to options |  |
 | `validation.body_timeout` | 408 | request body not received within the allowed window | Raise `BODY_READ_TIMEOUT_SECS` on the server OR have your client send the full body in one shot — the timeout is a slow-POST defence, not a per-operation budget. |
 | `validation.body_too_large` | 413 | request body exceeds size cap | Lower the payload or raise `MAX_BODY_BYTES` server-side. |
@@ -124,9 +130,9 @@ Client switches on `code` (stable); displays `message` (human).
 | `validation.tmpfs_size_exceeds_cap` | 400 | total tmpfs size {total_mb:.0f}MB exceeds cap ({max_total_mb}MB) |  |
 | `validation.tmpfs_too_many` | 400 | too many tmpfs mounts (max {max_mounts}) |  |
 | `volume.bad_driver` | 400 | unsupported volume driver |  |
-| `volume.bad_driver_opts` | 400 | invalid volume driver options |  |
-| `volume.bad_labels` | 400 | invalid volume labels |  |
-| `volume.bad_name` | 400 | invalid volume name |  |
+| `volume.bad_driver_opts` | 400 | invalid driver option — expected 'key=value' per line (e.g. 'type=nfs', 'device=:/path'). |  |
+| `volume.bad_labels` | 400 | invalid volume label — expected 'key=value' per line; keys must be alphanumeric with '.', '-', '_'. |  |
+| `volume.bad_name` | 400 | invalid volume name — use letters, digits, '.', '-', '_' (max 64 chars). No spaces, slashes, or leading punctuation. |  |
 | `volume.in_use` | 409 | volume is in use |  |
 | `volume.not_found` | 404 | volume not found |  |
 | `ws.connections_exhausted` | 429 | too many WebSocket connections from this IP |  |

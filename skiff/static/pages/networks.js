@@ -21,9 +21,14 @@ async function loadNetworks() {
     ha.append(
       makeBtn('Create network', showCreateNetworkModal, 'btn primary'),
       makeActionBtn('Prune unused', function() {
-        if (!confirm('Remove unused custom networks?')) throw new Error('Cancelled');
+        if (!confirm('Remove unused custom networks? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+          throw new Error('Cancelled');
         return guardedAction('prune-networks', function() {
           return apiFetch(API + '/networks/prune', { method: 'POST' }).then(function(r) {
+            if (r && r.undo_token) {
+              window.renderUndoToast('Network prune', r.undo_token, r.expires_in, loadNetworks);
+              return;
+            }
             var n = (r.deleted || []).length;
             toast(n > 0 ? 'Pruned ' + n + ' network' + (n === 1 ? '' : 's')
                         : 'No unused custom networks to prune',
@@ -112,9 +117,14 @@ async function loadNetworks() {
             }, 'btn danger small'));
           });
           actGrp.appendChild(makeActionBtn('Delete', function() {
-            if (!confirm('Delete network "' + n.name + '"?')) throw new Error('Cancelled');
+            if (!confirm('Delete network "' + n.name + '"? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+              throw new Error('Cancelled');
             return guardedAction('del-net-' + n.id, function() {
-              return apiFetch(API + '/networks/' + n.id, { method: 'DELETE' }).then(function() {
+              return apiFetch(API + '/networks/' + n.id + '?undo=true', { method: 'DELETE' }).then(function(r) {
+                if (r && r.undo_token) {
+                  window.renderUndoToast('Network "' + n.name + '" delete', r.undo_token, r.expires_in, loadNetworks);
+                  return;
+                }
                 toast('Network deleted', 'info'); loadNetworks();
               });
             });

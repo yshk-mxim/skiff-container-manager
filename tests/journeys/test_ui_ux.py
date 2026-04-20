@@ -137,7 +137,7 @@ def test_journey_mobile_viewport_no_horizontal_scroll(audited_page, live_server,
         login(page, live_server)
 
     # Sidebar label → actual H2 copy (dashboard H2 is 'Overview').
-    for section, h2 in (("containers", "Containers"), ("templates", "App templates")):
+    for section, h2 in (("containers", "Containers"), ("templates", "Templates")):
         with step(f"step_2_no_h_scroll_{section}"):
             page.locator(f".sidebar a:has-text('{section.capitalize()}')").click()
             page.wait_for_selector(f"h2:has-text('{h2}')", timeout=5_000)
@@ -430,7 +430,7 @@ def test_journey_i18n_missing_key_audit(audited_page, live_server, audit_observe
     section_h2 = {
         "containers": "Containers",
         "images": "Images",
-        "templates": "App templates",
+        "templates": "Templates",
     }
     for section, h2 in section_h2.items():
         with step(f"step_2_scan_{section}_for_placeholders"):
@@ -472,7 +472,7 @@ def test_journey_keyboard_reaches_every_primary_page(audited_page, live_server, 
         "Dashboard": "Overview",
         "Containers": "Containers",
         "Images": "Images",
-        "Templates": "App templates",
+        "Templates": "Templates",
     }
     reached: list[str] = []
     with step("step_2_tab_and_enter"):

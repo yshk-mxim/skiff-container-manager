@@ -32,13 +32,14 @@
          registry. Adding a new page = one JS file; sidebar updates
          automatically. Persona filtering honoured. Mount point below. -->
     <div id="sidebar-mount"></div>
-    <!-- Keyboard shortcut hint for the command palette.
-         `core/palette.js` swaps the text to ⌘K on macOS, Ctrl+K elsewhere,
-         after the DOM is ready. Kept subdued so it doesn't compete with
-         nav labels but visible enough that a first-time user who skipped
-         the tour can still discover the shortcut. -->
+    <!-- Keyboard shortcut hint. `core/palette.js` swaps the text to ⌘K
+         on macOS after the DOM is ready. Kept subdued so it doesn't
+         compete with nav labels. Also surfaces `?` for the full
+         shortcut list so the user can discover 1-8 nav without running
+         the first-run tour. -->
     <div id="sidebar-palette-hint" class="sidebar-palette-hint" aria-hidden="true">
-      Press <kbd>Ctrl+K</kbd> to search
+      <div>Press <kbd>Ctrl+K</kbd> to search</div>
+      <div>Press <kbd>?</kbd> for shortcuts</div>
     </div>
     <div class="sidebar-spacer"></div>
     <div class="sidebar-status" id="sidebar-status"><span class="dot"></span> <span>Connecting...</span></div>
@@ -109,6 +110,7 @@
 <script src="/static/pages/networks.js"></script>
 <script src="/static/pages/compose.js"></script>
 <script src="/static/pages/system.js"></script>
+<script src="/static/pages/settings.js"></script>
 <!-- Sidebar renderer reads UI.registerPage() declarations from the page
      modules above. Must load after them. -->
 <script src="/static/core/sidebar.js"></script>

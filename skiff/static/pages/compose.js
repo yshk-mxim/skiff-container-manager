@@ -78,7 +78,13 @@ async function showCompose() {
   main.innerHTML = '<div class="refreshing">Loading...</div>';
 
   var stacks = [];
-  try { stacks = await apiFetch(API + '/compose/stacks'); } catch (e) {}
+  // Surface any fetch failure below the header so the user can tell
+  // "zero stacks" from "broken connection" (network blip, daemon down,
+  // 503 tunnel drop). An empty array still renders the upload form so
+  // the user can deploy a first stack even if the listing is degraded.
+  var stacksLoadError = null;
+  try { stacks = await apiFetch(API + '/compose/stacks'); }
+  catch (e) { stacksLoadError = (e && e.message) || 'failed to load stacks'; }
   if (currentPage !== 'compose') return;
 
   main.innerHTML = '';
@@ -89,18 +95,31 @@ async function showCompose() {
   compDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
   compDesc.textContent = 'Compose files are validated before deployment. Privileged mode, host-path mounts, build instructions, and unapproved registries are blocked.';
   main.appendChild(compDesc);
+  if (stacksLoadError) {
+    var errBanner = document.createElement('div');
+    errBanner.className = 'field-error';
+    errBanner.style.display = 'block';
+    errBanner.setAttribute('role', 'alert');
+    errBanner.textContent = 'Could not load stacks: ' + stacksLoadError;
+    main.appendChild(errBanner);
+  }
 
+  // Always render the Running Stacks section (header + search + card
+  // wrap) so the page offers a consistent "list-with-search" affordance
+  // matching every other list page. The empty case renders a muted
+  // "No running stacks yet — upload one below" line in place of cards.
+  var stackHeader = document.createElement('h3');
+  stackHeader.textContent = 'Running Stacks (' + stacks.length + ')';
+  stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px';
+  main.appendChild(stackHeader);
+  var search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'search-bar';
+  search.placeholder = 'Search stacks by project name or service...';
+  search.setAttribute('data-testid', 'compose-search');
+  if (stacks.length === 0) search.disabled = true;
+  main.appendChild(search);
   if (stacks.length > 0) {
-    var stackHeader = document.createElement('h3');
-    stackHeader.textContent = 'Running Stacks (' + stacks.length + ')';
-    stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px';
-    main.appendChild(stackHeader);
-    var search = document.createElement('input');
-    search.type = 'search';
-    search.className = 'search-bar';
-    search.placeholder = 'Search stacks by project name or service...';
-    search.setAttribute('data-testid', 'compose-search');
-    main.appendChild(search);
     var cardsWrap = document.createElement('div');
     main.appendChild(cardsWrap);
     function renderStackCards(q) {
@@ -180,8 +199,11 @@ async function showCompose() {
       btnRow.appendChild(makeActionBtn('Pull updates', function() {
         if (!confirm('Pull latest images for all services in ' + stack.name + '?\nRun a Restart after to apply.'))
           throw new Error('Cancelled');
+        // Server's IMAGE_PULL_TIMEOUT is 300s. Default 30s client abort
+        // would kill the fetch mid-pull and leave the user guessing if
+        // the pull completed server-side.
         return apiFetch(API + '/compose/' + encodeURIComponent(stack.name) + '/pull',
-                        { method: 'POST' }).then(function() {
+                        { method: 'POST', _timeout: 310000 }).then(function() {
           toast('Images pulled. Run Restart to apply new tags.', 'success');
         });
       }, 'btn small', 'Pulling\u2026'));
@@ -190,12 +212,16 @@ async function showCompose() {
         throw new Error('ModalOpened');  // don't trigger success toast
       }, 'btn small'));
       btnRow.appendChild(makeActionBtn('Restart all', function() {
-        return apiFetch(API + '/compose/down?project_name=' + encodeURIComponent(stack.name),
-                        { method: 'POST' }).then(function() {
+        // Restart = down + up in sequence. Use undo=false on down so
+        // the restart happens immediately (otherwise the user would
+        // see an undo toast from the restart path, which is confusing
+        // since they asked for a restart, not a teardown).
+        return apiFetch(API + '/compose/down?project_name=' + encodeURIComponent(stack.name) + '&undo=false',
+                        { method: 'POST', _timeout: 70000 }).then(function() {
           toast(stack.name + ' stopped, restarting...', 'info');
           var form = new FormData();
           return apiFetch(API + '/compose/up?project_name=' + encodeURIComponent(stack.name),
-                          { method: 'POST', body: form });
+                          { method: 'POST', body: form, _timeout: 130000 });
         }).then(function() { toast(stack.name + ' restarted', 'success'); showCompose(); });
       }, 'btn small', 'Restarting\u2026'));
       btnRow.appendChild(makeBtn('Download YAML', function() {
@@ -205,8 +231,17 @@ async function showCompose() {
         a.click();
       }, 'btn small'));
       btnRow.appendChild(makeActionBtn('Tear down', function() {
+        if (!confirm('Tear down stack "' + stack.name + '"? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+          throw new Error('Cancelled');
+        // Server caps down at COMPOSE_DOWN_TIMEOUT = 60s; keep client
+        // abort ≥10s above so the server emits its own envelope first.
+        // Default undo=true returns {undo_token, expires_in}.
         return apiFetch(API + '/compose/down?project_name=' + encodeURIComponent(stack.name),
-                        { method: 'POST' }).then(function() {
+                        { method: 'POST', _timeout: 70000 }).then(function(r) {
+          if (r && r.undo_token) {
+            window.renderUndoToast('Stack "' + stack.name + '" tear-down', r.undo_token, r.expires_in, showCompose);
+            return;
+          }
           toast(stack.name + ' stopped', 'info'); showCompose();
         });
       }, 'btn danger small', 'Tearing down\u2026'));
@@ -260,8 +295,12 @@ async function uploadCompose(file) {
   var out = document.getElementById('compose-output');
   out.innerHTML = '<div class="log-viewer">Deploying stack...</div>';
   try {
+    // Server caps compose up at COMPOSE_UP_TIMEOUT = 120s; default 30s
+    // client abort would leave the user staring at a fetch-level timeout
+    // while the pull+up keeps running server-side. +10s margin so the
+    // server's own timeout fires first with its structured envelope.
     var data = await apiFetch(API + '/compose/up?project_name=' + encodeURIComponent(project),
-                              { method: 'POST', body: form });
+                              { method: 'POST', body: form, _timeout: 130000 });
     var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#3fb950';
     lv.textContent = data.output || 'Stack deployed successfully.';
     out.innerHTML = ''; out.appendChild(lv);

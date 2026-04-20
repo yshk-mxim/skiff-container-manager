@@ -11,6 +11,137 @@
  */
 "use strict";
 
+
+/**
+ * Delete a mounted volume by first stopping + removing every container
+ * that has it mounted, then deleting the volume. Docker refuses to
+ * remove a volume with any attached container (running or stopped) and
+ * returns 409; this cascade modal lists the attached containers,
+ * confirms the user intends to remove them, runs the cleanup, then
+ * soft-deletes the volume with the usual undo window.
+ *
+ * Flow:
+ *   1. Confirm modal listing the N attached containers so the user can
+ *      see exactly what will be destroyed.
+ *   2. Stop + remove each container via DELETE ?force=true (undo=false
+ *      intentionally — we're in a cascade, not a per-container action;
+ *      the outer undo covers the whole cascade's visible effect).
+ *   3. Delete the volume with ?undo=true so the user still has a
+ *      window to reverse the whole operation.
+ */
+function _deleteVolumeWithAttachedContainers(v) {
+  return new Promise(function(resolve, reject) {
+    var bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    bg.onclick = function(ev) { if (ev.target === bg) { bg.remove(); reject(new Error('Cancelled')); } };
+    var box = document.createElement('div'); box.className = 'modal';
+    box.style.maxWidth = '480px';
+    var h3 = document.createElement('h3'); h3.textContent = 'Volume "' + v.name + '" is in use';
+    var p1 = document.createElement('p');
+    p1.style.cssText = 'font-size:13px;margin:10px 0';
+    p1.textContent = 'Deleting this volume requires first stopping + removing every container that mounts it:';
+    var list = document.createElement('ul');
+    list.style.cssText = 'font-family:monospace;font-size:12px;background:var(--bg-elevated);padding:8px 12px 8px 28px;border-radius:4px;margin:0 0 12px;max-height:140px;overflow:auto';
+    v.containers.forEach(function(cname) {
+      var li = document.createElement('li'); li.textContent = cname; list.appendChild(li);
+    });
+    var p2 = document.createElement('p');
+    p2.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:14px';
+    p2.textContent = 'Each container will be stopped + force-removed; then the volume is deleted with an undo window (~'
+      + (window.UNDO_WINDOW_SECS || 5) + 's).';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+    var cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = 'Cancel';
+    cancel.onclick = function() { bg.remove(); reject(new Error('Cancelled')); };
+    var go = document.createElement('button');
+    go.className = 'btn danger';
+    go.textContent = 'Remove ' + v.containers.length + ' container(s) + delete volume';
+    go.onclick = function() {
+      bg.remove();
+      resolve(guardedAction('del-vol-cascade-' + v.name, function() {
+        // Step 1: cascade-remove each container (force=true, no undo
+        // per-item; the volume delete below is what the user undoes).
+        var removals = v.containers.map(function(cname) {
+          return apiFetch(
+            API + '/containers/' + encodeURIComponent(cname) + '?force=true',
+            { method: 'DELETE' },
+          ).catch(function(e) {
+            // One failing container shouldn't abort the whole cascade;
+            // log + continue. The final volume delete will 409 again
+            // if something's still attached, surfacing the problem.
+            return { _failed: cname, err: (e && e.message) || 'remove failed' };
+          });
+        });
+        return Promise.all(removals).then(function(results) {
+          var failed = results.filter(function(r) { return r && r._failed; });
+          if (failed.length) {
+            toast('Failed to remove ' + failed[0]._failed + ': ' + failed[0].err, 'error');
+            return;
+          }
+          // Step 2: delete the volume with undo.
+          return undoableDelete(
+            API + '/volumes/' + encodeURIComponent(v.name),
+            'Volume', loadVolumes,
+          );
+        });
+      }));
+    };
+    row.append(cancel, go);
+    box.append(h3, p1, list, p2, row);
+    bg.appendChild(box);
+    document.body.appendChild(bg);
+    setTimeout(function() { cancel.focus(); }, 0);
+  });
+}
+
+
+/**
+ * Open a file browser for a volume. Docker has no native volume-fs API,
+ * so we POST /volumes/<name>/browse which either returns an existing
+ * container that has the volume mounted, or spawns an alpine helper.
+ * Either way we navigate to that container's Files tab with the mount
+ * path pre-selected — and the ls/files/delete surface the user already
+ * knows from the container browser does the actual read/write.
+ *
+ * If a helper was created, we record its id in sessionStorage so a
+ * later "Close browse session" action can DELETE /browse and remove
+ * the helper. Helpers without explicit cleanup are also fine — they
+ * sit idle until the operator prunes containers.
+ */
+async function _openVolumeBrowse(name) {
+  try {
+    var info = await apiFetch(
+      API + '/volumes/' + encodeURIComponent(name) + '/browse',
+      { method: 'POST' },
+    );
+    // Remember the helper → used by the detail page to offer a Close
+    // button that removes it cleanly.
+    if (info.helper) {
+      sessionStorage.setItem('skiff.volbrowse.' + info.container_id,
+                             JSON.stringify({ volume: name, helper: info.helper }));
+    }
+    if (typeof window.showDetail === 'function') {
+      window.showDetail(info.container_id, name, 'files');
+    } else {
+      // Fallback: navigate to Containers and hope the user finds the row.
+      window.showPage('containers');
+    }
+    // Store the mount path so the Files tab's initial path can be the
+    // volume's mount, not `/` which would just show the container's rootfs.
+    if (!window._filesPath) window._filesPath = {};
+    window._filesPath[info.container_id] = info.mount_path || '/mnt';
+    toast(
+      info.helper
+        ? 'Spawned helper alpine container to browse volume "' + name + '"'
+        : 'Browsing volume "' + name + '" via attached container',
+      'info',
+    );
+  } catch (e) {
+    toast(e.message || 'Browse failed', 'error');
+  }
+}
+
+
 async function _showVolumeInspectModal(name) {
   var body = UI.el('div', { text: t('common.loading') });
   var _raw = null;
@@ -18,6 +149,7 @@ async function _showVolumeInspectModal(name) {
     title: t('volumes.modal.inspect_title', { name: name }),
     body: body,
     actions: [
+      makeBtn('Browse files', function() { m.close(); _openVolumeBrowse(name); }, 'btn primary small'),
       makeBtn('Export JSON', function() {
         if (_raw) UI.downloadJson(_raw, 'volume-' + name + '.json');
       }, 'btn small'),
@@ -73,9 +205,15 @@ async function loadVolumes() {
     ha.append(
       makeBtn(t('volumes.actions.create'), showCreateVolumeModal, 'btn primary'),
       makeActionBtn(t('volumes.actions.prune'), function() {
-        if (!confirm(t('volumes.confirm.prune'))) throw new Error('Cancelled');
+        if (!confirm(t('volumes.confirm.prune') + ' (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
+          throw new Error('Cancelled');
         return guardedAction('prune-volumes', function() {
           return apiFetch(API + '/volumes/prune', { method: 'POST' }).then(function(r) {
+            if (r && r.undo_token) {
+              window.renderUndoToast('Volume prune', r.undo_token, r.expires_in, loadVolumes);
+              return;
+            }
+            // Queue full — server ran synchronously.
             toast(t('volumes.toast.pruned', {
               count: (r.deleted || []).length,
               size: (r.space_reclaimed_mb || 0) + ' MB',
@@ -152,7 +290,18 @@ async function loadVolumes() {
         tdA.appendChild(makeBtn(t('volumes.actions.inspect'), (function(name) {
           return function() { _showVolumeInspectModal(name); };
         })(v.name), 'btn small'));
+        tdA.appendChild(makeBtn('Browse', (function(name) {
+          return function() { _openVolumeBrowse(name); };
+        })(v.name), 'btn small'));
         tdA.appendChild(makeActionBtn(t('common.delete'), function() {
+          // Mounted volumes can't be removed by Docker without first
+          // detaching every container that uses them. Surface that up
+          // front — give the user an explicit "Stop & remove those
+          // containers, then delete the volume" choice instead of
+          // showing a confusing 409 envelope after the click.
+          if (v.in_use && v.containers && v.containers.length) {
+            return _deleteVolumeWithAttachedContainers(v);
+          }
           if (!confirm(t('volumes.confirm.remove', { name: v.name }))) throw new Error('Cancelled');
           return guardedAction('del-vol-' + v.name, function() {
             return undoableDelete(

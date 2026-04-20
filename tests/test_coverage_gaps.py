@@ -600,15 +600,40 @@ def test_get_audit_log_partial_first_line_discarded(client, tmp_path):
         resp = client.get("/api/system/audit-log?tail=5", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert len(resp.json()) == 5
+    # Transparency headers must reflect what was asked vs returned so SIEM
+    # scrapers can detect parse-drops and truncation without diffing the
+    # body against a second call.
+    assert resp.headers["X-Audit-Requested-Tail"] == "5"
+    assert resp.headers["X-Audit-Returned-Count"] == "5"
+    assert resp.headers["X-Audit-Parse-Errors"] == "0"
+    assert int(resp.headers["X-Audit-Server-Cap"]) >= 5
 
 
 def test_get_audit_log_oserror_returns_empty(client, tmp_path):
-    """Missing audit log file returns empty list."""
+    """Missing audit log file returns empty list + zero-count headers."""
     nonexistent = tmp_path / "missing.jsonl"
     with patch("skiff.config.AUDIT_LOG_PATH", nonexistent):
         resp = client.get("/api/system/audit-log", headers=AUTH_HEADER)
     assert resp.status_code == 200
     assert resp.json() == []
+    assert resp.headers["X-Audit-Returned-Count"] == "0"
+
+
+def test_get_audit_log_parse_errors_surfaced_in_headers(client, tmp_path):
+    """Malformed JSONL lines count toward X-Audit-Parse-Errors so ops can
+    correlate with the stderr writer. Was previously silent — the UI
+    rendered {"raw": …} rows as if they were normal events."""
+    log_file = tmp_path / "audit.jsonl"
+    import json as _json
+
+    good = [_json.dumps({"event": f"good{i}"}) for i in range(3)]
+    bad = ["this is not json", "} malformed {"]
+    log_file.write_text("\n".join(good + bad) + "\n")
+    with patch("skiff.config.AUDIT_LOG_PATH", log_file):
+        resp = client.get("/api/system/audit-log?tail=10", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert resp.headers["X-Audit-Parse-Errors"] == "2"
+    assert resp.headers["X-Audit-Returned-Count"] == "5"
 
 
 # ── download_audit_log: missing file ─────────────────────────────────────────

@@ -139,7 +139,9 @@ volumes:
 
 @pytest.mark.unit
 def test_compose_too_large_raises_400():
-    content = b"x" * (1024 * 256 + 1)
+    from skiff import config as _cfg
+
+    content = b"x" * (_cfg.MAX_COMPOSE_SIZE + 1)
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400

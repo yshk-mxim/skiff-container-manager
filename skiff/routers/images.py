@@ -134,7 +134,22 @@ def registry_tags(
         resp.raise_for_status()
         data = resp.json()
         tags = [t["name"] for t in data.get("results", []) if isinstance(t.get("name"), str) and t["name"]]
-        return {"image": image, "tags": tags[: config.REGISTRY_MAX_TAGS]}
+        # Hub's `count` is the repo-wide tag total; we return at most
+        # REGISTRY_MAX_TAGS. Surface both so the client can show "showing
+        # 100 of 1,247 tags — use the search box to narrow down" instead
+        # of silently dropping 90 % of the list (the `3.12-slim`-not-in-
+        # first-100 bug that brought us here).
+        capped = tags[: config.REGISTRY_MAX_TAGS]
+        upstream_total = data.get("count")
+        return {
+            "image": image,
+            "tags": capped,
+            "returned": len(capped),
+            "upstream_total": upstream_total if isinstance(upstream_total, int) else None,
+            "truncated": len(tags) > config.REGISTRY_MAX_TAGS
+            or (isinstance(upstream_total, int) and upstream_total > len(capped)),
+            "cap": config.REGISTRY_MAX_TAGS,
+        }
     except requests.exceptions.RequestException as exc:
         raise http_error("image.tag_fetch_failed", message=f"Tag fetch failed: {exc}") from exc
 
@@ -332,6 +347,23 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
     return OkResponse(image=image)
 
 
+def _do_image_prune(client, dangling_only: bool) -> dict:
+    """Run the actual images.prune and wrap the response. Extracted so
+    the undo-queued path and the immediate-fire path share one sequence."""
+    filters = {} if dangling_only else {"dangling": False}
+    try:
+        r = client.images.prune(filters=filters)
+    except docker.errors.APIError as exc:
+        raise http_error("image.prune_failed", message=str(exc)) from exc
+    deleted = r.get("ImagesDeleted") or []
+    reclaimed = r.get("SpaceReclaimed") or 0
+    return {
+        "ok": True,
+        "deleted_count": len(deleted),
+        "space_reclaimed_mb": round(reclaimed / 1024 / 1024, 1),
+    }
+
+
 @router.post("/api/images/prune", dependencies=AUTH, tags=["images"])
 @secure_route.mutate(
     RATE.WRITE,
@@ -341,32 +373,42 @@ async def push_image(request: Request, image: str, client=Depends(docker_client_
 def prune_images(
     request: Request,
     dangling_only: bool = True,
+    undo: bool = True,
     client=Depends(docker_client_dep),
-) -> dict:
-    """Remove dangling (untagged) images. With `dangling_only=false`, also
-    removes images not referenced by any container — parallel to
+):
+    """Remove dangling (untagged) images. With `dangling_only=false`,
+    also removes images not referenced by any container — parallel to
     `docker image prune -a`.
 
-    The difference matters: `-a` can reclaim large amounts of disk but
-    will delete tags the operator hasn't realised nothing's pulling
-    from. Default to the safer dangling-only behaviour; expose the
-    flag so power-users can opt in."""
-    filters = {} if dangling_only else {"dangling": False}
-    try:
-        r = client.images.prune(filters=filters)
-    except docker.errors.APIError as exc:
-        raise http_error("image.prune_failed", message=str(exc)) from exc
-    deleted = r.get("ImagesDeleted") or []
-    reclaimed = r.get("SpaceReclaimed") or 0
-    # Plain dict instead of OkResponse — the pydantic model uses
-    # extra=forbid, and the UI expects the two reclaimed-space fields
-    # alongside `ok`. Matches the shape of other prune endpoints
-    # (/system/prune, /volumes/prune, /networks/prune).
-    return {
-        "ok": True,
-        "deleted_count": len(deleted),
-        "space_reclaimed_mb": round(reclaimed / 1024 / 1024, 1),
-    }
+    Destructive: a pruned image must be re-pulled (bytes are gone; tags
+    the operator relied on may be buried deep in Hub's ordering). So the
+    default path (`undo=true`) queues the prune for `UNDO_DELAY_SECS` and
+    returns `{undo_token, expires_in}` — the user gets a cancellation
+    window matching every other destructive op. Scripts that want the
+    legacy immediate-fire behaviour pass `undo=false`.
+
+    `dangling_only` defaults to true — the safer option (removes only
+    layers that no tag references, never a reachable image). `-a` can
+    reclaim large amounts of disk but can nuke tags the operator hasn't
+    realised nothing's pulling from."""
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "image",
+            f"prune:{'dangling' if dangling_only else 'all-unused'}",
+            _do_image_prune,
+            client,
+            dangling_only,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    return _do_image_prune(client, dangling_only)
 
 
 @router.delete("/api/images/{image_id}", dependencies=AUTH, tags=["images"])
@@ -426,25 +468,31 @@ def _history_created_to_iso(created: Any) -> str:
     return str(created or "")
 
 
-def _image_history_entries(img: Any) -> list[_ImageHistoryEntry]:
+_IMAGE_HISTORY_CAP = 20
+
+
+def _image_history_entries(img: Any) -> tuple[list[_ImageHistoryEntry], int]:
     """Best-effort history — an engine error yields an empty list, not a 503.
 
-    History is cosmetic: a missing one shouldn't fail the whole inspect.
-    That's why this doesn't go through `safe_docker_call`.
+    Returns `(entries, total)` so the inspect response can tell the UI
+    whether the layer list was truncated. History is cosmetic: a missing
+    one shouldn't fail the whole inspect — that's why this doesn't go
+    through `safe_docker_call`.
     """
     try:
         raw = img.history() or []
     except docker.errors.DockerException:
-        return []
-    return [
+        return [], 0
+    entries = [
         _ImageHistoryEntry(
             created=_history_created_to_iso(h.get("Created")),
             created_by=(h.get("CreatedBy") or "")[:200],
             size_mb=round((h.get("Size") or 0) / 1024 / 1024, 3),
             comment=h.get("Comment") or "",
         )
-        for h in raw[:20]
+        for h in raw[:_IMAGE_HISTORY_CAP]
     ]
+    return entries, len(raw)
 
 
 @router.get("/api/images/{image_id}/inspect", dependencies=AUTH, tags=["images"])
@@ -457,8 +505,10 @@ def inspect_image(
     """Return detailed image metadata and layer history."""
     validators.validate_image_id(image_id)
     img = validators.safe_docker_call(client.images.get, image_id)
+    history, history_total = _image_history_entries(img)
     return ImageInspectResponse.from_docker(
         img,
-        history=_image_history_entries(img),
+        history=history,
+        history_total=history_total,
         redacted_config=validators._redact_dict(img.attrs.get("Config") or {}),
     )

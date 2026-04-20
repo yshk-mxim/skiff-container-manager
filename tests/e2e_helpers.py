@@ -89,10 +89,13 @@ def teardown_container(docker_client: Any, name: str) -> None:
 
 
 def teardown_compose_stack(project_name: str) -> None:
-    """Best-effort: POST /api/compose/down for a project, ignore errors."""
+    """Best-effort: POST /api/compose/down for a project, ignore errors.
+    Uses undo=false so the teardown fires synchronously — otherwise
+    the default undo queue would race a subsequent test's deploy
+    (the deferred down would nuke the fresh stack 5 s later)."""
     try:
         requests.post(
-            f"{BASE_URL}/api/compose/down?project_name={project_name}",
+            f"{BASE_URL}/api/compose/down?project_name={project_name}&undo=false",
             headers=auth_headers(),
             timeout=60,
         )

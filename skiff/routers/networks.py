@@ -169,14 +169,37 @@ def create_network(
     audit="network.deleted",
     audit_fields=lambda request, network_id, **kw: {"id": network_id},  # noqa: ARG005
 )
-def delete_network(request: Request, network_id: str, client=Depends(docker_client_dep)) -> OkResponse:
-    """Remove a user-defined network (default networks are protected)."""
-    # Accept either a hex network id OR a user-defined network name.
+def delete_network(
+    request: Request,
+    network_id: str,
+    undo: bool = False,
+    client=Depends(docker_client_dep),
+):
+    """Remove a user-defined network (default networks are protected).
+    With `undo=true`, removal is queued for `UNDO_DELAY_SECS` and the
+    response carries an undo token — matches every other destructive
+    single-resource delete (container / image / volume)."""
     if not (_NETWORK_ID_RE.fullmatch(network_id) or NETWORK_NAME_RE.fullmatch(network_id)):
         raise http_error("validation.bad_input")
     net = safe_docker_call(client.networks.get, network_id)
     if net.name in _BUILTIN_NETWORKS:
         raise http_error("network.builtin_protected")
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "network",
+            network_id,
+            safe_docker_call,
+            net.remove,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
     safe_docker_call(net.remove)
     return OkResponse()
 
@@ -233,13 +256,38 @@ def disconnect_container_from_network(
     return OkResponse()
 
 
+def _do_networks_prune(client) -> dict[str, Any]:
+    result = safe_docker_call(client.networks.prune)
+    return {"deleted": result.get("NetworksDeleted") or []}
+
+
 @router.post("/api/networks/prune", dependencies=AUTH, tags=["networks"])
 @secure_route.mutate(
     RATE.BURST,
     audit="networks.pruned",
-    audit_fields=lambda request, **kw: {"count": 0},  # noqa: ARG005 — count rewritten post-call is future work
+    audit_fields=lambda request, **kw: {"count": 0},  # noqa: ARG005
 )
-def prune_networks(request: Request, client=Depends(docker_client_dep)) -> dict[str, Any]:
-    """Delete all unused networks."""
-    result = safe_docker_call(client.networks.prune)
-    return {"deleted": result.get("NetworksDeleted") or []}
+def prune_networks(
+    request: Request,
+    undo: bool = True,
+    client=Depends(docker_client_dep),
+):
+    """Delete all unused networks. Default queues the op so a misclick
+    is reversible within the undo window; `undo=false` fires now."""
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "network",
+            "prune:unused",
+            _do_networks_prune,
+            client,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    return _do_networks_prune(client)

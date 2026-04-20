@@ -247,8 +247,16 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
 .reviewer-banner { position: sticky; top: 0; left: 0; right: 0; z-index: 399; padding: 8px 16px; font-size: 12px; font-weight: 600; text-align: center; background: var(--accent); color: #ffffff; letter-spacing: 0.02em; }
 
 /* Toast */
-.toast-container { position: fixed; top: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
-.toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--modal-shadow); animation: fadeIn 0.2s; max-width: 400px; }
+/* The toast container spans the top-right corner but must not
+ * intercept clicks on elements underneath (row action buttons, sidebar
+ * links, bell icon). `pointer-events:none` on the container lets
+ * clicks pass through the empty gaps; each toast restores
+ * `pointer-events:auto` so its own Undo link is still clickable. */
+/* Toasts sit below the notification bell (top:12 + 36 = 48 + gap).
+   Previous top:16 placed them underneath the bell's hit region, so the
+   bell intercepted clicks on the Undo link inside undo-toasts. */
+.toast-container { position: fixed; top: 60px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--modal-shadow); animation: fadeIn 0.2s; max-width: 400px; pointer-events: auto; }
 .toast.success { background: var(--toast-success-bg); color: var(--toast-success-fg); }
 .toast.error   { background: var(--toast-error-bg);   color: var(--toast-error-fg); }
 .toast.info    { background: var(--toast-info-bg);    color: var(--toast-info-fg); }
@@ -332,6 +340,38 @@ body.reviewer-mode .btn.danger { display: none !important; }
 .modal input,.modal select,.modal textarea { width: 100%; padding: 9px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; font-family: inherit; }
 .modal input:focus,.modal textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+
+/* Form error banner (ui.js `form()`). Lives below the fields; rendered
+   visible only when setError() is called. Red left border + subdued tinted
+   background distinguishes it from toast error (transient) vs banner (sticky
+   server envelope message — user reads it, edits their input, retries). */
+.field-error { margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--red); background: var(--danger-hover-bg); color: var(--red); font-size: 13px; line-height: 1.45; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+
+/* Settings page (pages/settings.js). One table of every exposed knob, grouped
+   by the section header it sits under in skiff/config.py. Badges flag the
+   provenance (ENV override / TOML default / inline default) and editability
+   (RESTART-required vs LIVE-editable). */
+.settings-subtitle { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.6; }
+.settings-subtitle a { color: var(--accent); text-decoration: none; }
+.settings-subtitle a:hover { text-decoration: underline; }
+.settings-table { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.settings-group { background: var(--bg-elevated); padding: 8px 14px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; border-top: 1px solid var(--border); }
+.settings-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(140px, 1fr) auto; align-items: baseline; gap: 14px; padding: 10px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.settings-row:first-child { border-top: none; }
+.settings-name-id { font-family: monospace; font-size: 12px; color: var(--text-strong); font-weight: 500; }
+.settings-name-doc { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.settings-value { font-family: monospace; font-size: 12px; color: var(--text); word-break: break-all; }
+.settings-value-secret { color: var(--muted); font-style: italic; }
+.settings-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.settings-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px; letter-spacing: .04em; white-space: nowrap; }
+.settings-badge-live { background: var(--accent); color: white; }
+/* Security-locked = hard stop; use the danger palette to signal don't-touch */
+.settings-badge-security { background: var(--danger-hover-bg); color: var(--red); }
+/* Lifecycle = informational; muted so it doesn't compete with actionable rows */
+.settings-badge-lifecycle { background: var(--bg-elevated); color: var(--muted); }
+.settings-edit-btn { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--accent); cursor: pointer; }
+.settings-edit-btn:hover { background: var(--bg-elevated); }
+.settings-empty { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
 
 /* Log viewer — intentionally dark in BOTH themes (terminal convention) */
 .log-viewer { background: var(--log-bg); border-radius: 8px; padding: 16px; font-size: 12px; line-height: 1.7; max-height: 450px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--log-text); position: relative; }

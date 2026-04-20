@@ -24,8 +24,14 @@
 MAX_LOG_TAIL = 5000                   # lines in a single /logs response
 MAX_AUDIT_LINES = 2000                # lines in a single /audit-log response
 MAX_CONTAINERS = 50                   # max containers the UI enumerates
-MAX_COMPOSE_SIZE = 262144             # 256 KiB — compose file upload cap
+MAX_COMPOSE_SIZE = 2097152            # 2 MiB — compose file upload cap (complex stacks with inline env/scripts routinely pass 1 MiB)
 MAX_PORT_MAPPINGS = 10                # max published ports per `docker run`
+
+# ── Browser-side polling + timing (milliseconds) ───────────
+CONTAINERS_POLL_MS = 5000             # containers list refresh interval
+DASHBOARD_POLL_MS  = 8000             # dashboard counters refresh interval
+EVENTS_POLL_MS     = 5000             # system events tail refresh interval
+FETCH_TIMEOUT_MS   = 30000            # default fetch() abort (long ops override)
 CONTAINER_CP_MAX_MB = 64              # file copy in/out cap per request
 CONTAINER_LS_MAX_ENTRIES = 2000       # max dir entries returned by /api/containers/{id}/ls
 

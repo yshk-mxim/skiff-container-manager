@@ -50,6 +50,33 @@ def _lock_for_project(safe_name: str) -> threading.Lock:
         return lock
 
 
+@router.get("/api/compose/templates", dependencies=AUTH, tags=["compose"])
+@secure_route.read(RATE.READ)
+def list_compose_templates(request: Request) -> dict:
+    """Return the curated docker-compose stack catalogue.
+
+    Each entry includes the YAML, enumerated images, and a list of env
+    knobs the user must fill in before deploy. `is_allowed` reflects
+    whether EVERY image in the stack's registry is on the current
+    allowlist — a stack with even one blocked image renders greyed on
+    the UI with the offending image named in `reject_reason`.
+
+    Parallels `GET /api/templates` for single-container app templates."""
+    allowed: list[dict] = []
+    for tmpl in config._COMPOSE_TEMPLATES:
+        entry = dict(tmpl)
+        rejects: list[str] = []
+        for image in tmpl.get("images", []):
+            try:
+                validators.validate_image_registry(image)
+            except HTTPException as exc:
+                rejects.append(f"{image}: {exc.detail!s}")
+        entry["is_allowed"] = not rejects
+        entry["reject_reason"] = "; ".join(rejects)
+        allowed.append(entry)
+    return {"templates": allowed}
+
+
 @router.get("/api/compose/stacks", dependencies=AUTH, tags=["compose"])
 @secure_route.read(RATE.READ)
 def list_compose_stacks(request: Request, client=Depends(docker_client_dep)):
@@ -396,26 +423,12 @@ def compose_service_restart(
     return {"project": project_name, "service": service_name, "restarted": restarted}
 
 
-@router.post("/api/compose/down", dependencies=AUTH, tags=["compose"])
-@secure_route.mutate(
-    RATE.AUTH_SENSITIVE,
-    audit="compose.down",
-    audit_fields=lambda request, project_name="dev", **kw: {"project": project_name},  # noqa: ARG005
-)
-def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
-    """Tear down a running Compose stack."""
-    validators.validate_project_name(project_name)
+def _do_compose_down(project_name: str) -> OkResponse:
     safe_name = _sanitize_project_name(project_name)
     project_dir = _find_project_dir(safe_name)
     if project_dir is None:
-        # No deploy ever happened for this name — return 404 instead of
-        # creating an empty project dir just to `docker compose down`
-        # against a nonexistent stack (which would fail + leave a dir).
         raise http_error("compose.not_found", project=project_name)
     compose_path = project_dir / "docker-compose.yml"
-    # `docker compose down -p <name>` without `-f` resolves the compose file
-    # from the subprocess CWD; here we pass `-f` so teardown works regardless
-    # of where the server was launched from, matching `_run_compose_up`.
     compose_args = [*config.COMPOSE_CMD, "-p", project_name, "down"]
     if compose_path.exists():
         compose_args = [*config.COMPOSE_CMD, "-f", str(compose_path), "-p", project_name, "down"]
@@ -434,11 +447,43 @@ def compose_down(request: Request, project_name: str = "dev") -> OkResponse:
         log.warning("compose.down_failed", project=project_name, stderr=result.stderr[:500])
         detail = validators._sanitize_stderr(result.stderr) if result.stderr else "Compose teardown failed"
         raise http_error("compose.deploy_failed", message=detail)
-    # Successful teardown: remove the project dir so `GET /api/compose/stacks`
-    # doesn't list a phantom project that has no running containers and no
-    # way for the operator to know whether cleanup needs a manual rm -rf.
     shutil.rmtree(project_dir, ignore_errors=True)
     return OkResponse(output=str(result.stdout) if result.stdout is not None else None)
+
+
+@router.post("/api/compose/down", dependencies=AUTH, tags=["compose"])
+@secure_route.mutate(
+    RATE.AUTH_SENSITIVE,
+    audit="compose.down",
+    audit_fields=lambda request, project_name="dev", **kw: {"project": project_name},  # noqa: ARG005
+)
+def compose_down(
+    request: Request,
+    project_name: str = "dev",
+    undo: bool = True,
+):
+    """Tear down a running Compose stack. Destructive — removes every
+    service container + the project dir. Default queues the op for
+    `UNDO_DELAY_SECS`; scripts can pass `undo=false` for immediate
+    execution. Volumes survive compose down (docker compose spec)."""
+    validators.validate_project_name(project_name)
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "compose",
+            project_name,
+            _do_compose_down,
+            project_name,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    return _do_compose_down(project_name)
 
 
 # ── Stack-level lifecycle: stop / start / pull / scale / validate ─────────
@@ -546,13 +591,19 @@ def compose_scale(
     project_name: str,
     service_name: str,
     replicas: int,
-) -> OkResponse:
+    undo: bool = False,
+):
     """Scale a service to N replicas.
 
-    `replicas` is bounded by `COMPOSE_MAX_REPLICAS` (host policy) to
-    prevent a runaway ask from exhausting the engine. Docker compose
-    itself will reject N=0 on some versions — we allow it here for
-    "stop without removing the service definition"."""
+    `replicas` is bounded by `COMPOSE_MAX_REPLICAS` (host policy).
+    Docker compose itself will reject N=0 on some versions — we allow
+    it here for "stop without removing the service definition".
+
+    Pass `undo=true` when scaling DOWN (kills replica containers) so
+    the operator has a window to reverse. The UI sets this on a per-
+    click basis (scale-up needs no undo; scale-down does). Server runs
+    the requested replicas count verbatim when the undo window fires
+    — no pre-scan, so scale-up + `undo=true` is a legal no-op."""
     if not validators.SERVICE_NAME_RE.fullmatch(service_name):
         raise http_error("validation.bad_input")
     max_replicas = config.COMPOSE_MAX_REPLICAS
@@ -562,8 +613,24 @@ def compose_scale(
             message=f"replicas must be between 0 and {max_replicas}",
         )
     spec = f"{service_name}={replicas}"
-    return _compose_stack_op(
-        project_name,
-        ["up", "-d", "--scale", spec, "--no-recreate"],
-        config.COMPOSE_UP_TIMEOUT,
-    )
+    args = ["up", "-d", "--scale", spec, "--no-recreate"]
+    timeout = config.COMPOSE_UP_TIMEOUT
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "compose",
+            f"{project_name}:scale:{service_name}={replicas}",
+            _compose_stack_op,
+            project_name,
+            args,
+            timeout,
+        )
+        if token is not None:
+            from skiff.contract.responses import UndoableResponse
+
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    return _compose_stack_op(project_name, args, timeout)

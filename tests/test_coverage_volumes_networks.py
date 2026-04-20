@@ -48,6 +48,15 @@ def test_create_volume(client, mock_docker):
 def test_create_volume_invalid_name(client, mock_docker):
     resp = client.post("/api/volumes/create?name=invalid name!", headers=AUTH_CSRF)
     assert resp.status_code == 400
+    # Envelope must TELL THE USER WHY the name is invalid — an empty
+    # "invalid volume name" message left a novice staring at a silent form
+    # with no hint about the space-in-name rule. Keep this assertion
+    # strict: any future message change must keep the guidance.
+    detail = resp.json()["detail"]
+    assert detail["code"] == "volume.bad_name"
+    msg = detail["message"].lower()
+    assert "letters" in msg or "alphanumeric" in msg or "a-z" in msg, msg
+    assert "space" in msg or "punctuation" in msg or "slash" in msg, msg
 
 
 def test_delete_volume(client, mock_docker):
@@ -68,7 +77,7 @@ def test_prune_volumes(client, mock_docker):
         "VolumesDeleted": ["vol1", "vol2"],
         "SpaceReclaimed": 1024 * 1024 * 10,
     }
-    resp = client.post("/api/volumes/prune", headers=AUTH_CSRF)
+    resp = client.post("/api/volumes/prune?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     data = resp.json()
     assert data["deleted"] == ["vol1", "vol2"]
@@ -168,7 +177,7 @@ def test_disconnect_container_invalid_network_id(client, mock_docker):
 
 def test_prune_networks(client, mock_docker):
     mock_docker.networks.prune.return_value = {"NetworksDeleted": ["net1"]}
-    resp = client.post("/api/networks/prune", headers=AUTH_CSRF)
+    resp = client.post("/api/networks/prune?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     assert resp.json()["deleted"] == ["net1"]
 

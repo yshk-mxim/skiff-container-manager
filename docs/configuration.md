@@ -3,16 +3,52 @@
 How to tune SKIFF without editing Python source.
 
 Every operational knob — timeouts, sizes, concurrency caps, retention,
-lockout windows — has three layers that decide its final value:
+lockout windows — resolves through a fixed precedence chain. The rule is
+the same everywhere: higher layers win, no layer silently shadows a
+lower one, the chain is evaluated once at process start (never partially
+at runtime).
 
 1. **Environment variable** (per-host override) — highest precedence.
-2. **`skiff/_config/defaults.toml`** (fleet-wide defaults) — middle precedence.
-3. **Validator fallback** in `skiff/config.py` — last resort.
+   Sticks across restarts. Set by the operator, immutable within a
+   process.
+2. **Runtime `/api/setup` values** (wizard-managed, in-memory only) —
+   applies ONLY to `API_TOKEN`, `DOCKER_HOST`, `ALLOWED_REGISTRIES`, and
+   only when the corresponding env var is unset. Ephemeral by design
+   (no plaintext-token file on disk); lost on restart. If the env var
+   *is* set, the setup endpoint refuses with `setup.env_managed` — the
+   env-var layer cannot be overwritten at runtime.
+3. **`skiff/_config/defaults.toml`** (fleet-wide defaults) — committed
+   to git so every baseline change is diff-reviewed.
+4. **Inline `default=…`** in `skiff/config.py` — last-resort fallback
+   for knobs genuinely not in the TOML (e.g. `MAX_BODY_BYTES`,
+   `AUDIT_MAX_MB`, `SKIFF_DEBUG_THREADS`).
+
+**Client side** (browser) adds one layer below all four:
+
+5. **Hardcoded JS fallback** in `skiff/static/app.js`
+   (`SESSION_IDLE_MS`, `UNDO_WINDOW_SECS`, `FETCH_TIMEOUT_MS`). Used
+   only before `/api/config` resolves on first paint; immediately
+   overridden by the server's authoritative value once the response
+   arrives. If you change a TOML knob that's also exposed to the GUI,
+   the fallback should match the TOML value to prevent first-paint
+   drift — `_applySessionTimeoutsFromConfig()` reconciles.
 
 A per-host tweak is an env var. A fleet-wide change is a TOML edit +
 restart. Changes that alter security policy stay in Python and require a
 reviewed source patch — see [Policy-pinned values](#policy-pinned-values)
 below.
+
+**Security properties of the chain** (invariants tests + `tests/test_security.py` enforce):
+- Env var values NEVER leak to `/api/config`: only `expose=True` knobs are
+  published, and `secret=True` knobs (like `API_TOKEN`) never carry
+  `expose=True`.
+- `/api/setup` refuses when `_cfg.from_env` is set — operator intent
+  (env var) wins over any subsequent UI input.
+- Token-rotation + reset routes refuse when `from_env` is set —
+  the env-var-set operator is always the authority.
+- Client-side fallbacks are CAPPED at sane bounds (idle ≥ 60s, absolute
+  ≥ 300s) so a malicious / misconfigured `/api/config` response can't
+  downgrade the timer to 0 and effectively disable auth.
 
 The full list of every registered knob lives in
 [`docs/config-knobs.md`](config-knobs.md) (auto-generated from the

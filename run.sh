@@ -59,12 +59,21 @@ if [ -z "${VIRTUAL_ENV:-}" ]; then
   source .venv/bin/activate
 fi
 
-# Install dependencies + the skiff package itself. Editable install keeps
-# source-edit round-trip fast AND makes `uvicorn skiff.app:app` below work
-# regardless of the current working directory (plain `pip install -r` would
-# pull wheels but leave the `skiff.*` module not importable from outside
-# the repo root).
-pip install --quiet -e . -r requirements.txt
+# Install dependencies + the skiff package itself. Two-step because
+# requirements.txt is hash-pinned (`pip-compile --generate-hashes`);
+# pip enters strict `--require-hashes` mode as soon as any hash is
+# present, and an editable local path (`-e .`) has no hash to verify,
+# so combining them in one call fails with:
+#   "cannot be installed when requiring hashes, because there is no
+#    single file to hash."
+# Order:
+#   1. Install all runtime deps from the locked, hashed list.
+#   2. Install the skiff package itself as editable, skipping dep
+#      resolution so hashed pins from step 1 are not re-evaluated.
+# Editable install is kept so source-edits round-trip without a
+# reinstall and `uvicorn skiff.app:app` works from any cwd.
+pip install --quiet -r requirements.txt
+pip install --quiet --no-deps -e .
 
 # Verify docker CLI is available (needed for compose commands)
 if ! command -v docker &>/dev/null; then

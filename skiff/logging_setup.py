@@ -699,19 +699,46 @@ class BodySizeLimitMiddleware:
             return None
 
     @staticmethod
-    async def _send_413(send) -> None:
-        body = b'{"detail":{"code":"validation.body_too_large","message":"request body exceeds size cap"}}'
+    async def _send_413(send, declared: int | None = None) -> None:
+        # Tell the user the ACTUAL limit — "exceeds size cap" was
+        # effectively a black box. Include both the declared body size
+        # (so "1.0 MB exceeds 512 KiB cap" is self-explanatory) and the
+        # knob name so an operator knows what to raise.
+        cap = config.MAX_BODY_BYTES
+
+        def _fmt(n: int) -> str:
+            if n >= 1024 * 1024:
+                return f"{n / (1024 * 1024):.1f} MiB"
+            if n >= 1024:
+                return f"{n / 1024:.1f} KiB"
+            return f"{n} B"
+
+        if declared is not None:
+            msg = (
+                f"request body {_fmt(declared)} exceeds server cap of {_fmt(cap)}. "
+                f"Raise MAX_BODY_BYTES on the server to lift this limit."
+            )
+        else:
+            msg = (
+                f"request body exceeds server cap of {_fmt(cap)}. "
+                f"Raise MAX_BODY_BYTES on the server to lift this limit."
+            )
+        payload = (
+            b'{"detail":{"code":"validation.body_too_large","message":"'
+            + msg.encode("utf-8").replace(b'"', b'\\"')
+            + b'"}}'
+        )
         await send(
             {
                 "type": "http.response.start",
                 "status": 413,
                 "headers": [
                     (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
+                    (b"content-length", str(len(payload)).encode()),
                 ],
             }
         )
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": payload})
 
     @staticmethod
     async def _send_408(send) -> None:
@@ -739,7 +766,7 @@ class BodySizeLimitMiddleware:
         headers = dict(scope.get("headers", []))
         declared = self._parse_content_length(headers.get(b"content-length"))
         if declared is not None and declared > config.MAX_BODY_BYTES:
-            await self._send_413(send)
+            await self._send_413(send, declared=declared)
             return
 
         # Slow-POST defence: wrap `receive` so a client that drips the

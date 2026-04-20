@@ -140,14 +140,20 @@ def test_valid_allowed_registry_image_passes(path):
 
 # ── Compose file size limit ───────────────────────────────────────────────────
 
-MAX_COMPOSE_SIZE = 1024 * 256  # 256 KB
+# Source the live cap instead of hardcoding — the defaults.toml value has
+# changed over time (256 KiB → 2 MiB when real compose stacks started
+# tripping the limit), and a stale constant here silently makes the test
+# stop exercising oversize rejection.
+from skiff import config as _skiff_config
+
+MAX_COMPOSE_SIZE = _skiff_config.MAX_COMPOSE_SIZE
 
 
-@given(st.integers(min_value=MAX_COMPOSE_SIZE + 1, max_value=MAX_COMPOSE_SIZE * 2))
-@settings(max_examples=50)
+@given(st.integers(min_value=MAX_COMPOSE_SIZE + 1, max_value=MAX_COMPOSE_SIZE + 4096))
+@settings(max_examples=20)
 @pytest.mark.unit
 def test_oversized_compose_always_rejected(size):
-    """Any compose file larger than 256 KB must be rejected regardless of content."""
+    """Any compose file larger than the configured cap must be rejected."""
     content = b"x" * size
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)

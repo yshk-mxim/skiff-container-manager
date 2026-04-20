@@ -346,7 +346,13 @@
       return label;
     });
 
-    var errorBanner = el('div', { class: 'field-error', style: 'display:none' });
+    var errorBanner = el('div', { class: 'field-error', style: 'display:none', role: 'alert', 'aria-live': 'polite' });
+
+    function setError(msg) {
+      errorBanner.textContent = msg == null ? '' : String(msg);
+      errorBanner.style.display = msg ? 'block' : 'none';
+    }
+    function clearError() { setError(''); }
 
     function getValues() {
       var values = {};
@@ -390,16 +396,22 @@
         ev.preventDefault();
         var err = validate();
         if (err) {
-          errorBanner.style.display = 'block';
-          errorBanner.textContent = err;
+          setError(err);
           return;
         }
-        errorBanner.style.display = 'none';
+        clearError();
         if (submitHandler) submitHandler(getValues());
       }},
     }, fieldRows, errorBanner);
 
-    return { form: frm, getValues: getValues, setValues: setValues, onSubmit: onSubmit };
+    return {
+      form: frm,
+      getValues: getValues,
+      setValues: setValues,
+      onSubmit: onSubmit,
+      setError: setError,
+      clearError: clearError,
+    };
   }
 
   /**
@@ -440,14 +452,41 @@
     // Wire submit onto the form root so the browser Enter key works.
     frm.form.appendChild(el('div', { class: 'actions' }, cancelBtn, submitBtn));
 
+    // Submit plumbing: render every failure in the form's error banner so the
+    // user always sees WHY their input was rejected. Async onSubmit() that
+    // rejects (e.g. apiFetch throwing on a 4xx envelope) used to silently
+    // swallow the error — now its `err.message` (already populated from the
+    // server envelope's `detail.message` by apiFetch) goes straight to the
+    // banner. Submit button is disabled+relabelled while the promise is
+    // pending so double-clicks can't fire a second request.
+    var submitPending = false;
+    var _submitLabel = submitBtn.textContent;
+    function _setPending(p) {
+      submitPending = p;
+      submitBtn.disabled = p;
+      submitBtn.classList.toggle('loading', p);
+      submitBtn.textContent = p ? (spec.pendingLabel || 'Working…') : _submitLabel;
+    }
     frm.onSubmit(function(values) {
+      if (submitPending) return;
+      frm.clearError();
       var result;
-      try { result = spec.onSubmit(values); }
-      catch (e) { throw e; }  // let the form's error banner render it
-      // If the callback returned a promise, close only after it resolves.
+      try {
+        result = spec.onSubmit(values);
+      } catch (e) {
+        frm.setError(e && e.message ? e.message : 'Submit failed');
+        return;
+      }
       if (result && typeof result.then === 'function') {
-        result.then(function() { m.close(); },
-                    function() { /* error stays rendered in the form banner */ });
+        _setPending(true);
+        result.then(
+          function() { _setPending(false); m.close(); },
+          function(err) {
+            _setPending(false);
+            var msg = (err && err.message) ? err.message : 'Submit failed';
+            frm.setError(msg);
+          },
+        );
       } else {
         m.close();
       }

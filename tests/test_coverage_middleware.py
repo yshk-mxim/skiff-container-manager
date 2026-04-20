@@ -73,7 +73,14 @@ def test_body_size_limit_rejects_oversize_content_length(client):
         content=oversize,
     )
     assert resp.status_code == 413
-    assert resp.json()["detail"]["code"] == "validation.body_too_large"
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation.body_too_large"
+    # Envelope must name the server knob AND quote the actual cap so the
+    # user can fix it without digging through logs. Was previously a bare
+    # "exceeds size cap" string that taught the user nothing.
+    msg = detail["message"]
+    assert "MAX_BODY_BYTES" in msg, msg
+    assert "KiB" in msg or "MiB" in msg or "B" in msg, msg
 
 
 def test_body_size_limit_allows_small_requests(client, mock_docker):
@@ -215,10 +222,16 @@ def test_validate_image_registry_docker_io_allowed():
 
 
 def test_validate_compose_file_too_large():
-    content = b"a" * (256 * 1024 + 1)
+    from skiff import config as _cfg
+
+    content = b"a" * (_cfg.MAX_COMPOSE_SIZE + 1)
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
+    # Envelope message must quote the knob name so the user knows where
+    # to raise the cap — "compose file too large" without a pointer left
+    # ops digging through source.
+    assert "MAX_COMPOSE_SIZE" in exc.value.detail["message"]
 
 
 def test_validate_compose_file_invalid_yaml():

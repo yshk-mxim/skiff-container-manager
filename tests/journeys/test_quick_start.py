@@ -32,7 +32,11 @@ def _open_template(page, tid: str, timeout: int) -> None:
     """Navigate Templates → click a template card → wait for the
     prefilled Run modal to render. Reused across template journeys."""
     page.locator(".sidebar a:has-text('Templates')").click()
-    page.wait_for_selector("h2:has-text('App templates')", timeout=timeout)
+    # Page h2 was renamed from "Templates" to "Templates" when the
+    # Stacks (docker-compose) section was added alongside single-container
+    # apps. The data-testid on each template card is unchanged, so the
+    # click selector below still finds the right row.
+    page.wait_for_selector("h2:has-text('Templates')", timeout=timeout)
     card = page.locator(f"[data-testid='template-{tid}']")
     # Templates whose registry is not allowed render disabled; skip
     # those journeys on the CI with a restricted allowlist.
@@ -187,7 +191,7 @@ def test_journey_hobbyist_finds_template_by_search(audited_page, live_server, au
 
     with step("step_2_nav_templates"):
         page.locator(".sidebar a:has-text('Templates')").click()
-        page.wait_for_selector("h2:has-text('App templates')", timeout=SHORT)
+        page.wait_for_selector("h2:has-text('Templates')", timeout=SHORT)
 
     with step("step_3_type_search_query"):
         search = page.locator("input[type='search']").first
@@ -361,7 +365,7 @@ def test_journey_images_prune_returns_reclaimed(audited_page, live_server, audit
 
     with step("step_1_prune_images"):
         r = requests.post(
-            f"{live_server.rstrip('/')}/api/images/prune",
+            f"{live_server.rstrip('/')}/api/images/prune?undo=false",
             headers=auth_headers(),
             timeout=60,
         )

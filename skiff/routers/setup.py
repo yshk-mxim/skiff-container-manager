@@ -192,11 +192,7 @@ def _validate_api_token(api_token: str, client_ip: str) -> str:
         raise http_error("setup.token_too_short", minimum=config.MIN_TOKEN_LENGTH)
     if len(stripped) > _MAX_TOKEN_LENGTH:
         _fail(client_ip, "token_too_long")
-        raise http_error(
-            "setup.token_too_short",
-            minimum=config.MIN_TOKEN_LENGTH,
-            message=f"api_token length must be at most {_MAX_TOKEN_LENGTH} characters",
-        )
+        raise http_error("setup.token_too_long", maximum=_MAX_TOKEN_LENGTH)
     if not _TOKEN_ALLOWED_RE.match(stripped):
         _fail(client_ip, "token_bad_charset")
         raise http_error("setup.token_bad_charset")

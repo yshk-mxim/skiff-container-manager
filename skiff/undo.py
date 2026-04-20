@@ -72,6 +72,13 @@ class UndoQueue:
         should fall back to synchronous execution). Tokens are cryptographically
         random; cannot be guessed or enumerated.
         """
+        # Operator opted out of undo entirely (UNDO_DELAY_SECS=0): no
+        # point creating a Timer(0) + token the caller would have to
+        # round-trip to cancel within a zero window. Return None so the
+        # route falls back to its synchronous-fire path and the client
+        # skips rendering a pointless undo toast.
+        if self._delay <= 0:
+            return None
         token = secrets.token_urlsafe(16)
         with self._lock:
             if len(self._ops) >= config.UNDO_QUEUE_MAX_DEPTH:

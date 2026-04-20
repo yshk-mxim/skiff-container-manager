@@ -264,7 +264,9 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
     )
     # Pre-clean
     try:
-        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}", headers=_auth_headers(), timeout=30)
+        requests.post(
+            f"{BASE_URL}/api/compose/down?project_name={project}&undo=false", headers=_auth_headers(), timeout=30
+        )
     except requests.exceptions.RequestException:
         pass
 
@@ -315,7 +317,9 @@ def test_j3_compose_full_lifecycle(page, live_server, docker_client):
 
     assert not findings, f"Unexpected server stderr during J3:\n{chr(10).join(findings)}"
     try:
-        requests.post(f"{BASE_URL}/api/compose/down?project_name={project}", headers=_auth_headers(), timeout=30)
+        requests.post(
+            f"{BASE_URL}/api/compose/down?project_name={project}&undo=false", headers=_auth_headers(), timeout=30
+        )
     except requests.exceptions.RequestException:
         pass
 

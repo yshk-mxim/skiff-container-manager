@@ -192,6 +192,27 @@ _EVENTS: dict[str, _EventSpec] = {
         required=("docker_host", "registries"),
         description="First-boot setup completed successfully.",
     ),
+    "config.knob_updated": _EventSpec(
+        required=("name", "old", "new"),
+        description=(
+            "Operator edited a LIVE-editable knob via the Settings page "
+            "(PUT /api/config/knobs/<name>). Ephemeral — the change holds "
+            "until the next process restart. Secret knobs render their "
+            "old/new values as '[redacted]'."
+        ),
+    ),
+    "container.cp_delete": _EventSpec(
+        required=("id", "path"),
+        description=(
+            "File or directory deleted from a container's filesystem via "
+            "DELETE /api/containers/{id}/files. Fired when the rm actually "
+            "runs — either inline (undo=false) or at the end of the undo "
+            "window. Scope includes volume-backed paths (a delete under "
+            "/data where a named volume is mounted removes the volume's "
+            "content), so this event is the audit trail for volume-data "
+            "mutations that don't touch the volume itself."
+        ),
+    ),
     # ── Container lifecycle ───────────────────────────────────────────────
     "container.created": _EventSpec(
         required=("id", "name", "image"),
@@ -301,6 +322,42 @@ _EVENTS: dict[str, _EventSpec] = {
     "container.cp_put_ok": _EventSpec(
         required=("id", "path", "size_bytes"),
         description="Container cp-put succeeded.",
+    ),
+    "container.cp_delete_ok": _EventSpec(
+        required=("id", "path"),
+        description="Container cp-delete (inline or post-undo-window) succeeded.",
+    ),
+    "volume.browse_opened": _EventSpec(
+        required=("volume",),
+        description=(
+            "Operator opened a file-browse session for a volume via "
+            "POST /api/volumes/{name}/browse. Either surfaces an "
+            "already-attached container or spawns a short-lived alpine "
+            "helper with the volume mounted."
+        ),
+    ),
+    "volume.browse_closed": _EventSpec(
+        required=("volume",),
+        description=(
+            "Operator closed a file-browse session — DELETE "
+            "/api/volumes/{name}/browse removed the helper that was "
+            "created for the session."
+        ),
+    ),
+    "volume.browse_via_attached": _EventSpec(
+        required=("volume", "container_id", "path"),
+        description=(
+            "Browse session reused an already-attached container "
+            "instead of spawning a helper (no new container created)."
+        ),
+    ),
+    "volume.browse_helper_spawned": _EventSpec(
+        required=("volume", "container_id", "name"),
+        description="Alpine helper created so an orphan volume can be browsed.",
+    ),
+    "volume.browse_helper_removed": _EventSpec(
+        required=("volume", "container_id"),
+        description="Alpine browse-helper cleanly removed by DELETE /browse.",
     ),
     "container.committed": _EventSpec(
         required=("id", "repository", "tag"),

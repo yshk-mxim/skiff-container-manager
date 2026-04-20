@@ -226,7 +226,12 @@ def test_setup_token_too_long_rejected():
                 headers=CSRF,
             )
             assert r.status_code == 400
-            assert "at most 512" in r.json()["detail"]["message"]
+            detail = r.json()["detail"]
+            # Envelope must be the dedicated too-long code (previously raised
+            # token_too_short, which confused operators). Message still names
+            # the 512-char cap so the operator knows what to trim.
+            assert detail["code"] == "setup.token_too_long"
+            assert "512" in detail["message"]
     finally:
         config_module._cfg.api_token = original_token
         setup_module._setup_failures.clear()

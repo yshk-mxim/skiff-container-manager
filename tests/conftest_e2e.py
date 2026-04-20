@@ -400,6 +400,15 @@ def page(browser, live_server):
     pg.on("pageerror", lambda err: js_errors.append(str(err)))
 
     pg.goto(live_server, wait_until="domcontentloaded")
+    # Pre-set the first-run tour's done-flag BEFORE the tour script
+    # reads it. Without this, the tour overlay renders and intercepts
+    # every subsequent click in every test — the root of a long tail
+    # of flaky "element not visible" / "tour-overlay intercepts pointer
+    # events" failures across the e2e suite.
+    try:
+        pg.evaluate("() => localStorage.setItem('skiff.tour.done', '1')")
+    except Exception:  # nosec B110
+        pass
     # Wait for login form OR the authenticated sidebar.
     # Do NOT wait for h2 — it's rendered only after the Docker API responds,
     # so it's slow under load and causes fixture timeouts under threadpool pressure.
@@ -410,6 +419,19 @@ def page(browser, live_server):
         sign_in.click()
         # Sidebar renders immediately after login — no Docker round-trip required.
         pg.wait_for_selector(".sidebar", timeout=10_000)
+    # Belt + braces: if the tour still rendered (race with the JS
+    # that reads localStorage), click Skip or press Escape to dismiss.
+    tour = pg.locator(".tour-overlay")
+    if tour.count() > 0 and tour.first.is_visible():
+        skip = pg.locator(".tour-overlay button:has-text('Skip')")
+        if skip.count() > 0:
+            skip.first.click()
+        else:
+            pg.keyboard.press("Escape")
+        try:
+            tour.first.wait_for(state="hidden", timeout=3_000)
+        except Exception:  # nosec B110
+            pass
 
     pg._e2e_js_errors = js_errors  # type: ignore[attr-defined]
     yield pg

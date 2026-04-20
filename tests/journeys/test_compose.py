@@ -71,7 +71,7 @@ def _down(live_server: str, project: str) -> None:
 
     try:
         requests.post(
-            f"{live_server.rstrip('/')}/api/compose/down",
+            f"{live_server.rstrip('/')}/api/compose/down?undo=false",
             params={"project_name": project},
             headers=auth_headers(),
             timeout=120,
@@ -391,7 +391,7 @@ def test_journey_compose_explicit_tear_down(audited_page, live_server, audit_obs
             _deploy(live_server, project, _MINIMAL_YAML)
         with step("step_2_down"):
             r = requests.post(
-                f"{live_server.rstrip('/')}/api/compose/down",
+                f"{live_server.rstrip('/')}/api/compose/down?undo=false",
                 params={"project_name": project},
                 headers=auth_headers(),
                 timeout=120,
@@ -439,7 +439,7 @@ def test_journey_compose_yaml_export_reimport_cycle(audited_page, live_server, a
             exported = r.content
         with step("step_2_down"):
             requests.post(
-                f"{live_server.rstrip('/')}/api/compose/down",
+                f"{live_server.rstrip('/')}/api/compose/down?undo=false",
                 params={"project_name": project},
                 headers=auth_headers(),
                 timeout=120,

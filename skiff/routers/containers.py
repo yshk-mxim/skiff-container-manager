@@ -1205,26 +1205,39 @@ def _parse_ls_line(raw_line: str) -> dict | None:
 
     Returns None for header lines (`total N`), blanks, `.` / `..`, and
     any row that doesn't have the expected column count. Works against
-    both GNU coreutils (with `--full-time`) and busybox `ls`."""
+    both GNU coreutils (with `--full-time`) and busybox `ls`.
+
+    Filenames may contain spaces, so we must NOT use `rsplit` to pluck
+    the last word. Column layout (both variants below put the filename
+    at index 8, i.e. the 9th whitespace-delimited token):
+      GNU --full-time : mode count user group size YYYY-MM-DD HH:MM:SS.sss +TZ name
+      busybox         : mode count user group size Mon DD (HH:MM|YYYY) name
+      busybox ls (no year, mtime in current year): same shape — name at 8.
+    A split-limit of 8 leaves `cols[8]` as the rest-of-line (the name
+    plus any embedded spaces), which is exactly what we want.
+    """
     line = raw_line.rstrip("\n")
     if not line or line.startswith("total "):
         return None
-    cols = line.split(None, 7)
-    if len(cols) < 8:
+    cols = line.split(None, 8)
+    if len(cols) < 9:
         return None
     mode_full = cols[0]
     try:
         size = int(cols[4])
     except (TypeError, ValueError):
         size = 0
-    # Symlink row: `mode ... name -> target`. Split on the first ` -> `.
-    if " -> " in line:
-        left, _, target = line.rpartition(" -> ")
+    rest = cols[8]
+    # Symlink row: `... name -> target`. Split ONLY the rest-of-line on
+    # the first ` -> ` so a filename containing ` -> ` literally (rare
+    # but possible) doesn't get mis-truncated — left side is the full
+    # name even when it contains spaces.
+    if " -> " in rest:
+        name, _, target = rest.partition(" -> ")
         link_target = target.strip()
-        name = left.rsplit(None, 1)[-1]
     else:
         link_target = ""
-        name = line.rsplit(None, 1)[-1]
+        name = rest
     name = name.rstrip()
     if name in (".", "./", "..", "../"):
         return None
@@ -1237,6 +1250,61 @@ def _parse_ls_line(raw_line: str) -> dict | None:
         "mode": mode_full[1:10],
         "target": link_target,
     }
+
+
+# Shared writer used by BOTH /upload (multipart form) and /files (POST).
+# Keeping the two URLs for source-compat while the implementation lives
+# in exactly one place — a single cap check, a single put_archive call,
+# a single error-envelope surface. See `_write_bytes_to_container`.
+def _enforce_cp_cap(body_len: int, kind: str) -> None:
+    cap_mb = config.CONTAINER_CP_MAX_MB
+    cap_bytes = cap_mb * 1024 * 1024
+    if body_len > cap_bytes:
+        size_mb = body_len / (1024 * 1024)
+        raise http_error(
+            "validation.bad_input",
+            message=(
+                f"{kind} {size_mb:.1f} MiB exceeds server cap of {cap_mb} MiB. "
+                f"Raise CONTAINER_CP_MAX_MB on the server to lift this limit."
+            ),
+        )
+
+
+def _write_bytes_to_container(
+    container,
+    path: str,
+    body: bytes,
+    wrap_filename: str | None,
+) -> None:
+    """Single-path write: if `wrap_filename` is given, wrap `body` in a
+    one-entry tar (basename + 0644) and put_archive. Otherwise treat
+    `body` as already a tar stream and put_archive directly.
+
+    Both /upload (multipart) and /files POST (raw tar) land here — the
+    cap check, the put_archive call, and the error envelope are in one
+    place so a fix in one path can't drift from the other."""
+    import io as _io
+    import tarfile as _tarfile
+
+    _enforce_cp_cap(len(body), "uploaded file" if wrap_filename else "tar archive")
+    if wrap_filename is not None:
+        raw = wrap_filename
+        basename = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if not basename or basename in {".", ".."}:
+            raise http_error(
+                "validation.bad_input",
+                message="uploaded filename missing or invalid",
+            )
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            info = _tarfile.TarInfo(name=basename)
+            info.size = len(body)
+            info.mode = 0o644
+            tf.addfile(info, _io.BytesIO(body))
+        body = buf.getvalue()
+    ok = validators.safe_docker_call(container.put_archive, path, body)
+    if not ok:
+        raise http_error("resource.not_found", message=f"path {path!r} not writable")
 
 
 @router.post("/api/containers/{container_id}/upload", dependencies=AUTH, tags=["containers"])
@@ -1254,47 +1322,21 @@ async def container_upload_file(
     file: UploadFile = File(...),
     client=Depends(docker_client_dep),
 ) -> OkResponse:
-    """Multipart file upload — the browser-friendly sibling of `/files` PUT.
-
-    Browsers can submit multipart form data trivially, but building a tar
-    client-side is inconvenient. This endpoint takes a single uploaded
-    file (in the `file` form field), wraps it in a one-entry tar stream,
-    and calls `put_archive` into the container's target `path` (which
-    must be a directory).
-
-    Files larger than CONTAINER_CP_MAX_MB are rejected with a 400
-    envelope, not Starlette's default 413 plain-text, so the UI can
-    render a consistent error message."""
-    import io
-    import tarfile
-
+    """Multipart file upload — browser-friendly variant. Delegates to
+    `_write_bytes_to_container` so the server has ONE implementation
+    for "write bytes into container at path", shared with the raw-tar
+    POST /files endpoint below. This URL is kept for source-compat;
+    new callers can use POST /files with any Content-Type."""
     _validate_cp_path(path)
     container = validators._get_container(client, container_id)
-    cap_mb = config.CONTAINER_CP_MAX_MB
-    cap_bytes = cap_mb * 1024 * 1024
     body = await file.read()
-    if len(body) > cap_bytes:
-        raise http_error("validation.bad_input", message=f"file over {cap_mb} MB cap")
-    # Sanitise filename — strip path components, reject empty.
-    raw_name = file.filename or ""
-    basename = raw_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    if not basename or basename in {".", ".."}:
-        raise http_error("validation.bad_input", message="uploaded filename missing or invalid")
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tf:
-        info = tarfile.TarInfo(name=basename)
-        info.size = len(body)
-        info.mode = 0o644
-        tf.addfile(info, io.BytesIO(body))
-    buf.seek(0)
-    ok = validators.safe_docker_call(container.put_archive, path, buf.getvalue())
-    if not ok:
-        raise http_error("resource.not_found", message=f"path {path!r} not writable")
+    filename = file.filename or ""
+    _write_bytes_to_container(container, path, body, wrap_filename=filename)
     log.info(
         "container.upload_ok",
         id=container_id,
         path=path,
-        filename=basename,
+        filename=filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1],
         size_bytes=len(body),
     )
     return OkResponse()
@@ -1373,22 +1415,94 @@ async def container_put_file(
     path: str = Query(..., min_length=1, max_length=256),
     client=Depends(docker_client_dep),
 ) -> OkResponse:
-    """Upload a tar archive into a container's filesystem.
+    """Write a tar archive into a container's filesystem.
 
     Body must be `application/x-tar` (or `application/octet-stream` with
     a tar payload). Equivalent of `docker cp <tarfile> <container>:<path>`.
-    Capped at `CONTAINER_CP_MAX_MB` to keep memory bounded."""
+    Shares `_write_bytes_to_container` with /upload so the cap check +
+    put_archive call + error envelope live in exactly one place."""
     _validate_cp_path(path)
     container = validators._get_container(client, container_id)
-    cap_mb = config.CONTAINER_CP_MAX_MB
-    cap_bytes = cap_mb * 1024 * 1024
     body = await request.body()
-    if len(body) > cap_bytes:
-        raise http_error("validation.bad_input", message=f"body over {cap_mb} MB cap")
-    ok = validators.safe_docker_call(container.put_archive, path, body)
-    if not ok:
-        raise http_error("resource.not_found", message=f"path {path!r} not writable")
+    _write_bytes_to_container(container, path, body, wrap_filename=None)
     log.info("container.cp_put_ok", id=container_id, path=path, size_bytes=len(body))
+    return OkResponse()
+
+
+# ── File delete (soft, with undo) ──────────────────────────────────────
+#
+# Clicking Delete on a file/dir in the Files tab queues a `rm -rf` for
+# UNDO_DELAY_SECS. The file stays on disk during the window — "undo"
+# means "don't fire the rm". Matches the shape of every other soft-
+# delete in the app (container / volume / image delete): the queue
+# cancels the pending op, there's no restore-after-fire.
+#
+# `undo=false` skips the queue and fires `rm -rf` immediately — for
+# scripts or for a second-click "I actually mean it" confirmation.
+
+
+def _exec_rm(container, path: str) -> None:
+    """Run `rm -rf -- <path>` inside the container. Raises on non-zero
+    exit so the caller surfaces the stderr as an envelope."""
+    res = validators.safe_docker_call(
+        container.exec_run,
+        ["rm", "-rf", "--", path],
+        stdout=True,
+        stderr=True,
+    )
+    if res.exit_code:
+        msg = (res.output or b"").decode("utf-8", errors="replace")[:200]
+        raise http_error(
+            "resource.not_found",
+            message=f"rm failed for {path!r}: {msg!r}",
+        )
+
+
+@router.delete("/api/containers/{container_id}/files", dependencies=AUTH, tags=["containers"])
+@secure_route.mutate(
+    RATE.WRITE,
+    audit="container.cp_delete",
+    audit_fields=lambda request, container_id, path, **kw: (  # noqa: ARG005
+        {"id": container_id, "path": path}
+    ),
+)
+def container_delete_file(
+    request: Request,
+    container_id: str,
+    path: str = Query(..., min_length=1, max_length=256),
+    undo: bool = True,
+    client=Depends(docker_client_dep),
+):
+    """Remove a file or directory inside a container's filesystem.
+
+    Default queues the `rm -rf` for `UNDO_DELAY_SECS` so a misclick is
+    reversible. The file stays on disk during the window (undo just
+    cancels the pending op).
+
+    `path` is validated as an absolute POSIX path (same grammar as cp)
+    and must not target a known-dangerous mount target (via
+    `_validate_mount_target` — /, /etc, /proc, /dev, …)."""
+    _validate_cp_path(path)
+    validators._validate_mount_target(path)
+    container = validators._get_container(client, container_id)
+
+    if undo:
+        from skiff.undo import get_queue
+
+        token = get_queue().enqueue(
+            "file",
+            f"{container_id}:{path}",
+            _exec_rm,
+            container,
+            path,
+        )
+        if token is not None:
+            return UndoableResponse(
+                undo_token=token,
+                expires_in=config.UNDO_DELAY_SECS,
+            )
+    _exec_rm(container, path)
+    log.info("container.cp_delete_ok", id=container_id, path=path)
     return OkResponse()
 
 

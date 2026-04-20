@@ -574,9 +574,16 @@ BLOCKED_COMPOSE_SERVICE_KEYS = BLOCKED_PRESENCE_KEYS | BLOCKED_TRUTHY_KEYS
 def _parse_compose_yaml(content: bytes) -> dict:
     """Size-cap + YAML parse. Returns the mapping or raises."""
     if len(content) > config.MAX_COMPOSE_SIZE:
+        cap_mb = config.MAX_COMPOSE_SIZE / (1024 * 1024)
+        cap_str = f"{cap_mb:.1f} MiB" if cap_mb >= 1 else f"{config.MAX_COMPOSE_SIZE // 1024} KiB"
+        size_mb = len(content) / (1024 * 1024)
+        size_str = f"{size_mb:.1f} MiB" if size_mb >= 1 else f"{len(content) // 1024} KiB"
         raise http_error(
             "compose.too_large",
-            message=f"compose file too large (max {config.MAX_COMPOSE_SIZE // 1024}KB)",
+            message=(
+                f"compose file {size_str} exceeds server cap of {cap_str}. "
+                f"Raise MAX_COMPOSE_SIZE on the server to lift this limit."
+            ),
         )
     try:
         data = yaml.safe_load(content)

@@ -94,9 +94,53 @@ def test_parse_ls_line_device_and_fifo_types():
 
 
 def test_parse_ls_line_empty_or_malformed_returns_none():
-    """Any row that doesn't reach 8 whitespace-separated fields is junk."""
+    """Any row that doesn't reach 9 whitespace-separated fields is junk."""
     assert _parse("abc") is None
     assert _parse("-rw-r--r-- 1 root root") is None
+
+
+def test_parse_ls_line_filename_with_spaces_gnu():
+    """Filenames containing spaces must survive intact (GNU --full-time).
+
+    The original parser used `rsplit(None, 1)[-1]` on the full line, so a
+    file called 'The Simple Macroeconomics of AI.pdf' was truncated to
+    just 'AI.pdf' — the download button then hit /data_new/AI.pdf which
+    didn't exist and 404'd. Regression: keep every space-containing name
+    whole from ls → JSON → UI → download URL."""
+    row = _parse(
+        "-rw-r--r-- 1 root root 1040504 2026-04-20 01:24:32.123456789 +0000 The Simple Macroeconomics of AI.pdf"
+    )
+    assert row is not None
+    assert row["name"] == "The Simple Macroeconomics of AI.pdf"
+    assert row["type"] == "file"
+    assert row["size"] == 1040504
+
+
+def test_parse_ls_line_filename_with_spaces_busybox():
+    """Same invariant, busybox layout (no --full-time, 8 columns)."""
+    row = _parse("-rw-r--r-- 1 root root 1040504 Apr 20 01:24 The Simple Macroeconomics of AI.pdf")
+    assert row is not None
+    assert row["name"] == "The Simple Macroeconomics of AI.pdf"
+
+
+def test_parse_ls_line_dir_name_with_spaces():
+    """Directories may also have spaces in their names — trailing slash
+    strip must not confuse the space-preserving logic."""
+    row = _parse("drwxr-xr-x 2 root root 4096 2026-04-20 01:24:32.000000000 +0000 My Project Files/")
+    assert row is not None
+    assert row["name"] == "My Project Files"
+    assert row["type"] == "dir"
+
+
+def test_parse_ls_line_symlink_target_with_spaces_in_name():
+    """Symlink where the link name itself contains spaces. The ` -> `
+    delimiter still partitions correctly because we split only the
+    tail-of-line, not the leading mode/size columns."""
+    row = _parse("lrwxrwxrwx 1 root root 7 2026-04-20 01:24:32.000000000 +0000 My Shortcut -> /data/target")
+    assert row is not None
+    assert row["name"] == "My Shortcut"
+    assert row["type"] == "link"
+    assert row["target"] == "/data/target"
 
 
 # ── Fuzz: _parse_ls_line never raises ────────────────────────────────────
@@ -503,3 +547,93 @@ def test_files_post_rejects_over_size_body():
     # 400 check. Either path is acceptable — both block the write.
     assert r.status_code in (400, 413)
     c.put_archive.assert_not_called()
+
+
+# ── Integration: DELETE /files with undo ──────────────────────────────────
+
+
+def test_delete_file_with_undo_returns_token():
+    """Default path queues the rm; response carries an undo token so
+    the user has a cancellation window. The rm fires when the timer
+    elapses OR when the app shuts down (undo-queue flush-on-shutdown
+    invariant). This test asserts the response shape only."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    exec_result = MagicMock()
+    exec_result.exit_code = 0
+    exec_result.output = b""
+    c.exec_run.return_value = exec_result
+
+    r = _invoke_cp(
+        c,
+        "DELETE",
+        "/api/containers/abc123def456/files?path=/tmp/foo.txt",
+        headers={"X-Requested-With": "ContainerManager"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "undo_token" in body, f"DELETE /files must return an undo token by default; got {body!r}"
+    assert body["expires_in"] > 0
+
+
+def test_delete_file_undo_false_fires_rm_immediately():
+    """Scripts pass undo=false to skip the queue — rm runs synchronously."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    exec_result = MagicMock()
+    exec_result.exit_code = 0
+    exec_result.output = b""
+    c.exec_run.return_value = exec_result
+
+    r = _invoke_cp(
+        c,
+        "DELETE",
+        "/api/containers/abc123def456/files?path=/tmp/foo.txt&undo=false",
+        headers={"X-Requested-With": "ContainerManager"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    # exec_run SHOULD have fired with `rm -rf -- /tmp/foo.txt`.
+    c.exec_run.assert_called_once()
+    args, _kwargs = c.exec_run.call_args
+    assert args[0] == ["rm", "-rf", "--", "/tmp/foo.txt"]
+
+
+def test_delete_file_rejects_dangerous_mount_targets():
+    """Same blocklist as mount validation — rm -rf / /etc /proc must
+    refuse before reaching the exec."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    for bad in ("/", "/etc", "/etc/passwd", "/proc/1/mem"):
+        r = _invoke_cp(
+            c,
+            "DELETE",
+            f"/api/containers/abc123def456/files?path={bad}&undo=false",
+            headers={"X-Requested-With": "ContainerManager"},
+        )
+        assert r.status_code == 400, (
+            f"delete on {bad!r} must be rejected by _validate_mount_target, got {r.status_code} {r.text[:200]!r}"
+        )
+    c.exec_run.assert_not_called()
+
+
+def test_delete_file_nonzero_exit_surfaces_envelope():
+    """If rm returns non-zero (file not found, permission denied), the
+    envelope carries the stderr so the user can see why."""
+    c = MagicMock()
+    c.short_id = "abc123def456"
+    exec_result = MagicMock()
+    exec_result.exit_code = 1
+    exec_result.output = b"rm: cannot remove '/data/x': Permission denied\n"
+    c.exec_run.return_value = exec_result
+
+    r = _invoke_cp(
+        c,
+        "DELETE",
+        "/api/containers/abc123def456/files?path=/data/x&undo=false",
+        headers={"X-Requested-With": "ContainerManager"},
+    )
+    assert r.status_code == 404
+    detail = r.json()["detail"]
+    assert detail["code"] == "resource.not_found"
+    assert "/data/x" in detail["message"]

@@ -123,18 +123,41 @@ _ERRORS: dict[str, _ErrorSpec] = {
     "image.prune_failed": _ErrorSpec(400, "image prune failed"),
     # ── Volume ────────────────────────────────────────────────────────────
     "volume.not_found": _ErrorSpec(404, "volume not found"),
-    "volume.bad_name": _ErrorSpec(400, "invalid volume name"),
+    "volume.bad_name": _ErrorSpec(
+        400,
+        "invalid volume name — use letters, digits, '.', '-', '_' (max 64 chars). "
+        "No spaces, slashes, or leading punctuation.",
+    ),
     "volume.bad_driver": _ErrorSpec(400, "unsupported volume driver"),
-    "volume.bad_labels": _ErrorSpec(400, "invalid volume labels"),
-    "volume.bad_driver_opts": _ErrorSpec(400, "invalid volume driver options"),
+    "volume.bad_labels": _ErrorSpec(
+        400,
+        "invalid volume label — expected 'key=value' per line; keys must be alphanumeric with '.', '-', '_'.",
+    ),
+    "volume.bad_driver_opts": _ErrorSpec(
+        400,
+        "invalid driver option — expected 'key=value' per line (e.g. 'type=nfs', 'device=:/path').",
+    ),
     "volume.in_use": _ErrorSpec(409, "volume is in use"),
     # ── Network ───────────────────────────────────────────────────────────
     "network.not_found": _ErrorSpec(404, "network not found"),
-    "network.bad_name": _ErrorSpec(400, "invalid network name"),
+    "network.bad_name": _ErrorSpec(
+        400,
+        "invalid network name — use letters, digits, '.', '-', '_' (max 64 chars). "
+        "No spaces, slashes, or leading punctuation.",
+    ),
     "network.bad_driver": _ErrorSpec(400, "unsupported network driver"),
-    "network.bad_labels": _ErrorSpec(400, "invalid network labels"),
-    "network.bad_subnet": _ErrorSpec(400, "invalid subnet"),
-    "network.bad_gateway": _ErrorSpec(400, "invalid gateway"),
+    "network.bad_labels": _ErrorSpec(
+        400,
+        "invalid network label — expected 'key=value' per line; keys must be alphanumeric with '.', '-', '_'.",
+    ),
+    "network.bad_subnet": _ErrorSpec(
+        400,
+        "invalid subnet — expected CIDR form like 10.0.0.0/24 or 2001:db8::/32.",
+    ),
+    "network.bad_gateway": _ErrorSpec(
+        400,
+        "invalid gateway — expected an IPv4/IPv6 address inside the subnet.",
+    ),
     "network.builtin_protected": _ErrorSpec(400, "built-in network cannot be removed"),
     # ── Compose ───────────────────────────────────────────────────────────
     "compose.bad_yaml": _ErrorSpec(400, "invalid compose YAML"),
@@ -156,15 +179,27 @@ _ERRORS: dict[str, _ErrorSpec] = {
     "validation.bad_input": _ErrorSpec(400, "invalid input"),
     "validation.path_traversal": _ErrorSpec(400, "path traversal attempt rejected"),
     "validation.bad_env": _ErrorSpec(400, "environment variable must be KEY=VALUE"),
-    "validation.bad_restart_policy": _ErrorSpec(400, "unsupported restart policy"),
-    "validation.bad_memory": _ErrorSpec(400, "invalid memory quantity"),
-    "validation.bad_cpu": _ErrorSpec(400, "invalid cpu quantity"),
+    "validation.bad_restart_policy": _ErrorSpec(
+        400,
+        "unsupported restart policy — must be one of: no, on-failure, unless-stopped, always.",
+    ),
+    "validation.bad_memory": _ErrorSpec(
+        400,
+        "invalid memory quantity — expected an integer with optional suffix (e.g. 512m, 2g, 1024).",
+    ),
+    "validation.bad_cpu": _ErrorSpec(
+        400,
+        "invalid cpu quantity — expected a positive decimal (e.g. 0.5, 1, 2.0).",
+    ),
     # ── R4 additions — codes promoted from hand-written HTTPException strings
     # Prefer adding a code here over passing `message=` to http_error() so
     # the catalogue stays enumerable for SIEM / client-switch logic.
     "container.port_count_exceeds_cap": _ErrorSpec(400, "too many port mappings (max {limit})"),
     "container.port_host_privileged": _ErrorSpec(400, "host port {port} is privileged (< {threshold})"),
-    "container.port_format": _ErrorSpec(400, "invalid port format"),
+    "container.port_format": _ErrorSpec(
+        400,
+        "invalid port format — expected 'HOST:CONTAINER' with ports in 1-65535 (e.g. 8080:80).",
+    ),
     "container.label_count_exceeds_cap": _ErrorSpec(400, "too many labels (max {limit})"),
     "container.label_bad": _ErrorSpec(400, "invalid label"),
     "container.command_too_long": _ErrorSpec(400, "command too long (max {limit} chars)"),
@@ -189,6 +224,30 @@ _ERRORS: dict[str, _ErrorSpec] = {
     "setup.tcp_host_bad": _ErrorSpec(400, "tcp:// docker_host must specify an IP address, not a hostname"),
     "setup.tcp_port_bad": _ErrorSpec(400, "tcp:// docker_host must include a valid port"),
     "setup.token_too_short": _ErrorSpec(400, "api_token must be at least {minimum} characters"),
+    "setup.token_too_long": _ErrorSpec(400, "api_token exceeds the {maximum}-character length cap"),
+    # Config-knob runtime edit (Settings viewer → PUT /api/config/knobs/<name>).
+    # Four distinct codes so the UI can surface the right guidance rather than
+    # a generic "cannot edit" that forces the operator to guess.
+    "config.knob_not_found": _ErrorSpec(404, "knob {name!r} is not exposed via the config API"),
+    "config.knob_secret_locked": _ErrorSpec(
+        403,
+        "knob {name!r} is a secret — never editable via this endpoint; set the env var directly.",
+    ),
+    "config.knob_env_sourced": _ErrorSpec(
+        409,
+        "knob {name!r} is currently set by an environment variable, which wins over runtime edits. "
+        "Unset the env var and restart to make this knob GUI-editable.",
+    ),
+    "config.knob_security_locked": _ErrorSpec(
+        403,
+        "knob {name!r} is policy-locked (security) — changing at runtime is not permitted. "
+        "Edit the env var or defaults.toml and restart.",
+    ),
+    "config.knob_lifecycle_locked": _ErrorSpec(
+        409,
+        "knob {name!r} is read once at process start — editing at runtime would have no effect. "
+        "Restart the server after changing the env var / defaults.toml.",
+    ),
     "setup.docker_host_required": _ErrorSpec(400, "docker_host is required"),
     "setup.ssh_target_bad": _ErrorSpec(400, "ssh_target must be user@host"),
     "setup.env_managed": _ErrorSpec(403, "server is configured via environment variables — setup endpoint disabled"),

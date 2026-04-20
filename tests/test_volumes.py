@@ -63,7 +63,7 @@ def test_prune_volumes(client, mock_docker):
         "VolumesDeleted": ["vol1", "vol2"],
         "SpaceReclaimed": 50 * 1024 * 1024,
     }
-    resp = client.post("/api/volumes/prune", headers=AUTH_CSRF)
+    resp = client.post("/api/volumes/prune?undo=false", headers=AUTH_CSRF)
     assert resp.status_code == 200
     data = resp.json()
     assert data["deleted"] == ["vol1", "vol2"]

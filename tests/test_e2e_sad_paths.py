@@ -330,15 +330,20 @@ def test_unknown_route_under_api_returns_404(live_server):
 
 @pytest.mark.e2e
 def test_oversize_request_body_returns_413(live_server):
-    """BodySizeLimitMiddleware rejects requests with Content-Length > cap."""
-    big = "A" * (5 * 1024 * 1024)  # 5 MiB
+    """BodySizeLimitMiddleware rejects requests with Content-Length > cap.
+    Default MAX_BODY_BYTES is 16 MiB — 20 MiB overshoots. Envelope must
+    name MAX_BODY_BYTES so ops can raise it."""
+    big = "A" * (20 * 1024 * 1024)  # 20 MiB
     r = requests.post(
         f"{BASE_URL}/api/compose/up",
         headers=auth_headers(),
         data={"project_name": "e2e-huge", "compose_text": big},
-        timeout=10,
+        timeout=30,
     )
     assert r.status_code == 413, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "validation.body_too_large"
+    assert "MAX_BODY_BYTES" in detail["message"]
 
 
 # ── UI sad-path visual checks ───────────────────────────────────────────────

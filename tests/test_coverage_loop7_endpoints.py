@@ -300,7 +300,7 @@ def test_reviewer_mutation_audit_uses_reviewer_denied(client):
 @pytest.mark.unit
 def test_compose_down_nonexistent_project_returns_404(client):
     resp = client.post(
-        "/api/compose/down?project_name=nonexistent-xyz",
+        "/api/compose/down?project_name=nonexistent-xyz&undo=false",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 404
