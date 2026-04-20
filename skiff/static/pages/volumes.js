@@ -193,7 +193,8 @@ async function _showVolumeInspectModal(name) {
 
 async function loadVolumes() {
   var main = document.getElementById('main');
-  main.innerHTML = '<div class="refreshing">' + t('common.loading') + '</div>';
+  main.innerHTML = '';
+  main.appendChild(UI.el('div', { class: 'refreshing', text: t('common.loading') }));
   try {
     var volumes = await apiFetch(API + '/volumes');
     if (currentPage !== 'volumes') return;
