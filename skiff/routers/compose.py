@@ -429,9 +429,9 @@ def _do_compose_down(project_name: str) -> OkResponse:
     if project_dir is None:
         raise http_error("compose.not_found", project=project_name)
     compose_path = project_dir / "docker-compose.yml"
-    compose_args = [*config.COMPOSE_CMD, "-p", project_name, "down"]
+    compose_args = [*config.COMPOSE_CMD, "-p", safe_name, "down"]
     if compose_path.exists():
-        compose_args = [*config.COMPOSE_CMD, "-f", str(compose_path), "-p", project_name, "down"]
+        compose_args = [*config.COMPOSE_CMD, "-f", str(compose_path), "-p", safe_name, "down"]
     try:
         result = subprocess.run(
             compose_args,
@@ -511,7 +511,7 @@ def _compose_stack_op(
     if project_dir is None and require_existing_dir:
         raise http_error("compose.not_found", project=project_name)
     compose_path = project_dir / "docker-compose.yml" if project_dir else None
-    cmd = [*config.COMPOSE_CMD, "-p", project_name]
+    cmd = [*config.COMPOSE_CMD, "-p", safe_name]
     if compose_path and compose_path.exists():
         cmd.extend(["-f", str(compose_path)])
     cmd.extend(subcommand)

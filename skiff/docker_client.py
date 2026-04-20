@@ -583,7 +583,11 @@ def get_tunnel_ssh_target() -> str:
 #     py/path-injection taint propagation from the (possibly user-derived) input.
 #   - Reconstructing from Path("/tmp").resolve() + basename avoids macOS's
 #     /private/tmp canonicalisation mismatch (on macOS, /tmp → /private/tmp).
-_TUNNEL_SOCK_BASENAME_RE = re.compile(r"[a-zA-Z0-9._\-]+\.sock")
+# Bounded + split into prefix + literal suffix so there is no quantifier
+# ambiguity between the character-class dots and the final `.sock`. This
+# kills CodeQL's py/polynomial-redos warning — the {1,63} cap bounds the
+# backtrack depth even on adversarial input like `a.a.a.a.sockX`.
+_TUNNEL_SOCK_BASENAME_RE = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9._-]{0,62}\.sock")
 
 
 def _safe_tunnel_socket_path(raw: str) -> str:
