@@ -188,10 +188,11 @@ function showSetupWizard(state) {
           '<span style="color:#f1f5f9;font-size:18px;font-weight:600;">SKIFF Container Manager</span>' +
           '<span id="sw-countdown" class="wizard-countdown" style="color:#94a3b8;font-size:12px;font-weight:400;margin-left:10px;display:none;"></span>' +
         '</div>' +
-        '<p style="color:#94a3b8;font-size:13px;margin:0 0 24px;">First-run setup. Choose your Docker connection, generate a token, and start.</p>' +
+        '<p style="color:#94a3b8;font-size:13px;margin:0 0 10px;">First-run setup. Pick where Docker is running, generate a token, and start.</p>' +
+        '<p style="color:#cbd5e1;font-size:12px;margin:0 0 10px;font-weight:500;">Where is your Docker daemon?</p>' +
         '<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #334155;">' +
-          '<button id="sw-tab-local" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">Local / Custom</button>' +
-          '<button id="sw-tab-tunnel" style="flex:1;padding:10px;background:transparent;color:#94a3b8;border:none;cursor:pointer;font-size:13px;font-weight:500;">SSH Tunnel</button>' +
+          '<button id="sw-tab-local" style="flex:1;padding:10px;background:#0d9488;color:white;border:none;cursor:pointer;font-size:13px;font-weight:500;">On this machine</button>' +
+          '<button id="sw-tab-tunnel" style="flex:1;padding:10px;background:#334155;color:#e2e8f0;border:none;cursor:pointer;font-size:13px;font-weight:500;">On a remote host (SSH)</button>' +
         '</div>' +
         '<div id="sw-panel-local">' +
           '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">DOCKER HOST</label>' +
@@ -207,7 +208,8 @@ function showSetupWizard(state) {
           '</details>' +
         '</div>' +
         '<div id="sw-panel-tunnel" style="display:none;">' +
-          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host</span></label>' +
+          '<p style="color:#94a3b8;font-size:12px;margin:0 0 10px;">SKIFF opens an SSH tunnel to the remote host and forwards its Docker socket. Uses your existing <code style="color:#cbd5e1;">~/.ssh/config</code> and key-based auth (no passphrase, no password prompt).</p>' +
+          '<label style="display:block;color:#94a3b8;font-size:12px;font-weight:500;margin-bottom:6px;letter-spacing:.05em;">SSH TARGET <span style="color:#64748b;font-weight:400;">user@host (e.g. yshkolni@main3.local)</span></label>' +
           '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
             '<input id="sw-ssh-target" type="text" style="flex:1;background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:10px 12px;font-size:14px;outline:none;" placeholder="user@docker-host.example.com"/>' +
             '<button id="sw-tunnel-btn" style="background:#0d9488;color:white;border:none;border-radius:6px;padding:10px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Connect</button>' +
@@ -349,10 +351,13 @@ function swSetMode(mode) {
     const isTunnel = mode === 'tunnel';
     document.getElementById('sw-panel-tunnel').style.display = isTunnel ? 'block' : 'none';
     document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : 'block';
-    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : 'transparent';
-    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#94a3b8';
-    document.getElementById('sw-tab-local').style.background = isTunnel ? 'transparent' : '#0d9488';
-    document.getElementById('sw-tab-local').style.color = isTunnel ? '#94a3b8' : 'white';
+    // Active tab = teal. Inactive tab = slate-700 so it still reads as a
+    // real clickable button (old transparent rendering blended into the
+    // card background and users missed it as an option).
+    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : '#334155';
+    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#e2e8f0';
+    document.getElementById('sw-tab-local').style.background = isTunnel ? '#334155' : '#0d9488';
+    document.getElementById('sw-tab-local').style.color = isTunnel ? '#e2e8f0' : 'white';
     if (!isTunnel) {
         document.getElementById('sw-host').value = document.getElementById('sw-host-custom').value.trim() || 'unix:///var/run/docker.sock';
     }
