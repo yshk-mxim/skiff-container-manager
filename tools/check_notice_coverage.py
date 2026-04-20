@@ -77,6 +77,7 @@ _DEV_ONLY_PACKAGES: frozenset[str] = frozenset(
         "pytest-playwright",
         "playwright",
         "httpx",
+        "websocket-client",
         "hypothesis",
         "ruff",
         "pip-audit",
