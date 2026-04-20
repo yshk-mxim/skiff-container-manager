@@ -278,12 +278,15 @@ async function loadSystem() {
     // Account section — token rotation + config reset. Shown only
     // when the server isn't env-configured (otherwise the endpoints 403 anyway).
     // /api/setup-state tells us whether the server is in from_env mode.
-    _renderAccountSection(main);
+    // MUST await — otherwise the async appendChild races the sync code
+    // below and Account lands *after* the audit log, below the fold.
+    await _renderAccountSection(main);
 
     // Connect external tool — copy-paste integration strings for VSCode,
     // JetBrains, docker CLI, Prometheus, SIEMs. All strings generated from
     // live server config so there's nothing to edit after pasting.
-    _renderConnectPanel(main);
+    // Same await reason: without it, Connect renders after the audit log.
+    await _renderConnectPanel(main);
 
     // Security options
     if (info.security_options && info.security_options.length) {
