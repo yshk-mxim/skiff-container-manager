@@ -192,11 +192,15 @@
     setTimeout(function() { if (inputEl) inputEl.focus(); }, 10);
   }
 
-  // Number-key navigation: 1-8 jumps to the corresponding sidebar
-  // section. Ordered to match the visible sidebar order.
+  // Number-key navigation: 1-9 jumps to the corresponding sidebar
+  // section. Ordered to match the visible sidebar order. Adding a new
+  // page? Register it in the page module with a sidebar `order` value,
+  // then add it here so the number key works — the two lists are
+  // intentionally decoupled so a persona-filtered page (System is
+  // hidden under the homelab persona) still keeps a stable number.
   var NUMBER_NAV = [
     null, 'dashboard', 'containers', 'images', 'templates',
-    'volumes', 'networks', 'compose', 'system',
+    'volumes', 'networks', 'compose', 'system', 'settings',
   ];
 
   window.addEventListener('keydown', function(e) {
@@ -220,11 +224,11 @@
       }
       return;
     }
-    // `1`-`8` → jump to sidebar section. Same editable-field guard so
+    // `1`-`9` → jump to sidebar section. Same editable-field guard so
     // typing a number in a form stays a number.
     if (!editable && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       var idx = parseInt(e.key, 10);
-      if (idx >= 1 && idx <= 8 && NUMBER_NAV[idx]) {
+      if (idx >= 1 && idx <= 9 && NUMBER_NAV[idx]) {
         if (typeof window.showPage === 'function') {
           e.preventDefault();
           window.showPage(NUMBER_NAV[idx]);
@@ -266,7 +270,7 @@
     [
       [formatShortcut(), 'Command palette — jump to any page or container'],
       ['?', 'This shortcut help'],
-      ['1 – 8', 'Jump to sidebar section (Dashboard … System, in visible order)'],
+      ['1 – 9', 'Jump to sidebar section (Dashboard, Containers, Images, Templates, Volumes, Networks, Compose, System, Settings)'],
       ['r', 'Open Run-container modal (on the Containers page)'],
       ['/', 'Focus the nearest search / filter input'],
       ['Esc', 'Close modal / palette / overlay'],
