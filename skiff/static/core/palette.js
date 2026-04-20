@@ -287,6 +287,25 @@
     note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px';
     note.textContent = 'The Terminal tab also honours xterm.js shortcuts (Ctrl-C, arrow-key history, Tab completion) — those run inside the PTY, not the browser.';
     box.appendChild(note);
+    // Replay first-run tour. Exposed here (not in the sidebar) because
+    // the tour is a one-time walkthrough: a permanent sidebar entry
+    // would invite accidental re-runs, while the ? modal is a
+    // deliberate "help me" surface where a restart button reads as
+    // discoverable help.
+    var tourRow = document.createElement('div');
+    tourRow.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px';
+    var tourLabel = document.createElement('span');
+    tourLabel.style.cssText = 'font-size:12px;color:var(--muted)';
+    tourLabel.textContent = 'Want to see the 4-step guided tour again?';
+    var tourBtn = document.createElement('button');
+    tourBtn.className = 'btn small';
+    tourBtn.textContent = 'Replay first-run tour';
+    tourBtn.onclick = function() {
+      bg.remove();
+      if (window._tour && typeof window._tour.start === 'function') window._tour.start();
+    };
+    tourRow.append(tourLabel, tourBtn);
+    box.appendChild(tourRow);
     bg.appendChild(box);
     document.body.appendChild(bg);
     // Escape closes the help modal. Listener is removed when the modal
