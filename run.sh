@@ -72,7 +72,7 @@ fi
 #      resolution so hashed pins from step 1 are not re-evaluated.
 # Editable install is kept so source-edits round-trip without a
 # reinstall and `uvicorn skiff.app:app` works from any cwd.
-pip install --quiet -r requirements.txt
+pip install --quiet --require-hashes -r requirements.txt
 pip install --quiet --no-deps -e .
 
 # Verify docker CLI is available (needed for compose commands)
