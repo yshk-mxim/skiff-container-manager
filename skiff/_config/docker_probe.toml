@@ -1,0 +1,31 @@
+# Docker socket paths the setup wizard probes to find a working
+# runtime. The wizard ONLY enumerates this list — user-supplied paths
+# cannot extend it — so a malicious client can't use /api/setup/probe-docker
+# to enumerate arbitrary filesystem entries.
+#
+# Ordering matters: the wizard pre-selects the first reachable socket.
+# Keep Linux's canonical /var/run/docker.sock first so Docker-Desktop /
+# OrbStack users get a one-click experience; HOME-relative paths follow
+# for Colima / Rancher / OrbStack alternates.
+#
+# Adding a platform: append its canonical socket path with a comment
+# explaining which runtime installs it. Runtime authors — when you
+# ship a new default socket path, send a PR adding a row here.
+#
+# Zero-trust rationale: the list is server-side only; the wizard
+# returns {reachable: [...], unreachable: [...]} but never echoes a
+# caller-supplied path. See skiff/routers/system.py::_probe_docker_socket
+# for the ping implementation.
+
+paths = [
+  # Linux dockerd / Docker Desktop (macOS + Windows WSL2) / OrbStack
+  "/var/run/docker.sock",
+  # Colima on macOS (default VM name)
+  "~/.colima/default/docker.sock",
+  # Docker Desktop user-level socket
+  "~/.docker/run/docker.sock",
+  # Rancher Desktop
+  "~/.rd/docker.sock",
+  # OrbStack alternate user-level socket
+  "~/.orbstack/run/docker.sock",
+]

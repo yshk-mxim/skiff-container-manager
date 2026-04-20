@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints require `Authorization: Bearer <token>` when `API_TOKEN` is configured.  
+All endpoints require `Authorization: Bearer <token>` when `API_TOKEN` is configured.
 Mutating endpoints (`POST`, `DELETE`) additionally require `X-Requested-With: ContainerManager`.
 
 ---
@@ -12,7 +12,7 @@ Liveness probe. Never checks Docker — always returns 200 to avoid restart loop
 
 **Response**
 ```json
-{"status": "ok", "uptime_seconds": 123}
+{"status": "ok", "uptime_seconds": 123, "version": "1.0.1.dev0"}
 ```
 
 ### `GET /ready`
@@ -35,6 +35,19 @@ Returns whether authentication is required. No authentication needed — used by
 {"required": true}
 ```
 
+### `GET /api/docs`
+CSP-safe discoverability landing page for the OpenAPI spec. No
+authentication — returns an HTML page with links to
+`/api/openapi.json` (raw spec) and external-editor deep links
+(opens a new tab). Rate-limited at the `PUBLIC` tier. Not exposed at
+the FastAPI default `/docs` / `/redoc` paths because those pull assets
+from a CDN, violating the strict `script-src 'self'` CSP.
+
+### `GET /api/openapi.json`
+FastAPI-generated OpenAPI 3.1 schema for every route. No
+authentication — the route catalogue itself is not a secret; route
+implementation details are guarded by per-route auth.
+
 ---
 
 ## Config
@@ -45,8 +58,8 @@ Returns non-secret server configuration for the UI. Requires authentication.
 **Response**
 ```json
 {
-  "allowed_registries": ["us-docker.pkg.dev/my-project/"],
-  "docker_vm_host": "docker-vm.internal",
+  "allowed_registries": ["docker.io", "ghcr.io"],
+  "docker_vm_host": "docker-vm.example.com",
   "docker_host": "unix:///tmp/docker.sock"
 }
 ```
@@ -74,7 +87,8 @@ Search Docker Hub for images. Proxied server-side to avoid browser CORS restrict
 }
 ```
 
-Rate limit: 30/minute.
+Rate limit: see `/api/config.rate_limit_scale` and
+`skiff/_config/rate.toml` — the `READ` tier applies to registry search/tags.
 
 ### `GET /api/registry/tags`
 Fetch the 20 most recently updated tags for a Docker Hub image.
@@ -86,7 +100,8 @@ Fetch the 20 most recently updated tags for a Docker Hub image.
 {"image": "nginx", "tags": ["latest", "1.27", "1.26", "alpine", "..."]}
 ```
 
-Rate limit: 30/minute.
+Rate limit: see `/api/config.rate_limit_scale` and
+`skiff/_config/rate.toml` — the `READ` tier applies to registry search/tags.
 
 ---
 
@@ -100,7 +115,7 @@ List all containers (running and stopped).
 {
   "id": "abc123",
   "name": "my-service",
-  "image": "us-docker.pkg.dev/project/repo/image:tag",
+  "image": "docker.io/library/nginx:latest",
   "status": "running",
   "state": "running",
   "health": "healthy",
@@ -142,10 +157,12 @@ Constraints:
 Start a stopped container.
 
 ### `POST /api/containers/{id}/stop`
-Stop a running container (10 s grace period).
+Stop a running container. The grace period before SIGKILL is
+configured by `CONTAINER_STOP_TIMEOUT` (default 5 s; see
+`docs/config-knobs.md`).
 
 ### `POST /api/containers/{id}/restart`
-Restart a container (10 s grace period).
+Restart a container. Grace period follows `CONTAINER_STOP_TIMEOUT`.
 
 ### `POST /api/containers/{id}/pause`
 Pause a running container (SIGSTOP).
@@ -198,13 +215,13 @@ Real-time resource usage snapshot.
 ```json
 {
   "cpu_percent": 1.23,
-  "memory_usage_mb": 128.5,
-  "memory_limit_mb": 2048.0,
-  "memory_percent": 6.27,
+  "mem_usage_mb": 128.5,
+  "mem_limit_mb": 2048.0,
+  "mem_percent": 6.27,
   "net_rx_mb": 0.01,
   "net_tx_mb": 0.00,
-  "disk_read_mb": 0.00,
-  "disk_write_mb": 0.01
+  "blk_read_mb": 0.00,
+  "blk_write_mb": 0.01
 }
 ```
 
@@ -214,6 +231,16 @@ List processes running inside a container (`docker top`).
 ### `GET /api/containers/{id}/diff`
 Show filesystem changes in a container since it was created.
 
+### `POST /api/containers/{id}/update`
+Adjust a running container's resource limits (`memory`, `cpus`,
+`restart_policy`). Values are capped server-side at `MAX_CONTAINER_MEM`
+/ `MAX_CONTAINER_CPU`; the audit log records before/after per field
+so operators can spot unexpected tuning.
+
+**Body** (JSON) — any subset of `memory`, `cpus`, `restart_policy`.
+
+**Response** — `OkResponse` with `id` and the applied changes.
+
 ---
 
 ## WebSocket: Log Streaming
@@ -221,9 +248,35 @@ Show filesystem changes in a container since it was created.
 ### `WS /ws/logs/{id}`
 Stream container logs in real time.
 
-**Handshake**: after connecting, send `AUTH <token>` as the first text message. If `API_TOKEN` is unset, no auth message is required.
+**Handshake protocol:**
+1. Client opens the WebSocket connection. Do NOT pass the bearer token as a
+   query parameter (`?token=…`) — SKIFF rejects such upgrades with close
+   code `4008`, and the URL would otherwise be logged by any HTTP proxy
+   in front.
+2. Client sends `AUTH <token>` as the first plain-text message.
+3. On success the server starts streaming log lines (no acknowledgement
+   frame is sent — the first log line IS the acknowledgement). On failure
+   the server closes with `4003`.
+4. Server sends a single NUL byte (`\x00`) every 30 seconds as a
+   server-to-client keepalive so the client can distinguish a healthy
+   idle channel from a hung proxy.
 
-The server streams log lines as text frames. Closes with code `4003` on auth failure, `4000` on invalid container ID. Sends an idle-timeout message after 5 minutes of no new logs.
+If `API_TOKEN` is unset on the server, the `AUTH` step is skipped.
+
+**Close codes:**
+
+| Code | Meaning |
+|---|---|
+| `4000` | Invalid container ID (path validation failed) |
+| `4003` | Auth failure — wrong token, expired session, blocked origin, or token rotated server-side |
+| `4008` | Policy violation — token passed as `?token=…` query parameter, or payload exceeded the 64 KiB single-message cap |
+| `1000` | Normal closure (logs ended or server shutdown) |
+
+**Idle timeout:** the server closes the connection after
+`WS_LOG_IDLE_TIMEOUT` seconds of no new log output (see
+[`docs/config-knobs.md`](config-knobs.md) for the current default
+and how to tune it). Any client should treat the disconnect as a
+normal idle close and reconnect when the user returns.
 
 ---
 
@@ -232,9 +285,18 @@ The server streams log lines as text frames. Closes with code `4003` on auth fai
 ### `WS /ws/exec/{id}`
 Open an interactive shell inside a container.
 
-**Handshake**: same as log streaming — send `AUTH <token>` first.
+**Handshake protocol:**
+1. Client opens the WebSocket connection (no `?token=` query — see log
+   streaming above for the reasoning).
+2. Client sends `AUTH <token>` as the first plain-text message.
+3. On success the server starts piping stdin/stdout; the first byte is the
+   shell's prompt. On failure the server closes with `4003`.
+4. Server sends a NUL byte keepalive every 30 seconds.
 
-After auth, send terminal input as text frames and receive terminal output as text frames. The session closes after 10 minutes of inactivity.
+**Close codes:** same table as log streaming above.
+
+**Inactivity timeout:** Session closes after `WS_EXEC_IDLE_TIMEOUT`
+seconds of no input (see [`docs/config-knobs.md`](config-knobs.md)).
 
 ---
 
@@ -322,6 +384,11 @@ Disconnect a container from a network.
 ### `POST /api/networks/prune`
 Remove all unused networks.
 
+### `GET /api/networks/{id}/inspect`
+Full Docker network inspect payload — options, labels, attached
+containers, driver-specific metadata. Parity with
+`/api/volumes/{name}/inspect`.
+
 ---
 
 ## Compose
@@ -332,7 +399,8 @@ List running Compose stacks (detected from container labels).
 ### `POST /api/compose/up`
 Deploy a Compose stack. Upload a `docker-compose.yml` file, or re-deploy using the last uploaded file.
 
-**Form params** — `file` (multipart, optional), `project_name` (default `dev`)
+**Query params** — `project_name` (default `dev`)
+**Form params** — `file` (multipart, optional)
 
 Compose files are validated before deployment; dangerous keys (`privileged`, `cap_add`, host mounts, etc.) are rejected.
 
@@ -340,6 +408,63 @@ Compose files are validated before deployment; dangerous keys (`privileged`, `ca
 Tear down a Compose stack.
 
 **Query params** — `project_name` (default `dev`)
+
+### `GET /api/compose/{project}/logs`
+Tail-aggregated logs for all services in a Compose stack. Equivalent
+to `docker compose logs --tail=N`; rate-limited at the `READ` tier.
+
+**Query params** — `project` (path), `tail` (int, default 200)
+
+### `POST /api/compose/{project}/services/{service}/restart`
+Restart every container belonging to a single service in a Compose
+stack. Per-service granularity — does NOT re-evaluate the compose
+file the way `docker compose restart` would. Returns the list of
+restarted short ids.
+
+---
+
+## Profile
+
+### `POST /api/profile/enter-reviewer`
+One-way runtime switch into the read-only reviewer profile. Flips
+`config.PROFILE = "reviewer"` under the WS lock, force-closes every
+active exec WebSocket (`audit.ws_exec_terminated`), and emits a
+`profile.switched` audit record. Exiting reviewer mode requires
+either `/api/auth/reset-config` (which also restores PROFILE to
+the boot value) or a server restart.
+
+**Response** — `{ok: true, profile: "reviewer", exec_sessions_closed: <int>}`
+
+---
+
+## Volumes (inspect)
+
+### `GET /api/volumes/{name}/inspect`
+Full volume details: driver, mountpoint, usage bytes, referencing
+containers. Audited as a read; no rate-limit surprises.
+
+**Response** (truncated):
+```json
+{
+  "name": "my-volume",
+  "driver": "local",
+  "mountpoint": "/var/lib/docker/volumes/my-volume/_data",
+  "usage_bytes": 1048576,
+  "ref_count": 1,
+  "containers": ["abc123"]
+}
+```
+
+---
+
+## Debug (maintainer-only)
+
+### `GET /debug/threads`
+Dump every live Python thread's stack frame. **Disabled by default**;
+enable per-process with `SKIFF_DEBUG_THREADS=1` — intended for an
+operator diagnosing a hang. When the flag is off, returns 403
+`system.debug_disabled` so a SIEM rule can flag an operator turning
+it on inadvertently.
 
 ---
 
@@ -360,7 +485,7 @@ Prune the Docker build cache.
 ### `GET /api/system/audit-log`
 Return the last N lines of the structured audit log.
 
-**Query params** — `tail` (int, 1–1000, default 200)
+**Query params** — `tail` (int, 1–`MAX_AUDIT_LINES` [default 2000], default 200)
 
 **Response** — array of JSON objects, one per log event.
 
@@ -369,25 +494,73 @@ Download the full audit log as a JSONL file (streamed).
 
 **Response** — `Content-Type: application/x-ndjson`, `Content-Disposition: attachment; filename="audit.jsonl"`
 
+### `GET /api/system/metrics`
+Prometheus text-format metrics snapshot. Authenticated — scrapers
+must present a valid Bearer token. Labels use a hashed `docker_host`
+so topology doesn't leak across a shared scraper.
+
+---
+
+## Setup wizard + auth lifecycle
+
+These routes are live on any running instance; the wizard ones are
+reachable only while `api_token` is unset (or within the 5-minute
+setup window after boot). Full bodies + examples live in the
+auto-generated `docs/features/setup.generated.md`.
+
+| Method + path | Auth | Purpose |
+|---|---|---|
+| `GET /api/setup-state` | public (loopback discloses socket path) | Wizard presence check |
+| `GET /api/setup/probe-docker` | public (wizard-only) | Probe the common local Docker sockets |
+| `POST /api/setup` | public (wizard-only) | Commit `docker_host` + `api_token` from the wizard |
+| `POST /api/setup/tunnel` | public (wizard-only) | Open a wizard-managed SSH ControlMaster tunnel |
+| `DELETE /api/setup/tunnel` | public (wizard-only) | Stop the wizard-managed tunnel |
+| `GET /api/tunnel/status` | AUTH | Report tunnel reachability; honest for manual tunnels too |
+| `POST /api/tunnel/reconnect` | AUTH | Wizard-managed: reopen; manual: return envelope pointing at the socket path |
+| `POST /api/auth/rotate-token` | AUTH | Swap `API_TOKEN` in memory; force-closes active WebSockets |
+| `POST /api/auth/reset-config` | AUTH | Clear in-memory state; reopen the 5-min setup window |
+
+## Undo queue
+
+| Method + path | Auth | Purpose |
+|---|---|---|
+| `POST /api/undo/{token}` | AUTH | Cancel a pending destructive op inside its window |
+
+## Connect-snippets
+
+| Method + path | Auth | Purpose |
+|---|---|---|
+| `GET /api/connect-snippets` | AUTH | Render per-tool snippets from `skiff/_config/connect_snippets.toml`. Optional `?tool=<id>` returns a single tool's block. |
+
 ---
 
 ## Error Responses
 
-All errors return JSON:
+Every 4xx / 5xx response uses the same envelope:
 
 ```json
-{"detail": "Error message"}
+{"detail": {"code": "container.name_taken", "message": "container name is already in use", "help": "try a different --name"}}
 ```
+
+- `code` — stable machine-readable identifier from the
+  [`docs/errors.md`](errors.md) catalogue. SIEM rules key on this.
+- `message` — short human string safe to display in a toast.
+- `help` *(optional)* — one-sentence remediation hint when the server
+  can provide one (e.g. tunnel failure → "check ssh-agent is running").
 
 Common status codes:
 
-| Code | Meaning |
-|---|---|
-| 400 | Bad request (validation error, Docker API error) |
-| 401 | Missing or invalid API token |
-| 403 | Missing `X-Requested-With` header |
-| 404 | Container, image, volume, or network not found |
-| 409 | Conflict (container already started/stopped) |
-| 429 | Rate limit exceeded |
-| 503 | Docker Engine unreachable |
-| 504 | Operation timed out |
+| Code | Meaning | Example envelope `detail.code` |
+|---|---|---|
+| 400 | Input validation failed | `validation.bad_input`, `image.registry_blocked` |
+| 401 | Missing or invalid bearer token | `auth.missing_token`, `auth.invalid_token`, `auth.session_expired` |
+| 403 | CSRF or setup-window check failed | `auth.csrf_missing`, `auth.csrf_invalid`, `setup.window_expired` |
+| 404 | Resource not found | `container.not_found`, `image.not_found`, `volume.not_found`, `network.not_found` |
+| 409 | Conflict | `container.name_taken`, `container.conflict`, `auth.token_unchanged`, `tunnel.already_connected` |
+| 422 | Malformed request body or query params | `validation.bad_input` |
+| 429 | Rate limit exceeded | `auth.rate_limited`, `auth.setup_locked` |
+| 503 | Container engine unreachable | `system.docker_unreachable`, `system.tunnel_failed` |
+| 504 | Operation timed out | `compose.timeout`, `image.pull_timed_out`, `image.push_timed_out`, `container.stats_timeout` |
+
+See [`docs/errors.md`](errors.md) for the authoritative code catalogue
+(auto-generated from `skiff/contract/errors.py`).

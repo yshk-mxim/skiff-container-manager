@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for docker client singleton logic and safe_docker_call."""
 
 import time
@@ -8,22 +10,21 @@ import pytest
 import requests.exceptions
 from fastapi import HTTPException
 
-import app as app_module
-from app import (
-    _ws_acquire,
-    _ws_release,
-    docker_client_dep,
-    get_client,
-    safe_docker_call,
-)
+import skiff.docker_client as docker_client_module
+from skiff.config import WS_MAX_PER_IP
+from skiff.docker_client import docker_client_dep, get_client
+from skiff.logging_setup import _audit_file_sink
+from skiff.routers.containers_ws import _ws_acquire, _ws_connections, _ws_release
+from skiff.validators import safe_docker_call
 
 # ── get_client: backoff when _client is None ──────────────────────────────────
+
 
 def test_get_client_in_backoff_raises():
     """When client is None and failed recently, raises DockerException (backoff)."""
     with (
-        patch.object(app_module, "_client", None),
-        patch.object(app_module, "_client_failed_at", time.monotonic()),  # failed just now
+        patch.object(docker_client_module, "_client", None),
+        patch.object(docker_client_module, "_client_failed_at", time.monotonic()),  # failed just now
     ):
         with pytest.raises(docker.errors.DockerException):
             get_client()
@@ -34,10 +35,10 @@ def test_get_client_builds_when_none_and_backoff_expired():
     mock_new = MagicMock()
     mock_new.ping.return_value = True
     with (
-        patch.object(app_module, "_client", None),
-        patch.object(app_module, "_client_failed_at", 0.0),
-        patch.object(app_module, "_client_last_ping", 0.0),
-        patch("app._build_client", return_value=mock_new),
+        patch.object(docker_client_module, "_client", None),
+        patch.object(docker_client_module, "_client_failed_at", 0.0),
+        patch.object(docker_client_module, "_client_last_ping", 0.0),
+        patch("skiff.docker_client._build_client", return_value=mock_new),
     ):
         result = get_client()
         assert result is mock_new
@@ -46,22 +47,22 @@ def test_get_client_builds_when_none_and_backoff_expired():
 def test_get_client_build_failure_sets_failed_at():
     """When _build_client raises, _client_failed_at is updated."""
     with (
-        patch.object(app_module, "_client", None),
-        patch.object(app_module, "_client_failed_at", 0.0),
-        patch.object(app_module, "_client_last_ping", 0.0),
-        patch("app._build_client", side_effect=Exception("connection refused")),
+        patch.object(docker_client_module, "_client", None),
+        patch.object(docker_client_module, "_client_failed_at", 0.0),
+        patch.object(docker_client_module, "_client_last_ping", 0.0),
+        patch("skiff.docker_client._build_client", side_effect=Exception("connection refused")),
     ):
         with pytest.raises(Exception, match="connection refused"):
             get_client()
-        assert app_module._client is None
+        assert docker_client_module._client is None
 
 
 def test_get_client_ping_ttl_skips_ping():
     """When _client exists and last ping is within TTL, skip ping and return client."""
     mock_client = MagicMock()
     with (
-        patch.object(app_module, "_client", mock_client),
-        patch.object(app_module, "_client_last_ping", time.monotonic()),  # just now
+        patch.object(docker_client_module, "_client", mock_client),
+        patch.object(docker_client_module, "_client_last_ping", time.monotonic()),  # just now
     ):
         result = get_client()
         assert result is mock_client
@@ -69,17 +70,19 @@ def test_get_client_ping_ttl_skips_ping():
 
 
 def test_get_client_ping_stale_invalidates():
-    """When _client exists but ping fails, client is invalidated."""
+    """When _client exists but ping fails (Docker SDK error), client is invalidated."""
+    import docker.errors
+
     mock_client = MagicMock()
-    mock_client.ping.side_effect = Exception("timeout")
+    mock_client.ping.side_effect = docker.errors.DockerException("timeout")
     mock_new = MagicMock()
     mock_new.ping.return_value = True
 
     with (
-        patch.object(app_module, "_client", mock_client),
-        patch.object(app_module, "_client_last_ping", 0.0),  # very stale
-        patch.object(app_module, "_client_failed_at", 0.0),
-        patch("app._build_client", return_value=mock_new),
+        patch.object(docker_client_module, "_client", mock_client),
+        patch.object(docker_client_module, "_client_last_ping", 0.0),  # very stale
+        patch.object(docker_client_module, "_client_failed_at", 0.0),
+        patch("skiff.docker_client._build_client", return_value=mock_new),
     ):
         result = get_client()
         assert result is mock_new
@@ -87,9 +90,17 @@ def test_get_client_ping_stale_invalidates():
 
 # ── docker_client_dep ─────────────────────────────────────────────────────────
 
+
 def test_docker_client_dep_raises_503_on_failure():
-    """docker_client_dep converts exceptions to 503."""
-    with patch("app.get_client", side_effect=Exception("no docker")):
+    """docker_client_dep converts Docker SDK exceptions to 503.
+
+    After R5 narrowed the catch to (DockerException, OSError), use a
+    matching type. Unrelated exceptions propagate as 500 — intended
+    behaviour so new failure modes surface instead of masquerading as
+    'engine unreachable'."""
+    import docker.errors
+
+    with patch("skiff.docker_client.get_client", side_effect=docker.errors.DockerException("no docker")):
         with pytest.raises(HTTPException) as exc_info:
             docker_client_dep()
         assert exc_info.value.status_code == 503
@@ -98,12 +109,13 @@ def test_docker_client_dep_raises_503_on_failure():
 def test_docker_client_dep_returns_client():
     """docker_client_dep returns client on success."""
     mock = MagicMock()
-    with patch("app.get_client", return_value=mock):
+    with patch("skiff.docker_client.get_client", return_value=mock):
         result = docker_client_dep()
         assert result is mock
 
 
 # ── safe_docker_call ──────────────────────────────────────────────────────────
+
 
 def test_safe_docker_call_success():
     fn = MagicMock(return_value="result")
@@ -156,32 +168,33 @@ def test_safe_docker_call_timeout_error_retries_then_503():
 
 # ── _ws_acquire / _ws_release ─────────────────────────────────────────────────
 
+
 def test_ws_acquire_and_release():
     ip = "10.0.0.99"
     # reset
-    from app import _ws_connections
     _ws_connections[ip] = 0
 
-    _ws_acquire(ip)
+    assert _ws_acquire(ip) is True
     assert _ws_connections[ip] == 1
     _ws_release(ip)
     assert _ws_connections[ip] == 0
 
 
-def test_ws_acquire_too_many_raises_429():
+def test_ws_acquire_too_many_returns_false():
+    # `_ws_acquire` used to raise HTTPException(429), but WebSocket
+    # handlers cannot translate an HTTPException into a close frame
+    # after websocket.accept(). It now returns a bool; callers close
+    # with WS code 1013 (Try Again Later).
     ip = "10.0.0.88"
-    from app import MAX_WS_PER_IP, _ws_connections
-    _ws_connections[ip] = MAX_WS_PER_IP
+    _ws_connections[ip] = WS_MAX_PER_IP
 
-    with pytest.raises(HTTPException) as exc_info:
-        _ws_acquire(ip)
-    assert exc_info.value.status_code == 429
+    assert _ws_acquire(ip) is False
+    assert _ws_connections[ip] == WS_MAX_PER_IP  # unchanged; no increment
     _ws_connections[ip] = 0
 
 
 def test_ws_release_floor_at_zero():
     ip = "10.0.0.77"
-    from app import _ws_connections
     _ws_connections[ip] = 0
     _ws_release(ip)
     assert _ws_connections[ip] == 0
@@ -189,8 +202,8 @@ def test_ws_release_floor_at_zero():
 
 # ── _audit_file_sink OSError silently swallowed ────────────────────────────────
 
+
 def test_audit_file_sink_oserror_swallowed():
-    from app import _audit_file_sink
     with patch("builtins.open", side_effect=OSError("disk full")):
         # Should not raise
         result = _audit_file_sink(None, None, {"event": "test", "severity": "INFO"})

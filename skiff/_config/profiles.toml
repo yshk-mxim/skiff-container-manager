@@ -1,0 +1,32 @@
+# Profile presets for the PROFILE env var.
+#
+# Applied via os.environ.setdefault() at import time — explicit env
+# always wins over a preset. Setting PROFILE=ci in a GitHub Actions
+# runner gives CI-appropriate limits WITHOUT overriding any operator-
+# specified RATE_LIMIT_SCALE.
+#
+# Zero-trust defaults:
+#  - Every profile keeps AUTH ON (API_TOKEN required) unless the
+#    operator explicitly unsets it. Profiles do not relax auth.
+#  - Profiles only modify ergonomics (rate limits, UI hints, perhaps
+#    future wizard-step visibility). They never relax security gates.
+#  - `reviewer` keeps the tightest defaults precisely because that
+#    persona must see SKIFF's production behaviour, not a demo mode.
+
+[homelab]
+RATE_LIMIT_SCALE = "10"
+
+[dev]
+# no overrides — this is the zero-config defaults
+
+[sre]
+RATE_LIMIT_SCALE = "3"
+
+[reviewer]
+RATE_LIMIT_SCALE = "1"
+
+[tutor]
+RATE_LIMIT_SCALE = "50"
+
+[ci]
+RATE_LIMIT_SCALE = "100"

@@ -7,17 +7,32 @@ MIT License:
 - FastAPI (https://github.com/tiangolo/fastapi) — Sebastián Ramírez
 - PyYAML (https://github.com/yaml/pyyaml) — Kirill Simonov and contributors
 - slowapi (https://github.com/laurentS/slowapi) — Laurent Savaete
+- Pydantic (https://github.com/pydantic/pydantic) — Samuel Colvin and contributors
+- Click (https://github.com/pallets/click) — Pallets / Armin Ronacher (BSD-3-Clause, sibling MIT libs)
+- charset-normalizer (https://github.com/jawah/charset_normalizer) — Ahmed TAHRI
 
-Apache 2.0 License:
+Apache-2.0 License:
 - Docker SDK for Python (https://github.com/docker/docker-py) — Docker, Inc.
-- Structlog (https://github.com/hynek/structlog) — Hynek Schlawack and contributors
-- python-multipart (https://github.com/Kludex/python-multipart) — Andrew Dunstan and contributors
+- python-multipart (https://github.com/Kludex/python-multipart) — Andrew Dunstan, Marcelo Trylesinski, and contributors
 - Requests (https://github.com/psf/requests) — Kenneth Reitz and contributors
+
+MIT OR Apache-2.0 License (dual-licensed; you may choose either):
+- Structlog (https://github.com/hynek/structlog) — Hynek Schlawack and contributors
 
 BSD License:
 - Uvicorn (https://github.com/encode/uvicorn) — Tom Christie (BSD-3-Clause)
 - Starlette (https://github.com/encode/starlette) — Tom Christie (BSD-3-Clause)
 - websockets (https://github.com/python-websockets/websockets) — Aymeric Augustin (BSD-3-Clause)
+- urllib3 (https://github.com/urllib3/urllib3) — Andrey Petrov and contributors (MIT — sibling to BSD stack)
+
+Mozilla Public License 2.0:
+- certifi (https://github.com/certifi/python-certifi) — Kenneth Reitz and contributors
+
+Optional — Apache-2.0 (GCP extras only, installed via `pip install 'skiff-container-manager[gcp]'`):
+- google-cloud-logging (https://github.com/googleapis/python-logging) — Google LLC
+
+(charset-normalizer was historically listed under "Other permissive"
+here; its license IS MIT, so it now appears in the MIT section above.)
 
 Full dependency list with licenses available via:
   pip install pip-licenses && pip-licenses --from=mixed --format=markdown

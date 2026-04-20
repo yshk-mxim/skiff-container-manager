@@ -1,40 +1,25 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for image endpoints."""
-
-from unittest.mock import MagicMock
 
 import docker.errors
 
 from tests.conftest import AUTH_CSRF, AUTH_HEADER
+from tests.factories import make_image as _factory_make_image
 
 
 def _make_image(short_id="sha256abc123", tags=None, size=100 * 1024 * 1024):
-    img = MagicMock()
-    img.short_id = short_id
-    img.tags = tags or ["us-docker.pkg.dev/p/r/img:latest"]
-    img.attrs = {
-        "Id": "sha256:" + short_id,
-        "Size": size,
-        "Created": "2026-01-01T00:00:00Z",
-        "Architecture": "amd64",
-        "Os": "linux",
-        "RootFS": {"Layers": ["layer1", "layer2"]},
-        "Config": {
-            "Env": ["PATH=/usr/local/bin"],
-            "Cmd": ["/bin/sh"],
-            "Entrypoint": None,
-            "ExposedPorts": {"80/tcp": {}},
-            "Labels": {},
-            "WorkingDir": "/app",
-            "User": "",
-        },
-    }
-    img.history.return_value = [
-        {"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}
-    ]
+    """Image-specific test mock — factory + ExposedPorts + history shape."""
+    img = _factory_make_image(short_id=short_id, tags=tags, size=size)
+    img.attrs["Config"]["ExposedPorts"] = {"80/tcp": {}}
+    img.attrs["Config"]["Env"] = ["PATH=/usr/local/bin"]
+    img.attrs["Config"]["WorkingDir"] = "/app"
+    img.history.return_value = [{"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}]
     return img
 
 
 # ── List images ───────────────────────────────────────────────────────────────
+
 
 def test_list_images(client, mock_docker):
     mock_docker.images.list.return_value = [_make_image()]
@@ -42,7 +27,7 @@ def test_list_images(client, mock_docker):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
-    assert data[0]["tag"] == "us-docker.pkg.dev/p/r/img:latest"
+    assert "docker.io/library/nginx:latest" in data[0]["tags"]
 
 
 def test_list_images_no_tags(client, mock_docker):
@@ -51,7 +36,7 @@ def test_list_images_no_tags(client, mock_docker):
     mock_docker.images.list.return_value = [img]
     resp = client.get("/api/images", headers=AUTH_HEADER)
     assert resp.status_code == 200
-    assert resp.json()[0]["tag"] == img.short_id
+    assert resp.json()[0]["tags"] == []
 
 
 def test_list_allowed_images(client, mock_docker):
@@ -63,20 +48,21 @@ def test_list_allowed_images(client, mock_docker):
 
 
 def test_list_allowed_images_filters_unallowed(client, mock_docker):
-    img = _make_image(tags=["docker.io/library/nginx:latest"])
+    img = _make_image(tags=["evil.example.com/img:latest"])
     mock_docker.images.list.return_value = [img]
     resp = client.get("/api/images/allowed", headers=AUTH_HEADER)
     assert resp.status_code == 200
-    # docker.io not in allowed registries (only us-docker.pkg.dev), so empty
+    # evil.example.com not in allowed registries (docker.io, ghcr.io), so empty
     assert resp.json() == []
 
 
 # ── Pull ─────────────────────────────────────────────────────────────────────
 
+
 def test_pull_image_success(client, mock_docker):
     mock_docker.images.pull.return_value = _make_image()
     resp = client.post(
-        "/api/images/pull?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/pull?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 200
@@ -96,7 +82,7 @@ def test_pull_image_api_error(client, mock_docker):
     err.explanation = "manifest not found"
     mock_docker.images.pull.side_effect = err
     resp = client.post(
-        "/api/images/pull?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/pull?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400
@@ -104,10 +90,11 @@ def test_pull_image_api_error(client, mock_docker):
 
 # ── Push ─────────────────────────────────────────────────────────────────────
 
+
 def test_push_image_success(client, mock_docker):
     mock_docker.images.push.return_value = '{"status": "pushed"}\n'
     resp = client.post(
-        "/api/images/push?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/push?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 200
@@ -125,7 +112,7 @@ def test_push_image_blocked_registry(client, mock_docker):
 def test_push_image_error_in_output(client, mock_docker):
     mock_docker.images.push.return_value = '{"error": "unauthorized"}\n'
     resp = client.post(
-        "/api/images/push?image=us-docker.pkg.dev/p/r/img:latest",
+        "/api/images/push?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 400
@@ -133,11 +120,12 @@ def test_push_image_error_in_output(client, mock_docker):
 
 # ── Tag ──────────────────────────────────────────────────────────────────────
 
+
 def test_tag_image_success(client, mock_docker):
     img = _make_image()
     mock_docker.images.get.return_value = img
     resp = client.post(
-        "/api/images/abcd1234/tag?repository=us-docker.pkg.dev/p/r/img&tag=v2",
+        "/api/images/abcd1234/tag?repository=docker.io/library/nginx&tag=v2",
         headers=AUTH_CSRF,
     )
     assert resp.status_code == 200
@@ -145,6 +133,7 @@ def test_tag_image_success(client, mock_docker):
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
+
 
 def test_delete_image(client, mock_docker):
     resp = client.delete("/api/images/abcd1234", headers=AUTH_CSRF)
@@ -154,20 +143,45 @@ def test_delete_image(client, mock_docker):
 
 # ── Inspect ───────────────────────────────────────────────────────────────────
 
+
 def test_inspect_image(client, mock_docker):
     mock_docker.images.get.return_value = _make_image()
+    mock_docker.api.history.return_value = [{"Created": "2026-01-01T00:00:00Z", "CreatedBy": "/bin/sh", "Size": 1024}]
     resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 200
     data = resp.json()
     assert "tags" in data
     assert "history" in data
     assert len(data["history"]) > 0
+    # Envelope must disclose whether the layer list was clipped so the
+    # UI can say "showing 20 of 43". Was previously silent — 30-layer
+    # multi-stage builds rendered as if they had 20.
+    assert data["history_total"] == len(data["history"])
+    assert data["history_truncated"] is False
+
+
+def test_inspect_image_history_truncates_and_reports(client, mock_docker):
+    """Images with >20 build steps surface the total depth + truncation flag."""
+    img = _make_image()
+    img.history.return_value = [
+        {"Created": "2026-01-01T00:00:00Z", "CreatedBy": f"step {i}", "Size": 1024} for i in range(30)
+    ]
+    mock_docker.images.get.return_value = img
+    resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["history"]) == 20
+    assert data["history_total"] == 30
+    assert data["history_truncated"] is True
 
 
 def test_inspect_image_history_error(client, mock_docker):
     img = _make_image()
-    img.history.side_effect = Exception("history fail")
+    img.history.side_effect = docker.errors.DockerException("history fail")
     mock_docker.images.get.return_value = img
     resp = client.get("/api/images/abcd1234/inspect", headers=AUTH_HEADER)
     assert resp.status_code == 200
-    assert resp.json()["history"] == []
+    data = resp.json()
+    assert data["history"] == []
+    assert data["history_total"] == 0
+    assert data["history_truncated"] is False

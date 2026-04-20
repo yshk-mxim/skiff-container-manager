@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """
 Security-focused tests: registry bypass attempts, compose sandbox escapes,
 volume path traversal, and response header checks.
@@ -8,24 +10,30 @@ These test real defensive logic — not happy paths.
 import pytest
 from fastapi import HTTPException
 
-from app import BLOCKED_COMPOSE_SERVICE_KEYS, validate_compose_file, validate_image_registry
+from skiff.validators import (
+    BLOCKED_COMPOSE_SERVICE_KEYS,
+    validate_compose_file,
+    validate_image_registry,
+)
 from tests.conftest import AUTH_CSRF, AUTH_HEADER, TOKEN
 
 # ── Registry bypass attempts ───────────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("bypass_attempt", [
-    # Subdomain confusion: evil.us-docker.pkg.dev is NOT the allowed registry
-    "evil.us-docker.pkg.dev/img:latest",
-    # Path confusion: allowed registry appears after a slash, not as hostname
-    "evil.example.com/us-docker.pkg.dev/img:latest",
-    # Missing registry (library image pulled from Docker Hub by default)
-    "ubuntu:22.04",
-    # No registry at all
-    "myapp",
-    # Registry prefix as path segment, not host
-    "example.com/us-docker.pkg.dev:latest",
-])
+@pytest.mark.parametrize(
+    "bypass_attempt",
+    [
+        # Subdomain confusion: evil.us-docker.pkg.dev is NOT the allowed registry
+        "evil.us-docker.pkg.dev/img:latest",
+        # Path confusion: allowed registry appears after a slash, not as hostname
+        "evil.example.com/us-docker.pkg.dev/img:latest",
+        # Registry prefix as path segment, not host
+        "example.com/us-docker.pkg.dev:latest",
+        # Subdomain confusion for docker.io
+        "evil.docker.io/img:latest",
+    ],
+)
 def test_registry_bypass_attempts_blocked(bypass_attempt):
     with pytest.raises(HTTPException) as exc:
         validate_image_registry(bypass_attempt)
@@ -34,20 +42,24 @@ def test_registry_bypass_attempts_blocked(bypass_attempt):
 
 @pytest.mark.unit
 def test_allowed_registry_exact_match_required():
-    """us-docker.pkg.dev.evil.com must not match us-docker.pkg.dev/."""
+    """docker.io.evil.com must not match docker.io/."""
     with pytest.raises(HTTPException):
-        validate_image_registry("us-docker.pkg.dev.evil.com/img:latest")
+        validate_image_registry("docker.io.evil.com/img:latest")
 
 
 # ── Compose sandbox escape attempts ───────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("privileged_variant", [
-    "privileged: true",
-    "privileged: True",   # YAML boolean alias
-])
+@pytest.mark.parametrize(
+    "privileged_variant",
+    [
+        "privileged: true",
+        "privileged: True",  # YAML boolean alias
+    ],
+)
 def test_compose_privileged_variants_blocked(privileged_variant):
-    content = f"services:\n  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    {privileged_variant}\n".encode()
+    content = f"services:\n  web:\n    image: docker.io/library/nginx:latest\n    {privileged_variant}\n".encode()
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -70,7 +82,7 @@ def test_compose_all_blocked_service_keys():
     }
     for key in BLOCKED_COMPOSE_SERVICE_KEYS:
         value = blocked_keys_with_values.get(key, "somevalue")
-        content = f"services:\n  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    {key}:\n      {value}\n".encode()
+        content = f"services:\n  web:\n    image: docker.io/library/nginx:latest\n    {key}:\n      {value}\n".encode()
         try:
             validate_compose_file(content)
         except HTTPException as exc:
@@ -83,7 +95,7 @@ def test_compose_volume_dict_format_host_path_blocked():
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/p/r/i:t
+    image: docker.io/library/nginx:latest
     volumes:
       - type: bind
         source: /etc
@@ -96,13 +108,16 @@ services:
 
 @pytest.mark.unit
 def test_compose_top_level_configs_blocked():
-    content = b"configs:\n  mycfg:\n    file: ./config.txt\nservices:\n  web:\n    image: us-docker.pkg.dev/p/r/i:t\n"
+    content = (
+        b"configs:\n  mycfg:\n    file: ./config.txt\nservices:\n  web:\n    image: docker.io/library/nginx:latest\n"
+    )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
 
 
 # ── Response security headers ─────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_security_headers_present(client):
@@ -120,6 +135,7 @@ def test_csp_blocks_frame_ancestors(client):
 
 
 # ── Auth edge cases ────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_bearer_scheme_required(client):
@@ -147,7 +163,7 @@ def test_run_container_no_volume_separator_returns_400(client, mock_docker):
     """Volume without ':' is an ambiguous format and must be rejected."""
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"volumes": ["nodrivepath"]},
     )
@@ -159,7 +175,7 @@ def test_run_container_env_var_without_equals_returns_400(client, mock_docker):
     """Environment variable without '=' must be rejected."""
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"environment": ["NOEQUAL"]},
     )
@@ -171,7 +187,7 @@ def test_run_container_env_var_invalid_key_returns_400(client, mock_docker):
     """Environment variable with invalid key characters must be rejected."""
     mock_docker.containers.list.return_value = []
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"environment": ["123STARTSWITHDIGIT=value"]},
     )
@@ -183,7 +199,7 @@ def test_run_container_too_many_labels_returns_400(client, mock_docker):
     mock_docker.containers.list.return_value = []
     labels = {f"key{i}": "val" for i in range(51)}
     resp = client.post(
-        "/api/containers/run?image=us-docker.pkg.dev/p/r/i:t",
+        "/api/containers/run?image=docker.io/library/nginx:latest",
         headers=AUTH_CSRF,
         json={"labels": labels},
     )

@@ -48,10 +48,14 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://127.0.0.1:8080/api/containers
 ```
 
 Rotate the token:
-1. Generate a new one: `openssl rand -hex 32`
-2. Update `API_TOKEN` in `.env`
-3. Restart the server: `systemctl restart skiff@$USER` or re-run `./run.sh`
-4. Re-enter the new token in the browser login screen
+
+- **Session-only mode:** System page → Account → **Rotate API token**
+  (generates, copies, swaps without a restart; session continues with the
+  new token).
+- **Env-configured mode:** generate `openssl rand -hex 32`, replace
+  `API_TOKEN=` in `.env`, restart (rotate endpoint is disabled for
+  env-configured servers by design).
+- Re-enter the new token in the browser login page.
 
 ---
 
@@ -100,16 +104,22 @@ Short Docker Hub names (`nginx`, `redis`, `alpine`) are allowed when `docker.io`
 
 ## Audit log not growing
 
-1. Check the configured path is writable:
+1. Find the path SKIFF is actually writing to — it's logged on startup:
    ```bash
-   ls -la $(dirname "$AUDIT_LOG")
+   # If you ran via run.sh / uvicorn directly, look at the startup stderr for:
+   #   {"event": "app.started", ..., "audit_log": "/Users/you/Library/.../audit.jsonl"}
+   python -c "from skiff.config import AUDIT_LOG_PATH; print(AUDIT_LOG_PATH)"
    ```
-2. The default path `/var/log/skiff-audit.jsonl` requires root or special permissions. Override it:
+2. Defaults (no `AUDIT_LOG` env override) per platform, all writable without root:
+   - macOS: `~/Library/Application Support/skiff/audit.jsonl`
+   - Linux / WSL2: `$XDG_STATE_HOME/skiff/audit.jsonl` or `~/.local/state/skiff/audit.jsonl`
+3. For production, override to a dedicated path:
    ```
    # .env
-   AUDIT_LOG=./audit.jsonl
+   AUDIT_LOG=/var/log/skiff-audit.jsonl
    ```
-3. A startup warning is printed if the path is not writable — check `journalctl -u skiff@$USER`.
+4. A startup WARNING is printed if the chosen path is not writable, then
+   logging falls back to stdout only.
 
 ---
 
@@ -117,11 +127,16 @@ Short Docker Hub names (`nginx`, `redis`, `alpine`) are allowed when `docker.io`
 
 You have hit a rate limit. The limits are per-endpoint (typically 60/minute for reads, 10–30/minute for mutations). Wait and retry.
 
-If you are behind a reverse proxy and all requests appear to come from `127.0.0.1`, set `FORWARDED_ALLOW_IPS`:
+If you are behind a reverse proxy and all requests appear to come from `127.0.0.1`, set `TRUST_FORWARDED_HEADERS=true` AND restart uvicorn with the proxy-headers support enabled. Do this **only** when a trusted proxy (oauth2-proxy, Caddy, nginx) fronts SKIFF and sanitises `X-Forwarded-*` headers — otherwise any caller can forge their audit `remote` and rate-limit bucket key.
+
 ```bash
-FORWARDED_ALLOW_IPS="*" uvicorn skiff.app:app ...
+# Only when behind a trusted reverse proxy:
+TRUST_FORWARDED_HEADERS=true \
+  uvicorn skiff.app:app --host 127.0.0.1 --port 8080 \
+    --proxy-headers --forwarded-allow-ips "127.0.0.1"
 ```
-This tells slowapi to trust the `X-Forwarded-For` header so the real client IP is used for rate limiting.
+
+Without a trusted proxy, leave `TRUST_FORWARDED_HEADERS` unset (the default) and run with `--no-proxy-headers`. SKIFF's `StripForwardedHeadersMiddleware` then refuses to read any `X-Forwarded-*` header, so a forged value cannot reach rate-limit keying or the audit log.
 
 ---
 
@@ -138,6 +153,45 @@ Each project name stores exactly one compose file. If you do not upload a new fi
    - Logs: `ws://host:8080/ws/logs/{container-id}`
    - Exec: `ws://host:8080/ws/exec/{container-id}`
 3. The WS rate limit is 5 concurrent sessions per IP. Close unused sessions first.
+
+---
+
+## 403 on `/api/setup` — "Setup window expired"
+
+The setup wizard is only callable within 5 minutes of server startup
+(`SETUP_WINDOW_SECS`). After that, `POST /api/setup` returns 403.
+
+**Fixes (in order of least to most disruptive):**
+
+1. **Session-only mode, still have a valid token:** System page → Account
+   → **Reset configuration**. Clears in-memory state AND re-opens the
+   setup window without a restart.
+2. **Env-configured mode (token set via `API_TOKEN`):** reset-config is
+   disabled in this mode — update the env and restart.
+3. **No access to the server:** restart the process:
+   ```bash
+   systemctl restart skiff@$USER   # or: kill the uvicorn process and re-run ./run.sh
+   ```
+
+---
+
+## WebSocket closes immediately with code 4003 — "Session expired"
+
+Your session (started when you first entered your token) has exceeded the 8-hour absolute timeout. The server rejected the auth token, and the browser will show a "Session expired" message.
+
+**Fix:** Log out and log back in with your `API_TOKEN`. The session timer resets on re-authentication.
+
+Note: Do NOT try to reconnect the WebSocket manually — the session is expired and reconnect attempts will continue to fail with `4003` until you log in again.
+
+---
+
+## WebSocket auth lockout — connections refused after repeated failures
+
+After 3 failed WebSocket authentication attempts from the same IP, new WebSocket connections are blocked for 5 minutes. This protects against token-guessing attacks.
+
+**Symptoms:** WebSocket connects but closes immediately with a 4003 or auth error, even with the correct token.
+
+**Fix:** Wait 5 minutes for the lockout to expire, then reconnect. If this happens repeatedly with the correct token, check for a clock skew issue or a misbehaving client sending auth messages incorrectly.
 
 ---
 

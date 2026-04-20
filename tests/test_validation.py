@@ -1,9 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for input validation: IDs, image names, registry, compose files."""
 
 import pytest
 from fastapi import HTTPException
 
-from app import (
+from skiff.validators import (
     validate_compose_file,
     validate_container_id,
     validate_image_registry,
@@ -12,27 +14,36 @@ from app import (
 
 # ── Container ID ──────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("valid_id", [
-    "abc1",
-    "a1b2c3d4",
-    "abc123def456abc1",
-    "a" * 64,
-])
+@pytest.mark.parametrize(
+    "valid_id",
+    [
+        "abc1",
+        "a1b2c3d4",
+        "abc123def456abc1",
+        "a" * 64,
+    ],
+)
 def test_valid_container_ids(valid_id):
     assert validate_container_id(valid_id) == valid_id
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("bad_id", [
-    "",
-    "abc",          # too short (< 4)
-    "ABC123",       # uppercase
-    "abc-123",      # hyphen
-    "a" * 65,       # too long
-    "xyz",          # non-hex
-    "../etc",       # path traversal
-])
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        # `validate_container_id` now accepts EITHER a hex id OR a container
+        # name (Docker's SDK resolves either). "ABC123", "abc-123", "xyz"
+        # are valid container NAMES, so they pass. These remaining cases
+        # fail both regexes — empty, path traversal, and over-long.
+        "",
+        "../etc",  # path traversal char ('/' not in name or id regex)
+        "a" * 129,  # exceeds 128-char name cap
+        "-leading-dash",  # name must start with an alphanumeric
+        "has space",  # whitespace in neither regex
+    ],
+)
 def test_invalid_container_ids_raise_400(bad_id):
     with pytest.raises(HTTPException) as exc:
         validate_container_id(bad_id)
@@ -41,6 +52,7 @@ def test_invalid_container_ids_raise_400(bad_id):
 
 # ── Project name ──────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 @pytest.mark.parametrize("valid", ["dev", "my-project", "proj123", "a"])
 def test_valid_project_names(valid):
@@ -48,13 +60,16 @@ def test_valid_project_names(valid):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("bad", [
-    "-starts-with-dash",
-    "UPPER",
-    "has space",
-    "a" * 65,
-    "",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "-starts-with-dash",
+        "UPPER",
+        "has space",
+        "a" * 65,
+        "",
+    ],
+)
 def test_invalid_project_names_raise_400(bad):
     with pytest.raises(HTTPException) as exc:
         validate_project_name(bad)
@@ -63,24 +78,28 @@ def test_invalid_project_names_raise_400(bad):
 
 # ── Image registry ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("allowed_image", [
-    "us-docker.pkg.dev/my-project/repo/image:latest",
-    "us-docker.pkg.dev/my-project/repo/image@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
-])
+@pytest.mark.parametrize(
+    "allowed_image",
+    [
+        "docker.io/library/nginx:latest",
+        "ghcr.io/owner/repo:tag",
+    ],
+)
 def test_allowed_registry_passes(allowed_image):
     # Should not raise
     validate_image_registry(allowed_image)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("blocked_image", [
-    "docker.io/library/ubuntu:22.04",
-    "nginx:latest",           # no registry
-    "ubuntu",                 # no registry, no tag
-    "ghcr.io/owner/repo:tag",
-    "evil.example.com/image:tag",
-])
+@pytest.mark.parametrize(
+    "blocked_image",
+    [
+        "evil.example.com/image:tag",
+        "us-docker.pkg.dev/my-project/repo/image:latest",
+    ],
+)
 def test_blocked_registry_raises_400(blocked_image):
     with pytest.raises(HTTPException) as exc:
         validate_image_registry(blocked_image)
@@ -96,6 +115,7 @@ def test_image_format_validation():
 
 # ── Compose file validation ───────────────────────────────────────────────────
 
+
 def _compose(services_yaml: str) -> bytes:
     return f"services:\n{services_yaml}".encode()
 
@@ -105,7 +125,7 @@ def test_valid_compose_passes():
     content = b"""
 services:
   web:
-    image: us-docker.pkg.dev/my-project/repo/app:latest
+    image: docker.io/library/nginx:latest
     ports:
       - "8080:8080"
     volumes:
@@ -119,7 +139,9 @@ volumes:
 
 @pytest.mark.unit
 def test_compose_too_large_raises_400():
-    content = b"x" * (1024 * 256 + 1)
+    from skiff import config as _cfg
+
+    content = b"x" * (_cfg.MAX_COMPOSE_SIZE + 1)
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -140,26 +162,27 @@ def test_compose_not_mapping_raises_400():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("blocked_key", [
-    "privileged: true",
-    "cap_add:\n      - NET_ADMIN",
-    "devices:\n      - /dev/sda",
-    "build: .",
-    "env_file:\n      - .env",
-])
+@pytest.mark.parametrize(
+    "blocked_key",
+    [
+        "privileged: true",
+        "cap_add:\n      - NET_ADMIN",
+        "devices:\n      - /dev/sda",
+        "build: .",
+        "env_file:\n      - .env",
+    ],
+)
 def test_compose_blocked_service_keys_raise_400(blocked_key):
-    content = _compose(f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    {blocked_key}\n")
+    content = _compose(f"  web:\n    image: docker.io/library/nginx:latest\n    {blocked_key}\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("blocked_mode", ["host", "container:other"])
+@pytest.mark.parametrize("blocked_mode", ["host", "container:other", "service:sidecar"])
 def test_compose_blocked_network_mode_raises_400(blocked_mode):
-    content = _compose(
-        f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    network_mode: {blocked_mode}\n"
-    )
+    content = _compose(f"  web:\n    image: docker.io/library/nginx:latest\n    network_mode: {blocked_mode}\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -167,7 +190,7 @@ def test_compose_blocked_network_mode_raises_400(blocked_mode):
 
 @pytest.mark.unit
 def test_compose_pid_host_raises_400():
-    content = _compose("  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    pid: host\n")
+    content = _compose("  web:\n    image: docker.io/library/nginx:latest\n    pid: host\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -175,7 +198,7 @@ def test_compose_pid_host_raises_400():
 
 @pytest.mark.unit
 def test_compose_ipc_host_raises_400():
-    content = _compose("  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    ipc: host\n")
+    content = _compose("  web:\n    image: docker.io/library/nginx:latest\n    ipc: host\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -184,9 +207,7 @@ def test_compose_ipc_host_raises_400():
 @pytest.mark.unit
 @pytest.mark.parametrize("bad_vol", ["/etc/passwd:/data", "~/data:/data", "../data:/data", "$HOME:/data"])
 def test_compose_host_path_volume_raises_400(bad_vol):
-    content = _compose(
-        f"  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    volumes:\n      - {bad_vol}\n"
-    )
+    content = _compose(f"  web:\n    image: docker.io/library/nginx:latest\n    volumes:\n      - {bad_vol}\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
@@ -194,9 +215,7 @@ def test_compose_host_path_volume_raises_400(bad_vol):
 
 @pytest.mark.unit
 def test_compose_named_volume_is_allowed():
-    content = _compose(
-        "  web:\n    image: us-docker.pkg.dev/p/r/i:t\n    volumes:\n      - mydata:/app/data\n"
-    )
+    content = _compose("  web:\n    image: docker.io/library/nginx:latest\n    volumes:\n      - mydata:/app/data\n")
     result = validate_compose_file(content)
     assert result is not None
 
@@ -204,8 +223,7 @@ def test_compose_named_volume_is_allowed():
 @pytest.mark.unit
 def test_compose_blocked_top_level_secrets():
     content = (
-        b"secrets:\n  mysecret:\n    file: ./secret.txt\n"
-        b"services:\n  web:\n    image: us-docker.pkg.dev/p/r/i:t\n"
+        b"secrets:\n  mysecret:\n    file: ./secret.txt\nservices:\n  web:\n    image: docker.io/library/nginx:latest\n"
     )
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
@@ -214,7 +232,32 @@ def test_compose_blocked_top_level_secrets():
 
 @pytest.mark.unit
 def test_compose_image_from_unapproved_registry_raises_400():
-    content = _compose("  web:\n    image: docker.io/nginx:latest\n")
+    content = _compose("  web:\n    image: evil.example.com/img:latest\n")
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.unit
+def test_redact_env_masks_sensitive_keys():
+    from skiff.validators import _redact_env
+
+    env = [
+        "DATABASE_URL=postgres://user:pass@host/db",
+        "API_KEY=secret123",
+        "PASSWORD=hunter2",
+        "PORT=8080",
+        "MY_SECRET=abc",
+        "AWS_SECRET_ACCESS_KEY=AKIA...",
+        "LOG_LEVEL=info",
+    ]
+    result = _redact_env(env)
+    # Sensitive values must be redacted
+    assert "DATABASE_URL=[REDACTED]" not in result  # DATABASE_URL has no sensitive keyword
+    assert any(e == "API_KEY=[REDACTED]" for e in result)
+    assert any(e == "PASSWORD=[REDACTED]" for e in result)
+    assert any(e == "MY_SECRET=[REDACTED]" for e in result)
+    assert any(e == "AWS_SECRET_ACCESS_KEY=[REDACTED]" for e in result)
+    # Non-sensitive values must be preserved
+    assert "PORT=8080" in result
+    assert "LOG_LEVEL=info" in result

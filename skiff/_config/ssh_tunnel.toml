@@ -1,0 +1,60 @@
+# SSH ControlMaster tunnel flags — the exact `-o` options the Docker
+# tunnel invocation passes to `ssh`.
+#
+# Zero-trust rationale (P0 security file):
+#
+#  - BatchMode = "yes"
+#      Forbids any interactive password / keyboard-interactive prompt.
+#      Auth MUST succeed via a pre-installed key (ssh-agent or
+#      ~/.ssh/config IdentityFile). Without this, a compromised
+#      sshd pretending to need a password could swipe the user's
+#      interactive credentials through SKIFF's stdin.
+#
+#  - ControlPersist = "yes"
+#      Keep the ControlMaster socket alive after the initial `-fNM`
+#      invocation returns. Every subsequent docker-CLI call re-uses
+#      the same TCP connection → much faster and one audit trail
+#      entry per session instead of per-command.
+#
+#  - StrictHostKeyChecking = "accept-new"
+#      First-seen host keys are accepted into ~/.ssh/known_hosts
+#      automatically; later mismatches are rejected with a loud
+#      "REMOTE HOST IDENTIFICATION HAS CHANGED" error. This strikes
+#      the balance "works on first run, defends against MITM after".
+#      Operators paranoid about first-seen MITM should SSH manually
+#      once before running SKIFF, pre-populating known_hosts.
+#
+#  - ConnectTimeout = TUNNEL_CONNECT_TIMEOUT
+#      How long SSH waits for the TCP handshake before giving up.
+#      Sourced at runtime from skiff.config.TUNNEL_CONNECT_TIMEOUT
+#      (default 15 s) — we keep the binding in Python to avoid
+#      having two places to edit the timeout.
+#
+#  - ServerAliveInterval = TUNNEL_SERVER_ALIVE_INTERVAL
+#  - ServerAliveCountMax = TUNNEL_SERVER_ALIVE_COUNT
+#      Detect a dropped tunnel within ~90 s (30 s × 3 probes) so
+#      _invalidate_client reconnects promptly instead of blocking
+#      on a dead socket until Docker's own HTTP timeout fires.
+#
+# OWASP Top 10:2025 mapping:
+#  - A01 Broken Access Control (BatchMode prevents stdin credential
+#    prompts that could be intercepted)
+#  - A04 Cryptographic Failures (StrictHostKeyChecking=accept-new
+#    is the host-key posture)
+#
+# Editing this file is a security decision. CODEOWNERS protects
+# skiff/_config/ssh_tunnel.toml; SBOM diff flags it as a hot file.
+
+[static]
+BatchMode              = "yes"
+ControlPersist         = "yes"
+StrictHostKeyChecking  = "accept-new"
+
+# Keys in [dynamic] below are substituted from skiff.config at
+# start-tunnel time (those are numeric knobs that may be tuned
+# per deployment; the names here are the SSH option names, the
+# values are the Python config attribute names).
+[dynamic]
+ConnectTimeout          = "TUNNEL_CONNECT_TIMEOUT"
+ServerAliveInterval     = "TUNNEL_SERVER_ALIVE_INTERVAL"
+ServerAliveCountMax     = "TUNNEL_SERVER_ALIVE_COUNT"

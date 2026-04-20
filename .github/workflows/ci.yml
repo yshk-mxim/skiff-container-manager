@@ -5,38 +5,103 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Setup Python + dev deps
+        uses: ./.github/actions/setup-skiff-python
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Governance guard (no internal-only references)
+        # Pattern list lives in the INTERNAL_DENYLIST_REGEX repository
+        # secret so the guard doesn't itself name what it blocks.
+        # Unset → guard is a no-op (public fork-friendly default).
+        env:
+          INTERNAL_DENYLIST_REGEX: ${{ secrets.INTERNAL_DENYLIST_REGEX }}
+        run: |
+          if [ -z "$INTERNAL_DENYLIST_REGEX" ]; then
+            echo "INTERNAL_DENYLIST_REGEX secret is not set — guard skipped."
+            exit 0
+          fi
+          if git grep -n -iE "$INTERNAL_DENYLIST_REGEX"; then
+            echo "::error::Internal reference found. Scrub before merging."
+            exit 1
+          fi
 
       - name: Lint (ruff)
         run: make lint
 
-      - name: Security scan (bandit)
+      - name: Lint project-specific anti-patterns (AP001-AP014)
+        run: make lint-antipatterns
+
+      - name: Lint JS — no innerHTML interpolation outside ui.js
+        run: make lint-js
+
+      - name: Lint Markdown — no broken internal links
+        run: make lint-md
+
+      - name: Lint ASVS v5.0 self-assessment completeness
+        run: make lint-asvs
+
+      - name: Lint NOTICE covers every direct runtime dependency
+        run: make lint-notice
+
+      - name: Security scan (ruff S rules)
         run: make security
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip-audit --strict -r requirements.txt
+
+      - name: Auto-generated docs in sync
+        # Fail if docs/errors.md / docs/audit-events.md / docs/config-knobs.md /
+        # docs/features/*.generated.md drift from the Python source of truth.
+        # Regenerate locally with `make docs`.
+        run: make docs-check
+
+      - name: Regenerate all auto-generated docs (for artefact upload)
+        # docs-check runs the generator in --check mode (exits on drift);
+        # this step runs it in write mode so the produced files can be
+        # uploaded as a PR artefact. Because docs-check already passed,
+        # the tree written here matches the tree in the PR exactly —
+        # this is a reviewable copy, not a source of drift.
+        run: make docs
+
+      - name: Regenerate SBOM from pinned requirements (CycloneDX)
+        run: make sbom
 
       - name: Unit tests + coverage
         run: make coverage
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: coverage-html
           path: htmlcov/
           retention-days: 7
+
+      - name: Upload generated docs bundle
+        # Ships a reviewable artefact containing every auto-generated
+        # doc + the SBOM so a PR reviewer can inspect exactly what
+        # would be produced from this commit, without cloning + running
+        # the generators themselves.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: generated-docs-and-sbom
+          path: |
+            docs/errors.md
+            docs/audit-events.md
+            docs/config-knobs.md
+            docs/features/*.generated.md
+            sbom.cdx.json
+          retention-days: 14

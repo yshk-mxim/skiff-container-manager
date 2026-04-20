@@ -1,29 +1,65 @@
 [Unit]
-Description=SKIFF Container Manager — Docker web UI
-Documentation=https://github.com/your-org/skiff
+# Per-instance systemd template. Enable one unit per SKIFF instance:
+#
+#   systemctl enable --now skiff@prod.service
+#   systemctl enable --now skiff@staging.service
+#
+# The `%i` expansion becomes the instance name (`prod`, `staging`, …)
+# which keeps each instance's env file, audit log, compose dir, and
+# port distinct. Running a fleet of N SKIFF instances is N
+# `systemctl enable skiff@<name>` calls — no file-copy, no
+# per-instance unit edits.
+Description=SKIFF Container Manager — %i
+Documentation=https://github.com/yshk-mxim/skiff-container-manager
 After=network.target
 
 [Service]
 Type=simple
-User=%i
+# Run as a dedicated non-root service user. Instance selectivity comes
+# from `%i`, NOT from the Linux uid — every instance runs as `skiff`.
+User=skiff
+Group=skiff
 WorkingDirectory=/opt/skiff
-EnvironmentFile=-/opt/skiff/.env
-ExecStart=/opt/skiff/.venv/bin/uvicorn app:app \
+# Per-instance env file — MANDATORY. Every instance MUST ship its own
+# PORT, AUDIT_LOG, COMPOSE_DIR, DOCKER_HOST, and API_TOKEN;
+# otherwise running two `skiff@<name>.service` instances silently
+# shares the defaults and both rotate the same audit.jsonl under the
+# same RotatingFileHandler → file corruption. No leading `-`: if
+# `/opt/skiff/%i.env` is absent, `systemctl start skiff@%i` fails
+# loudly instead of booting onto shared defaults.
+EnvironmentFile=/opt/skiff/%i.env
+# PORT and DOCKER_HOST are expected to come from the env file; the
+# defaults in the unit are just "boots up, is reachable on loopback".
+Environment="PORT=8080"
+ExecStart=/opt/skiff/.venv/bin/uvicorn skiff.app:app \
     --host 127.0.0.1 \
-    --port 8080 \
+    --port ${PORT} \
     --workers 1 \
+    --no-proxy-headers \
+    --forwarded-allow-ips "" \
     --log-level warning
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=skiff
+SyslogIdentifier=skiff-%i
 
 # Security hardening
 NoNewPrivileges=true
-PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/skiff /var/log /data/compose
+# PrivateTmp=true is intentionally omitted. The wizard-managed SSH
+# tunnel places its socket under TUNNEL_DEFAULT_SOCKET (default
+# /tmp/skiff-docker.sock) where operators can inspect it from a
+# shell; PrivateTmp=true would hide it in SKIFF's private /tmp
+# namespace and break that workflow. If you move TUNNEL_DEFAULT_SOCKET
+# to a non-/tmp path (e.g. under the state root) you can re-enable
+# PrivateTmp=true.
+# Writable paths: per-instance state dir + audit log + /tmp for the
+# tunnel socket. Adjust these to match AUDIT_LOG / COMPOSE_DIR in the
+# per-instance env file — if two instances ever point at the same
+# AUDIT_LOG path they will race in RotatingFileHandler and corrupt
+# each other's rotation.
+ReadWritePaths=/opt/skiff /var/log/skiff /tmp
 
 [Install]
 WantedBy=multi-user.target

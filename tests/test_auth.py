@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """Tests for authentication and CSRF protection."""
 
 from unittest.mock import MagicMock, patch
@@ -31,7 +33,7 @@ def test_no_auth_when_token_unset(noauth_client):
     """With no API_TOKEN, all requests pass auth regardless of header."""
     mock = MagicMock()
     mock.containers.list.return_value = []
-    with patch("app.get_client", return_value=mock):
+    with patch("skiff.docker_client.get_client", return_value=mock):
         resp = noauth_client.get("/api/containers")
     assert resp.status_code == 200
 

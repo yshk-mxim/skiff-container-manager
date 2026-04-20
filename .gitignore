@@ -36,3 +36,12 @@ bandit-report.*
 
 # macOS
 .DS_Store
+
+# Claude Code session files
+.claude/
+
+# E2E screenshot artifacts (failure captures only; docs/ screenshots are separate)
+tests/e2e-artifacts/
+
+# E2E local target config (copy from tests/e2e-config.example.json)
+tests/e2e-config.json

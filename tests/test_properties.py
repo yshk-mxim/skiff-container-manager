@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Yakov Shkolnikov and contributors
 """
 Property-based tests using Hypothesis.
 
@@ -13,7 +15,7 @@ from fastapi import HTTPException
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app import (
+from skiff.validators import (
     CONTAINER_ID_RE,
     PROJECT_NAME_RE,
     validate_compose_file,
@@ -36,19 +38,29 @@ def test_valid_container_id_always_passes(hex_id):
     assert result == hex_id
 
 
-@given(st.one_of(
-    st.text(alphabet=VALID_HEX_CHARS, min_size=0, max_size=3),   # too short
-    st.text(alphabet=VALID_HEX_CHARS, min_size=65, max_size=80), # too long
-    st.text(alphabet=string.ascii_uppercase, min_size=4, max_size=12),  # uppercase
-    st.text(alphabet=string.punctuation, min_size=4, max_size=12),      # punctuation
-))
+@given(
+    st.one_of(
+        # Over-length: beyond both the 64-char hex cap AND the 128-char name cap.
+        st.text(alphabet=VALID_HEX_CHARS, min_size=129, max_size=200),
+        # Punctuation that is NOT in either the hex-id charset or the
+        # container-name charset [a-zA-Z0-9_.-].
+        st.text(
+            alphabet=(string.punctuation.replace("_", "").replace(".", "").replace("-", "")),
+            min_size=4,
+            max_size=12,
+        ),
+    )
+)
 @settings(max_examples=200)
 @pytest.mark.unit
 def test_invalid_container_id_always_rejected(bad_id):
-    """Inputs outside the hex+length constraints must always be rejected."""
-    # Some generated strings may accidentally pass if they happen to be valid hex
-    # of the right length — skip those to keep the invariant clean.
-    if CONTAINER_ID_RE.match(bad_id):
+    """Inputs outside BOTH the hex-id and container-name regexes must be rejected."""
+    # validate_container_id now accepts either a hex id OR a container
+    # name (Docker's SDK resolves either). Skip any generated string
+    # that happens to match either regex.
+    from skiff.validators import CONTAINER_NAME_RE
+
+    if CONTAINER_ID_RE.match(bad_id) or CONTAINER_NAME_RE.match(bad_id):
         return
     with pytest.raises(HTTPException) as exc:
         validate_container_id(bad_id)
@@ -87,7 +99,7 @@ def test_uppercase_project_names_rejected(name):
 
 # ── Image registry ────────────────────────────────────────────────────────────
 
-ALLOWED_PREFIX = "us-docker.pkg.dev/"
+ALLOWED_PREFIX = "docker.io/"
 
 
 @given(st.text(alphabet=string.ascii_letters + string.digits + "/._:-", min_size=1, max_size=50))
@@ -118,20 +130,30 @@ def test_valid_allowed_registry_image_passes(path):
     # Skip if the image contains characters that would fail format validation
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,255}$", image):
         return
+    # Skip malformed refs that the Loop-9 shape-guard explicitly rejects
+    # (trailing `:` or `@`, `::` double separator, `:@` empty tag).
+    if image.endswith((":", "@")) or ":@" in image or "::" in image:
+        return
     # Should not raise for any valid-format image from the allowed registry
     validate_image_registry(image)
 
 
 # ── Compose file size limit ───────────────────────────────────────────────────
 
-MAX_COMPOSE_SIZE = 1024 * 256  # 256 KB
+# Source the live cap instead of hardcoding — the defaults.toml value has
+# changed over time (256 KiB → 2 MiB when real compose stacks started
+# tripping the limit), and a stale constant here silently makes the test
+# stop exercising oversize rejection.
+from skiff import config as _skiff_config
+
+MAX_COMPOSE_SIZE = _skiff_config.MAX_COMPOSE_SIZE
 
 
-@given(st.integers(min_value=MAX_COMPOSE_SIZE + 1, max_value=MAX_COMPOSE_SIZE * 2))
-@settings(max_examples=50)
+@given(st.integers(min_value=MAX_COMPOSE_SIZE + 1, max_value=MAX_COMPOSE_SIZE + 4096))
+@settings(max_examples=20)
 @pytest.mark.unit
 def test_oversized_compose_always_rejected(size):
-    """Any compose file larger than 256 KB must be rejected regardless of content."""
+    """Any compose file larger than the configured cap must be rejected."""
     content = b"x" * size
     with pytest.raises(HTTPException) as exc:
         validate_compose_file(content)

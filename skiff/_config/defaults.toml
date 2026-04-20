@@ -1,0 +1,106 @@
+# Default values for every operational knob that used to live as a
+# module-level constant in skiff/config.py. An operator who wants to
+# tune behaviour for their fleet edits THIS file (or sets the matching
+# env var) instead of patching Python source.
+#
+# Precedence when config.py reads a knob:
+#   1. env var (if set)  — highest, lets ops override per-host
+#   2. defaults.toml     — this file, fleet-wide policy
+#   3. validator default — last-resort compile-time fallback
+#
+# A knob that isn't here falls through to the in-code `default=` string
+# of its `config_knob(...)` call. The knob name is the env-var name
+# (upper-case); the Python binding in config.py uses the same name
+# so callers keep working unchanged (`config.DOCKER_CLIENT_TIMEOUT`).
+#
+# Constants NOT in this file are intentionally Python-only because
+# they encode a security policy (MAX_CONTAINER_CPU, MIN_TOKEN_LENGTH,
+# PRIVILEGED_PORT_THRESHOLD, MAX_PIDS_LIMIT, MAX_TMPFS_SIZE_MB, …) or
+# an engine-level invariant (DOCKER_MIN_MEM_BYTES, VALID_RESTART_POLICIES).
+# Changing any of those should be a reviewed source patch, not an env
+# tweak. See docs/hardening/production.md for the rationale.
+
+# ── Operational caps ───────────────────────────────────────
+MAX_LOG_TAIL = 5000                   # lines in a single /logs response
+MAX_AUDIT_LINES = 2000                # lines in a single /audit-log response
+MAX_CONTAINERS = 50                   # max containers the UI enumerates
+MAX_COMPOSE_SIZE = 2097152            # 2 MiB — compose file upload cap (complex stacks with inline env/scripts routinely pass 1 MiB)
+MAX_PORT_MAPPINGS = 10                # max published ports per `docker run`
+
+# ── Browser-side polling + timing (milliseconds) ───────────
+CONTAINERS_POLL_MS = 5000             # containers list refresh interval
+DASHBOARD_POLL_MS  = 8000             # dashboard counters refresh interval
+EVENTS_POLL_MS     = 5000             # system events tail refresh interval
+FETCH_TIMEOUT_MS   = 30000            # default fetch() abort (long ops override)
+CONTAINER_CP_MAX_MB = 64              # file copy in/out cap per request
+CONTAINER_LS_MAX_ENTRIES = 2000       # max dir entries returned by /api/containers/{id}/ls
+
+# ── Docker client (HTTP timeouts, connection pool) ────────
+DOCKER_CLIENT_TIMEOUT = 15            # seconds per Docker SDK HTTP request
+DOCKER_POOL_SIZE = 5                  # urllib3 connection pool size
+DOCKER_PING_TTL = 3                   # skip ping if last success < this (seconds)
+DOCKER_BACKOFF = 5                    # wait after a failed connect before retry
+
+# ── TCP keepalive (remote TCP Docker hosts only) ──────────
+TCP_KEEPALIVE_IDLE = 60               # seconds before first keepalive probe
+TCP_KEEPALIVE_INTERVAL = 10           # seconds between probes
+TCP_KEEPALIVE_COUNT = 3               # probes before declaring the socket dead
+
+# ── SSH tunnel ─────────────────────────────────────────────
+TUNNEL_DEFAULT_SOCKET = "/tmp/skiff-docker.sock"
+TUNNEL_CONNECT_TIMEOUT = 15           # seconds for SSH to establish
+TUNNEL_SOCKET_WAIT = 10               # seconds to wait for socket to appear
+TUNNEL_SOCKET_POLL = 0.3              # seconds between existence polls
+TUNNEL_SERVER_ALIVE_INTERVAL = 30     # SSH ServerAliveInterval
+TUNNEL_SERVER_ALIVE_COUNT = 3         # SSH ServerAliveCountMax
+TUNNEL_STOP_TIMEOUT = 5               # seconds for `ssh -O exit` teardown
+PROBE_DOCKER_TIMEOUT = 2              # seconds for the wizard's ping probe
+
+# ── Compose subprocess budgets ────────────────────────────
+COMPOSE_UP_TIMEOUT = 120              # seconds — pull + up -d can be slow
+COMPOSE_DOWN_TIMEOUT = 60             # seconds — tear-down is faster
+COMPOSE_MAX_REPLICAS = 10             # max service replicas via /scale
+
+# ── Shutdown + per-call budgets ───────────────────────────
+SHUTDOWN_FLUSH_TIMEOUT = 20           # cap the undo-queue flush on SIGTERM
+DF_TIMEOUT = 30                       # cap /api/system/df on large Docker hosts
+
+# ── WebSocket ──────────────────────────────────────────────
+WS_LOG_TAIL = 50                      # initial tail lines for log streams
+WS_KEEPALIVE_INTERVAL = 15            # seconds between ping frames
+WS_LOG_IDLE_TIMEOUT = 30              # close log stream after N seconds silent
+WS_EXEC_IDLE_TIMEOUT = 600            # close exec session after N seconds silent
+WS_EXEC_RECV_TIMEOUT = 0.5            # exec socket recv timeout
+WS_TOKEN_TIMEOUT = 5.0                # wait for AUTH <token> first message
+WS_MAX_PER_IP = 5                     # max concurrent WS connections per IP
+WS_AUTH_MAX_ATTEMPTS = 3              # failed WS auth attempts → lockout
+WS_AUTH_LOCKOUT_SECS = 300            # lockout window seconds
+WS_KEEPALIVE_REVALIDATE_EVERY = 1     # revalidate session on EVERY keepalive tick (was 4; lowered so a token rotation evicts live WS within one interval instead of up to 4×)
+
+# ── Undo queue ─────────────────────────────────────────────
+UNDO_DELAY_SECS = 5.0                 # grace period before an undo op fires
+UNDO_QUEUE_MAX_DEPTH = 64             # queue cap; overflow runs synchronously
+
+# ── Auth / session ────────────────────────────────────────
+# SESSION_IDLE_SECS is read by app.js via /api/config at boot; override via
+# env to tighten without a JS edit. SESSION_ABS_TIMEOUT is the server-side
+# absolute clock; the JS side has a matching hardcoded fallback.
+SESSION_ABS_TIMEOUT = 28800           # 8 hours — absolute session lifetime
+SESSION_IDLE_SECS   = 900             # 15 minutes — client idle-timeout
+
+# ── Setup wizard ──────────────────────────────────────────
+SETUP_WINDOW_SECS = 300               # wizard reachable for N seconds post-boot
+SETUP_MAX_ATTEMPTS = 3                # POST /api/setup failures → lockout
+SETUP_LOCKOUT_SECS = 300              # lockout window seconds
+
+# ── Docker Hub registry proxy ─────────────────────────────
+REGISTRY_SEARCH_PAGE_SIZE = 10        # results per /api/registry/search call
+REGISTRY_MAX_TAGS = 100               # tags per /api/registry/tags call (Hub's max page size)
+REGISTRY_TIMEOUT = 8                  # seconds for Docker Hub API requests
+REGISTRY_DESC_MAX = 200               # chars of description echoed back
+
+# ── Container operation budgets ───────────────────────────
+CONTAINER_STOP_TIMEOUT = 5            # seconds for graceful stop before kill
+CONTAINER_RESTART_TIMEOUT = 10        # seconds for restart
+CONTAINER_STATS_TIMEOUT = 10.0        # seconds for stats call
+IMAGE_PULL_TIMEOUT = 300.0            # seconds for image pull (network slow)

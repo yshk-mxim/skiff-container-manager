@@ -1,0 +1,44 @@
+name: OpenSSF Scorecard
+
+on:
+  # Weekly scheduled scan — results publish to the GitHub Security tab.
+  schedule:
+    - cron: "0 6 * * 1"
+  # Re-evaluate on branch-protection / dependency-update / workflow changes.
+  branch_protection_rule:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  scorecard:
+    name: Run analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload SARIF
+      id-token: write          # needed for publishing results (OIDC)
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186  # v2.4.1
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          # Publish the score to the public OpenSSF dashboard for
+          # transparency. Requires no PAT for public repos.
+          publish_results: true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: scorecard-results
+          path: scorecard.sarif
+          retention-days: 30
+
+      - uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd  # v3.29.1
+        with:
+          sarif_file: scorecard.sarif

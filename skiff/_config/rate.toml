@@ -1,0 +1,29 @@
+# Rate-limit tier data for skiff.rate.RATE.
+#
+# Each key is the tier name used at call sites (e.g. `RATE.WRITE`).
+# Value is the slowapi rate-limit spec as `N/period`. Actual applied
+# values are further scaled by RATE_LIMIT_SCALE — so a homelab profile
+# turning that to 10× still reads "30/minute" here.
+#
+# Zero-trust defaults:
+#  - AUTH_SENSITIVE is tightest: 5/minute. This is the budget any caller
+#    has for setup + token-rotate + reset-config combined. Matches the
+#    WS auth brute-force lockout (3 attempts → 300 s lockout) so neither
+#    axis is more permissive.
+#  - WRITE is the everyday mutating budget — 30/min per IP means a
+#    scripted "create 50 containers" run has to pace itself.
+#  - READ gets 2× because list endpoints refresh on a UI cadence.
+#  - PUBLIC is for /health + /ready only: 120/min tolerates an
+#    aggressive k8s-style 1-Hz probe with headroom.
+#  - BURST fits prune / docker-system-wide ops that are legitimate but
+#    should never fire as a sustained stream.
+#
+# Changing a value here is operator-visible: it shifts the 429 surface.
+# Review the README config table whenever this file changes.
+
+[tiers]
+AUTH_SENSITIVE = "5/minute"
+WRITE          = "30/minute"
+READ           = "60/minute"
+PUBLIC         = "120/minute"
+BURST          = "10/minute"
