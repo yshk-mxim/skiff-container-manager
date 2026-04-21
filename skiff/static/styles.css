@@ -252,10 +252,12 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
  * links, bell icon). `pointer-events:none` on the container lets
  * clicks pass through the empty gaps; each toast restores
  * `pointer-events:auto` so its own Undo link is still clickable. */
-/* Toasts sit below the notification bell (top:12 + 36 = 48 + gap).
-   Previous top:16 placed them underneath the bell's hit region, so the
-   bell intercepted clicks on the Undo link inside undo-toasts. */
-.toast-container { position: fixed; top: 60px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+/* Toasts — bottom-right of the viewport. The bell moved into the
+   sidebar (see .notif-bell), so the old top-right reservation is no
+   longer needed. Bottom-right is also the platform-standard toast
+   location (macOS notification center, GitHub, Slack) and leaves the
+   Undo link unambiguously clickable without a bell hit-region race. */
+.toast-container { position: fixed; bottom: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; }
 .toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--modal-shadow); animation: fadeIn 0.2s; max-width: 400px; pointer-events: auto; }
 .toast.success { background: var(--toast-success-bg); color: var(--toast-success-fg); }
 .toast.error   { background: var(--toast-error-bg);   color: var(--toast-error-fg); }
@@ -465,6 +467,21 @@ body.reviewer-mode .btn.danger { display: none !important; }
 /* Copyright / attribution footer text spacing */
 .sidebar-footer .attr { margin-top: 2px; }
 .sidebar-footer .attr a { color: inherit; text-decoration: underline; }
+
+/* Primary sidebar link (API docs). Sits above the muted attribution
+   rows so first-time users can find the OpenAPI explorer without
+   hunting. Copyright + MIT License stay muted below. */
+.sidebar-footer .sidebar-link {
+  display: block;
+  color: var(--sidebar-text-strong, var(--text));
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 0;
+  margin-top: 4px;
+  margin-bottom: 6px;
+}
+.sidebar-footer .sidebar-link:hover { text-decoration: underline; }
 
 /* Simple table-cell action row used by pages/*.js and UI.table actions column */
 .td-actions { display: flex; gap: 4px; flex-wrap: wrap; }

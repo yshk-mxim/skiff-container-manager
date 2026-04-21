@@ -30,6 +30,15 @@
     bellEl.setAttribute('role', 'button');
     bellEl.setAttribute('aria-label', 'Notifications');
     bellEl.setAttribute('data-testid', 'notif-bell');
+    // Belt-and-braces against stale cached CSS: even if the browser
+    // has an older styles.css where .notif-bell was `position: fixed;
+    // top: 12px; right: 18px;`, these inline styles win via specificity
+    // so the bell still renders inline in the sidebar for users who
+    // haven't hard-refreshed.
+    bellEl.style.position = 'relative';
+    bellEl.style.top = 'auto';
+    bellEl.style.right = 'auto';
+    bellEl.style.marginLeft = 'auto';
     bellEl.textContent = '\ud83d\udd14';
     countEl = document.createElement('span');
     countEl.className = 'notif-count';
