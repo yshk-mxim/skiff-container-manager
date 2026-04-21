@@ -506,62 +506,17 @@ body.reviewer-mode .btn.danger { display: none !important; }
 /* ── App template cards ──────────────────────────────────── */
 .template-card:hover { border-color: var(--accent, #0d9488); box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.12); }
 
-/* ── Notifications bell ──────────────────────────────────── */
-/* Bell lives inside `.sidebar-status` next to the "Connected" dot.
-   No fixed positioning — it flows with the sidebar layout so it
-   cannot overlap page-header actions. */
-.notif-bell {
-  position: relative;
-  margin-left: auto;
-  background: transparent;
-  border: none;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text);
-  font-size: 14px;
-  user-select: none;
-  line-height: 1;
+/* ── Notifications ────────────────────────────────────────
+   Layout + styling now lives inline on the elements created by
+   core/notifications.js (prefixed .skiff-notif-*). This file only
+   supplies a non-critical hover glow so the sidebar row reads as
+   clickable; if this rule is missing the bell still works, just
+   without the hover highlight. */
+.skiff-notif-row:hover,
+.skiff-notif-row:focus-visible {
+  background: var(--sidebar-hover, rgba(255, 255, 255, 0.04));
+  outline: none;
 }
-.notif-bell:hover { opacity: 0.8; }
-.notif-bell .notif-count {
-  position: absolute;
-  top: -5px;
-  right: -6px;
-  background: var(--red, #ef4444);
-  color: white;
-  border-radius: 8px;
-  font-size: 9px;
-  font-weight: 600;
-  min-width: 14px;
-  height: 14px;
-  line-height: 14px;
-  padding: 0 3px;
-  text-align: center;
-}
-/* Widen sidebar-status to accept the bell on the right without
-   line-wrapping the "Connected" text. */
-.sidebar-status.has-bell { display: flex; align-items: center; gap: 6px; }
-.notif-panel {
-  position: fixed;
-  z-index: 901;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  width: 320px;
-  max-height: 400px;
-  overflow-y: auto;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-}
-.notif-panel .notif-row {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-.notif-panel .notif-row:last-child { border-bottom: none; }
 
 /* ── Context menu ────────────────────────────────────────── */
 .ctx-menu {

@@ -470,7 +470,13 @@ function toast(msg, type) {
   t.className = 'toast ' + type;
   t.textContent = msg;
   c.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 4000);
+  // Error toasts linger longer (10s) — they usually name a failed
+  // action the user needs to fix. Success/info fade after 6s, which
+  // is long enough to finish reading a two-line message without
+  // feeling like the UI is shouting. Previous 4s was too quick for
+  // anything with a container name in it (user feedback).
+  const dwell = type === 'error' ? 10000 : 6000;
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, dwell);
 }
 
 // ── Login ──
