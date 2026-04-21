@@ -252,12 +252,14 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
  * links, bell icon). `pointer-events:none` on the container lets
  * clicks pass through the empty gaps; each toast restores
  * `pointer-events:auto` so its own Undo link is still clickable. */
-/* Toasts — bottom-right of the viewport. The bell moved into the
-   sidebar (see .notif-bell), so the old top-right reservation is no
-   longer needed. Bottom-right is also the platform-standard toast
-   location (macOS notification center, GitHub, Slack) and leaves the
-   Undo link unambiguously clickable without a bell hit-region race. */
-.toast-container { position: fixed; bottom: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; }
+/* Toasts — anchored near the sidebar bell. Sidebar is 220px wide
+   and the bell row sits above .sidebar-footer, so we place toasts
+   just to the right of the sidebar (left: 236) and at the bottom
+   of the viewport (bottom: 120) — that vertical offset lines them
+   up with the bell row instead of the viewport edge. Column-reverse
+   so new toasts appear at the bottom and older ones stack up,
+   reading as "coming out of the bell upward". */
+.toast-container { position: fixed; bottom: 120px; left: 236px; z-index: 300; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; max-width: 380px; }
 .toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--modal-shadow); animation: fadeIn 0.2s; max-width: 400px; pointer-events: auto; }
 .toast.success { background: var(--toast-success-bg); color: var(--toast-success-fg); }
 .toast.error   { background: var(--toast-error-bg);   color: var(--toast-error-fg); }
