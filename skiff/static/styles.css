@@ -558,15 +558,25 @@ body.reviewer-mode .btn.danger { display: none !important; }
    supplies a non-critical hover glow so the sidebar row reads as
    clickable; if this rule is missing the bell still works, just
    without the hover highlight. */
-.skiff-notif-row:hover,
-.skiff-notif-row:focus-visible {
+.skiff-notif-row:hover {
   background: var(--sidebar-hover, rgba(255, 255, 255, 0.04));
-  outline: none;
+}
+/* Dedicated focus ring — native <button> default is good in most
+   browsers but we inline a stronger teal outline so keyboard users
+   can see the row clearly against the dark sidebar background.
+   :focus-visible (not :focus) so mouse clicks don't leave the
+   outline stuck. WCAG 2.4.7 Focus Visible (AA). */
+.skiff-notif-row:focus-visible {
+  outline: 2px solid var(--accent, #0d9488);
+  outline-offset: -2px;
+  background: var(--sidebar-hover, rgba(255, 255, 255, 0.04));
 }
 /* Pulse the bell briefly when a new notification arrives. This is
    the visual link between a toast popping up in the corner and the
    bell in the sidebar — no physical proximity needed. 1200ms, single
-   cycle. The JS adds class .pulse, then removes it after the animation. */
+   cycle. The prefers-reduced-motion rule at the top of this file
+   collapses animation-duration to 0.01ms so users who opt out of
+   motion see an instant colour flash instead of the bounce. */
 .skiff-notif-bell.pulse {
   animation: skiffBellPulse 1.2s ease-out 1;
 }

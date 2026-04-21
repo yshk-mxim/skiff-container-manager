@@ -49,11 +49,15 @@
   }
 
   function _buildRow() {
-    var row = document.createElement('div');
+    // Use a real <button>: native keyboard activation (Enter/Space),
+    // focus visible via :focus-visible, announced correctly by
+    // screen readers. Previously we used div[role=button] which
+    // required manual keydown wiring and missed browser defaults.
+    var row = document.createElement('button');
+    row.type = 'button';
     row.className = 'skiff-notif-row';
-    row.setAttribute('role', 'button');
-    row.setAttribute('tabindex', '0');
-    row.setAttribute('aria-label', 'Notifications');
+    row.setAttribute('aria-haspopup', 'dialog');
+    row.setAttribute('aria-expanded', 'false');
     row.setAttribute('data-testid', 'notif-row');
     _styleInline(row, {
       display: 'flex',
@@ -63,11 +67,21 @@
       cursor: 'pointer',
       fontSize: '12px',
       userSelect: 'none',
+      background: 'transparent',
+      border: 'none',
+      color: 'inherit',
+      textAlign: 'left',
+      width: '100%',
+      fontFamily: 'inherit',
     });
 
     var bell = document.createElement('span');
     bell.className = 'skiff-notif-bell';
     bell.setAttribute('data-testid', 'notif-bell');
+    // Decorative — the button already has its accessible name via
+    // the label child + aria-label below. Hiding the glyph from AT
+    // prevents duplicate "bell" announcement.
+    bell.setAttribute('aria-hidden', 'true');
     bell.textContent = '\ud83d\udd14';
     _styleInline(bell, { fontSize: '15px', lineHeight: '1' });
 
@@ -97,11 +111,8 @@
     row.appendChild(label);
     row.appendChild(count);
 
-    function open(ev) { ev && ev.stopPropagation(); _togglePanel(); }
-    row.onclick = open;
-    row.addEventListener('keydown', function(ev) {
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(ev); }
-    });
+    row.onclick = function(ev) { ev.stopPropagation(); _togglePanel(); };
+    // <button> handles Space/Enter natively — no custom keydown needed.
 
     return { row: row, bell: bell, label: label, count: count };
   }
@@ -140,11 +151,22 @@
   }
 
   function _togglePanel() {
-    if (panelEl) { panelEl.remove(); panelEl = null; return; }
+    if (panelEl) {
+      panelEl.remove();
+      panelEl = null;
+      if (rowEl) {
+        rowEl.setAttribute('aria-expanded', 'false');
+        rowEl.focus();  // return keyboard focus to the trigger
+      }
+      return;
+    }
 
     panelEl = document.createElement('div');
     panelEl.className = 'skiff-notif-panel';
+    panelEl.setAttribute('role', 'dialog');
+    panelEl.setAttribute('aria-label', 'Notifications history');
     panelEl.setAttribute('data-testid', 'notif-panel');
+    if (rowEl) rowEl.setAttribute('aria-expanded', 'true');
     _styleInline(panelEl, {
       position: 'fixed',
       zIndex: '901',
@@ -229,6 +251,10 @@
     panelEl.style.top = top + 'px';
 
     document.body.appendChild(panelEl);
+    // Move focus to the first focusable control inside the panel
+    // (the Clear-all button). Screen-reader + keyboard users now get
+    // a real "panel opened, here's the first action" handoff.
+    setTimeout(function() { hClear.focus(); }, 0);
 
     // Outside-click closes. Delayed attach so THIS click doesn't close.
     setTimeout(function() {
@@ -261,8 +287,20 @@
     if (unread > 0) {
       countEl.style.display = 'inline-block';
       countEl.textContent = unread > 99 ? '99+' : String(unread);
+      // Screen readers otherwise announce the chip as just "3" with
+      // no context. A proper label + role makes it self-describing.
+      countEl.setAttribute('aria-label', unread + ' unread notification' + (unread === 1 ? '' : 's'));
     } else {
       countEl.style.display = 'none';
+      countEl.removeAttribute('aria-label');
+    }
+    // Update the button's accessible name so it reads "Notifications,
+    // 3 unread" instead of just "Notifications" after new items arrive.
+    if (rowEl) {
+      rowEl.setAttribute(
+        'aria-label',
+        unread > 0 ? 'Notifications, ' + unread + ' unread' : 'Notifications',
+      );
     }
   }
 

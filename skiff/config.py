@@ -229,9 +229,26 @@ def knob_section(name: str) -> str:
 _PKG_DIR = Path(__file__).parent
 _STATIC_DIR = _PKG_DIR / "static"
 _LICENSE_FILE = _PKG_DIR.parent / "LICENSE"
-# Cache at import time — avoids thread-pool contention from anyio file I/O
-# under heavy API load (FileResponse uses a thread even for async handlers on macOS).
-_INDEX_HTML: bytes = (_STATIC_DIR / "index.html").read_bytes()
+# mtime-checked cache of index.html. Reading from disk on every / hit is
+# cheap (tiny file, kernel page-cache), but doing a stat() and cache
+# comparison first avoids the thread-pool hop that FileResponse used to
+# incur under load. Re-reads on disk edits so developers don't need to
+# restart the server after changing the SPA shell.
+_INDEX_HTML_PATH = _STATIC_DIR / "index.html"
+_index_html_cache: dict[str, object] = {"mtime": 0.0, "bytes": b""}
+
+
+def _get_index_html() -> bytes:
+    mtime = _INDEX_HTML_PATH.stat().st_mtime
+    if mtime != _index_html_cache["mtime"]:
+        _index_html_cache["bytes"] = _INDEX_HTML_PATH.read_bytes()
+        _index_html_cache["mtime"] = mtime
+    return _index_html_cache["bytes"]  # type: ignore[return-value]
+
+
+# Back-compat alias. Callers that imported `_INDEX_HTML` at module level
+# still get the initial read; new code should call `_get_index_html()`.
+_INDEX_HTML: bytes = _get_index_html()
 
 
 # ── Security & Docker host ─────────────────────────────────

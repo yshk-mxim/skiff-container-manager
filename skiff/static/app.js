@@ -137,13 +137,21 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
     return;
   }
   windowSecs = Math.max(1, windowSecs);
-  // Undo bars get their own container (bottom-center of viewport)
-  // not the generic toast corner. Undo is an ACTION AFFORDANCE,
-  // not a notification — Material Design + Gmail put it bottom-
-  // centered for the same reason. See .undo-bar-container in CSS.
-  var container = document.querySelector('.undo-bar-container');
+  // Undo bars live in #undo-bar-container (pre-declared in index.html
+  // with role="alert" aria-live="assertive" aria-atomic="true" so
+  // screen readers interrupt-announce the available undo action).
+  // Fall back to creating the container only if the HTML shell is
+  // older than this code (e.g. cached served bytes from pre-a11y
+  // rollout).
+  var container = document.getElementById('undo-bar-container');
   if (!container) {
-    container = UI.el('div', { class: 'undo-bar-container' });
+    container = UI.el('div', {
+      id: 'undo-bar-container',
+      class: 'undo-bar-container',
+      role: 'alert',
+      'aria-live': 'assertive',
+      'aria-atomic': 'true',
+    });
     document.body.appendChild(container);
   }
   var undone = false;
@@ -663,6 +671,11 @@ function showPage(page) {
   closeDetailWS();
   currentPage = page;
   window.currentPage = page;
+  // Remember the last-viewed page so a reload keeps the user where
+  // they were. Silently ignore storage failures (private browsing
+  // on some platforms throws). Only persist for pages in the sidebar
+  // registry — detail routes are page='containers' under the hood.
+  try { localStorage.setItem('skiff.last_page', page); } catch (e) { /* ignore */ }
   var main = document.getElementById('main');
   document.querySelectorAll('.sidebar a').forEach(function(a) { a.classList.remove('active'); });
   document.querySelectorAll('.sidebar a').forEach(function(a) {
@@ -3034,7 +3047,19 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
     // api_token is empty (anyone on the network reaches Docker).
     if (appCfg.insecure_mode) _renderInsecureBanner(appCfg.bind_host || '0.0.0.0');
   } catch(e) { /* ignore, defaults apply */ }
-  showPage('containers');
+  // Restore last-viewed page so reload doesn't bounce the user back
+  // to Containers. Only accept known page ids — malformed storage
+  // (an old key, a dev-tools edit) falls back to the default.
+  var ALLOWED_LANDING_PAGES = [
+    'dashboard', 'containers', 'images', 'templates',
+    'volumes', 'networks', 'compose', 'system', 'settings',
+  ];
+  var lastPage = 'containers';
+  try {
+    var stored = localStorage.getItem('skiff.last_page');
+    if (stored && ALLOWED_LANDING_PAGES.indexOf(stored) !== -1) lastPage = stored;
+  } catch (e) { /* ignore */ }
+  showPage(lastPage);
 })();
 
 // Reviewer-mode switcher. One-way dropdown in the sidebar footer. An
