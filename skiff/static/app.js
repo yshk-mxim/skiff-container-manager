@@ -137,8 +137,15 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
     return;
   }
   windowSecs = Math.max(1, windowSecs);
-  var container = document.querySelector('.toast-container') ||
-    document.body.appendChild(UI.el('div', { class: 'toast-container' }));
+  // Undo bars get their own container (bottom-center of viewport)
+  // not the generic toast corner. Undo is an ACTION AFFORDANCE,
+  // not a notification — Material Design + Gmail put it bottom-
+  // centered for the same reason. See .undo-bar-container in CSS.
+  var container = document.querySelector('.undo-bar-container');
+  if (!container) {
+    container = UI.el('div', { class: 'undo-bar-container' });
+    document.body.appendChild(container);
+  }
   var undone = false;
   var labelSpan = UI.el('span', {
     class: 'toast-label',
@@ -162,7 +169,7 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
   });
   var bar = UI.el('div', { class: 'toast-progress-bar' });
   var progress = UI.el('div', { class: 'toast-progress' }, bar);
-  var toastEl = UI.el('div', { class: 'toast info toast-undo' },
+  var toastEl = UI.el('div', { class: 'toast-undo' },
     UI.el('div', { class: 'toast-row' }, labelSpan, undoLink),
     progress,
   );

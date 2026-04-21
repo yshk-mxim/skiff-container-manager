@@ -252,28 +252,72 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
  * links, bell icon). `pointer-events:none` on the container lets
  * clicks pass through the empty gaps; each toast restores
  * `pointer-events:auto` so its own Undo link is still clickable. */
-/* Toasts — anchored near the sidebar bell. Sidebar is 220px wide
-   and the bell row sits above .sidebar-footer, so we place toasts
-   just to the right of the sidebar (left: 236) and at the bottom
-   of the viewport (bottom: 120) — that vertical offset lines them
-   up with the bell row instead of the viewport edge. Column-reverse
-   so new toasts appear at the bottom and older ones stack up,
-   reading as "coming out of the bell upward". */
-.toast-container { position: fixed; bottom: 120px; left: 236px; z-index: 300; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; max-width: 380px; }
+/* Toasts — bottom-right corner (industry convention: Lens, Linear,
+   Docker Desktop, GitHub, macOS Notification Center). The visual
+   link to the sidebar bell is NOT physical proximity; it's the
+   simultaneous pulse animation on .skiff-notif-bell when record()
+   fires. Separating position avoids the bell's hit region
+   intercepting toast clicks and matches what operators already
+   reflexively look for. */
+.toast-container { position: fixed; bottom: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none; max-width: 380px; }
+
+/* Undo bar container — bottom-center of the viewport. Google Material
+   + Gmail "Undo send" pattern. Undo is an ACTION affordance, not a
+   confirmation, so it gets a dedicated visual lane away from the
+   transient-feedback stream. */
+.undo-bar-container {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 301;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  width: min(520px, calc(100vw - 48px));
+}
 .toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; box-shadow: var(--modal-shadow); animation: fadeIn 0.2s; max-width: 400px; pointer-events: auto; }
 .toast.success { background: var(--toast-success-bg); color: var(--toast-success-fg); }
 .toast.error   { background: var(--toast-error-bg);   color: var(--toast-error-fg); }
 .toast.info    { background: var(--toast-info-bg);    color: var(--toast-info-fg); }
 .toast .undo-link { margin-left: 10px; color: inherit; text-decoration: underline; font-weight: 600; cursor: pointer; }
 
-/* Pending-undo toast — the row+progress layout distinguishes "action is
-   pending, you can still undo" from the "something just finished" shape
-   of a regular info toast. The progress bar drains left-to-right over
-   the undo window so the user can see how long they have to click. */
-.toast-undo { padding-bottom: 6px; min-width: 260px; }
-.toast-undo .toast-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.toast-undo .toast-progress { margin-top: 8px; height: 3px; background: rgba(255,255,255,0.14); border-radius: 2px; overflow: hidden; }
-.toast-undo .toast-progress-bar { width: 100%; height: 100%; background: currentColor; opacity: 0.55; }
+/* Pending-undo bar — lives in its own `.undo-bar-container` at the
+   bottom-center of the viewport (Material Design + Gmail convention).
+   Visually distinct from `.toast`: dark slab, high contrast, bigger
+   type, prominent Undo button. The progress bar drains left-to-right
+   over the undo window so the user can see how long they have to
+   click. pointer-events:auto overrides the container's :none so the
+   Undo link is actually clickable. */
+.toast-undo {
+  pointer-events: auto;
+  background: #1f2937;
+  color: #f1f5f9;
+  border-radius: 8px;
+  padding: 12px 18px 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 13.5px;
+  animation: fadeIn 0.2s;
+}
+.toast-undo .toast-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.toast-undo .toast-label { flex: 1; }
+.toast-undo .undo-link {
+  color: #5eead4;
+  font-weight: 700;
+  text-decoration: none;
+  padding: 4px 10px;
+  border: 1px solid rgba(94, 234, 212, 0.35);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.toast-undo .undo-link:hover { background: rgba(94, 234, 212, 0.1); }
+.toast-undo .toast-progress { margin-top: 10px; height: 3px; background: rgba(255, 255, 255, 0.14); border-radius: 2px; overflow: hidden; }
+.toast-undo .toast-progress-bar { width: 100%; height: 100%; background: #5eead4; opacity: 0.8; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 
 /* Page header */
@@ -518,6 +562,20 @@ body.reviewer-mode .btn.danger { display: none !important; }
 .skiff-notif-row:focus-visible {
   background: var(--sidebar-hover, rgba(255, 255, 255, 0.04));
   outline: none;
+}
+/* Pulse the bell briefly when a new notification arrives. This is
+   the visual link between a toast popping up in the corner and the
+   bell in the sidebar — no physical proximity needed. 1200ms, single
+   cycle. The JS adds class .pulse, then removes it after the animation. */
+.skiff-notif-bell.pulse {
+  animation: skiffBellPulse 1.2s ease-out 1;
+}
+@keyframes skiffBellPulse {
+  0%   { transform: scale(1);    filter: brightness(1);   }
+  20%  { transform: scale(1.35); filter: brightness(1.4); }
+  40%  { transform: scale(1);    filter: brightness(1);   }
+  60%  { transform: scale(1.15); filter: brightness(1.2); }
+  100% { transform: scale(1);    filter: brightness(1);   }
 }
 
 /* ── Context menu ────────────────────────────────────────── */

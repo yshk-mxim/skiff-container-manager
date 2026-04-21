@@ -272,6 +272,15 @@
     if (ring.length > CAP) ring.splice(0, ring.length - CAP);
     unread++;
     _paintCount();
+    // Pulse the bell so the user connects "toast popped in the corner"
+    // with "the bell count went up". Class is toggled off after the
+    // animation so a rapid burst of toasts re-triggers the pulse.
+    if (bellEl) {
+      bellEl.classList.remove('pulse');
+      void bellEl.offsetWidth;  // force reflow so restart takes effect
+      bellEl.classList.add('pulse');
+      setTimeout(function() { if (bellEl) bellEl.classList.remove('pulse'); }, 1300);
+    }
   }
 
   // Patch the global toast() so every toast is mirrored into the ring
