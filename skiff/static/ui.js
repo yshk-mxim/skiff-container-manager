@@ -611,6 +611,10 @@
       keywords: Array.isArray(p.keywords) ? p.keywords : [],
       helpRef: p.helpRef || null,
       order: typeof p.order === 'number' ? p.order : 100,
+      // `external: true` on a registration tells the sidebar renderer
+      // to emit <a href target=_blank> instead of wiring showPage().
+      // Used by the api-docs entry (opens Swagger UI in a new tab).
+      external: !!p.external,
     });
   }
   /**
