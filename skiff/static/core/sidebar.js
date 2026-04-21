@@ -56,6 +56,12 @@
     if (!mount) return;  // no sidebar on this page (e.g. setup wizard)
     // Clear and rebuild — idempotent so persona changes work too.
     while (mount.firstChild) mount.removeChild(mount.firstChild);
+    // Purge any stale `.sidebar-link` nodes left over in the footer
+    // from an older index.html where API docs was a footer link.
+    // The API docs entry is now a nav item (see the api-docs page
+    // registration in app.js). Users whose browser cached the old
+    // HTML saw two 'API docs' rows until this self-heal landed.
+    document.querySelectorAll('.sidebar-footer .sidebar-link').forEach(function(el) { el.remove(); });
     var pages = (window.UI && UI.getPages) ? UI.getPages(persona) : [];
     if (!pages.length) {
       // Registry not yet populated — page modules hadn't parsed yet at

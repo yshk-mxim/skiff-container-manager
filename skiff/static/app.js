@@ -31,16 +31,29 @@ async function undoableDelete(url, kindLabel, refresh) {
   var sep = url.indexOf('?') >= 0 ? '&' : '?';
   var resp = await apiFetch(url + sep + 'undo=1', { method: 'DELETE' });
   if (resp && resp.undo_token) {
-    // Build an undo toast with a live countdown + draining progress bar.
-    // The old version said "<kind> deleted" in past tense with no progress
-    // hint, which read as "operation completed, here's an unrelated Undo
-    // link" — easy to mistake for a failure. The new UI says "<kind> will
-    // be deleted in Ns" in pending tense, ticks the counter down every
-    // 500ms, and drains a bar at the bottom so the pending state is
-    // visually obvious for the whole window.
+    // Undo bar appended to #undo-bar-container (bottom-center) so
+    // every undo surface in the app reads as one affordance — delete-
+    // undo, compose-down-undo, and prune-undo all share a visual lane.
+    // Countdown text + draining progress bar show the remaining
+    // window at a glance.
     var windowSecs = Math.max(1, resp.expires_in || 5);
-    var container = document.querySelector('.toast-container') ||
-      document.body.appendChild(UI.el('div', { class: 'toast-container' }));
+    var container = document.getElementById('undo-bar-container');
+    if (!container) {
+      container = UI.el('div', {
+        id: 'undo-bar-container',
+        class: 'undo-bar-container',
+        role: 'alert',
+        'aria-live': 'assertive',
+        'aria-atomic': 'true',
+      });
+      document.body.appendChild(container);
+    }
+    // Also record the pending delete to the bell so the event is
+    // visible in the notifications panel, not just in the undo lane.
+    // If the user clicks Undo, we record that too (below).
+    if (typeof window.toast === 'function') {
+      window.toast(kindLabel + ' delete queued — undo available for ' + windowSecs + 's', 'info');
+    }
     var undone = false;
     var labelSpan = UI.el('span', {
       class: 'toast-label',
@@ -65,7 +78,7 @@ async function undoableDelete(url, kindLabel, refresh) {
     });
     var bar = UI.el('div', { class: 'toast-progress-bar' });
     var progress = UI.el('div', { class: 'toast-progress' }, bar);
-    var toastEl = UI.el('div', { class: 'toast info toast-undo' },
+    var toastEl = UI.el('div', { class: 'toast-undo' },
       UI.el('div', { class: 'toast-row' }, labelSpan, undoLink),
       progress,
     );
@@ -153,6 +166,15 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
       'aria-atomic': 'true',
     });
     document.body.appendChild(container);
+  }
+  // Record the queued operation to the bell. The undo bar is the live
+  // affordance; the bell entry is the history line. Together: user can
+  // act now (undo bar) OR review later (bell). Every page that calls
+  // renderUndoToast — compose-down, volume-prune, network-prune,
+  // image-prune, system-prune, build-cache-prune — now gets a bell
+  // entry without each page needing to duplicate the toast call.
+  if (typeof window.toast === 'function') {
+    window.toast(label + ' queued — undo available for ' + windowSecs + 's', 'info');
   }
   var undone = false;
   var labelSpan = UI.el('span', {
@@ -678,6 +700,23 @@ function setDockerStatus(ok, msg) {
 
 // ── Navigation ──
 function showPage(page) {
+  // External entries (e.g. api-docs) short-circuit: open their href
+  // in a new tab and leave the current SPA page alone. This is the
+  // self-heal path for users whose browser cached an older sidebar.js
+  // that attached a generic click handler to every .sidebar a — the
+  // click still calls showPage('api-docs'), but this branch now
+  // recognises the entry via the UI page registry and opens the URL
+  // instead of falling through to loadContainers.
+  var registryEntry = (window.UI && UI.getPages)
+    ? UI.getPages(null).find(function(p) { return p.id === page; })
+    : null;
+  if (registryEntry && registryEntry.external && registryEntry.href) {
+    // Deliberately do NOT persist this as the last-viewed page —
+    // external actions aren't landing pages. The sidebar's "active"
+    // styling on whatever page the user was on stays put.
+    window.open(registryEntry.href, '_blank', 'noopener');
+    return;
+  }
   clearAllIntervals();
   closeDetailWS();
   currentPage = page;
@@ -3067,8 +3106,11 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(function(a) {
     if (appCfg.insecure_mode) _renderInsecureBanner(appCfg.bind_host || '0.0.0.0');
   } catch(e) { /* ignore, defaults apply */ }
   // Restore last-viewed page so reload doesn't bounce the user back
-  // to Containers. Only accept known page ids — malformed storage
-  // (an old key, a dev-tools edit) falls back to the default.
+  // to Containers. Only accept known INTERNAL page ids — malformed
+  // storage (an old key, a dev-tools edit) falls back to the default.
+  // External entries (api-docs) are not valid landing pages: they're
+  // nav actions (open new tab), not SPA pages, and clicking them
+  // deliberately doesn't persist.
   var ALLOWED_LANDING_PAGES = [
     'dashboard', 'containers', 'images', 'templates',
     'volumes', 'networks', 'compose', 'system', 'settings',
