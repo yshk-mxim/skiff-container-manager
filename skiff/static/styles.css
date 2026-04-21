@@ -490,43 +490,46 @@ body.reviewer-mode .btn.danger { display: none !important; }
 .template-card:hover { border-color: var(--accent, #0d9488); box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.12); }
 
 /* ── Notifications bell ──────────────────────────────────── */
+/* Bell lives inside `.sidebar-status` next to the "Connected" dot.
+   No fixed positioning — it flows with the sidebar layout so it
+   cannot overlap page-header actions. */
 .notif-bell {
-  position: fixed;
-  top: 12px;
-  right: 18px;
-  z-index: 900;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  width: 36px;
-  height: 36px;
-  display: flex;
+  position: relative;
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   color: var(--text);
-  font-size: 16px;
+  font-size: 14px;
   user-select: none;
+  line-height: 1;
 }
+.notif-bell:hover { opacity: 0.8; }
 .notif-bell .notif-count {
   position: absolute;
-  top: -4px;
-  right: -4px;
+  top: -5px;
+  right: -6px;
   background: var(--red, #ef4444);
   color: white;
-  border-radius: 10px;
-  font-size: 10px;
+  border-radius: 8px;
+  font-size: 9px;
   font-weight: 600;
-  min-width: 16px;
-  height: 16px;
-  line-height: 16px;
-  padding: 0 4px;
+  min-width: 14px;
+  height: 14px;
+  line-height: 14px;
+  padding: 0 3px;
   text-align: center;
 }
+/* Widen sidebar-status to accept the bell on the right without
+   line-wrapping the "Connected" text. */
+.sidebar-status.has-bell { display: flex; align-items: center; gap: 6px; }
 .notif-panel {
   position: fixed;
-  top: 52px;
-  right: 18px;
   z-index: 901;
   background: var(--card);
   border: 1px solid var(--border);

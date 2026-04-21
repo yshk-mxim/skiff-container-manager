@@ -35,8 +35,28 @@
     countEl.className = 'notif-count';
     countEl.style.display = 'none';
     bellEl.appendChild(countEl);
-    bellEl.onclick = function() { _togglePanel(); };
-    document.body.appendChild(bellEl);
+    bellEl.onclick = function(ev) { ev.stopPropagation(); _togglePanel(); };
+    // Mount into the sidebar-status row so the bell sits next to the
+    // "Connected" indicator — same screen region users already look at
+    // for app state. Previously pinned top-right of the viewport where
+    // it overlapped page-header actions (search bar, Run button).
+    // Fall back to body for pre-login routes (setup wizard, login
+    // screen) where the sidebar isn't mounted.
+    var statusRow = document.getElementById('sidebar-status');
+    if (statusRow) {
+      statusRow.classList.add('has-bell');
+      statusRow.appendChild(bellEl);
+    } else {
+      // Retry after DOMContentLoaded in case sidebar hasn't mounted yet.
+      document.body.appendChild(bellEl);
+      setTimeout(function() {
+        var sr = document.getElementById('sidebar-status');
+        if (sr && bellEl.parentNode === document.body) {
+          sr.classList.add('has-bell');
+          sr.appendChild(bellEl);
+        }
+      }, 500);
+    }
   }
 
   function _togglePanel() {
@@ -44,6 +64,16 @@
     panelEl = document.createElement('div');
     panelEl.className = 'notif-panel';
     panelEl.setAttribute('data-testid', 'notif-panel');
+    // Anchor to the bell's current viewport position: panel floats
+    // just to the right of the sidebar bell, vertically aligned.
+    // Falls back to the old top-right corner if the bell happens to
+    // be body-parented (pre-login wizard edge case).
+    var rect = bellEl.getBoundingClientRect();
+    if (bellEl.parentNode !== document.body) {
+      panelEl.style.left = (rect.right + 8) + 'px';
+      panelEl.style.top = Math.max(8, rect.top - 4) + 'px';
+      panelEl.style.right = 'auto';
+    }
     if (!ring.length) {
       var em = document.createElement('div');
       em.className = 'notif-row'; em.style.color = 'var(--muted)';
