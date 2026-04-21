@@ -49,10 +49,10 @@
   }
 
   function _buildRow() {
-    // Use a real <button>: native keyboard activation (Enter/Space),
-    // focus visible via :focus-visible, announced correctly by
-    // screen readers. Previously we used div[role=button] which
-    // required manual keydown wiring and missed browser defaults.
+    // Real <button>: native Enter/Space activation, :focus-visible
+    // works out of the box, screen readers announce it as a button
+    // without extra ARIA. (div[role=button] would require manual
+    // keydown wiring and custom focus-ring CSS.)
     var row = document.createElement('button');
     row.type = 'button';
     row.className = 'skiff-notif-row';

@@ -96,7 +96,7 @@ async function loadNetworks() {
         if (['bridge', 'host', 'none'].indexOf(n.name) === -1) {
           actGrp.appendChild(makeActionBtn('Connect...', function() {
             showNetworkConnectModal(n.id, n.name);
-          }, 'btn small'));
+          }, 'btn small', 'Opening\u2026'));
           Object.entries(n.containers || {}).forEach(function(entry) {
             actGrp.appendChild(makeActionBtn('Disconnect ' + entry[1], function() {
               // The server doesn't tell us whether this is the container's
@@ -114,7 +114,7 @@ async function loadNetworks() {
                               { method: 'POST' }).then(function() {
                 toast('Disconnected ' + entry[1], 'info'); loadNetworks();
               });
-            }, 'btn danger small'));
+            }, 'btn danger small', 'Disconnecting\u2026'));
           });
           actGrp.appendChild(makeActionBtn('Delete', function() {
             if (!confirm('Delete network "' + n.name + '"? (Undo available for ~' + (window.UNDO_WINDOW_SECS || 5) + 's.)'))
@@ -128,7 +128,7 @@ async function loadNetworks() {
                 toast('Network deleted', 'info'); loadNetworks();
               });
             });
-          }, 'btn danger small'));
+          }, 'btn danger small', 'Deleting\u2026'));
         }
         tdAct.appendChild(actGrp);
         tr.append(tdN, tdId, tdD, tdS, tdC, tdSubnet, tdAct); tbody.appendChild(tr);

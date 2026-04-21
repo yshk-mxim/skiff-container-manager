@@ -222,7 +222,7 @@ async function loadVolumes() {
             loadVolumes();
           });
         });
-      }, 'btn danger', t('common.loading')),
+      }, 'btn danger', 'Pruning\u2026'),
     );
     header.append(h2, ha); main.appendChild(header);
     var volDesc = document.createElement('p');
@@ -310,7 +310,7 @@ async function loadVolumes() {
               'Volume', loadVolumes,
             );
           });
-        }, 'btn danger small'));
+        }, 'btn danger small', 'Deleting\u2026'));
         tr.append(tdN, tdD, tdU, tdC, tdA); tbody.appendChild(tr);
       });
     }

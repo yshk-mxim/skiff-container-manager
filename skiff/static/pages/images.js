@@ -223,7 +223,7 @@ async function showImageInspect(id, tag) {
       }).then(function() {
         toast('Image tagged', 'success'); m.close(); loadImages();
       });
-    }, 'btn small primary');
+    }, 'btn small primary', 'Tagging\u2026');
     var pushBtns = (d.tags || []).map(function(t) {
       return makeActionBtn('Push ' + t.split('/').pop(), function() {
         if (!confirm('Push "' + t + '" to registry?')) throw new Error('Cancelled');

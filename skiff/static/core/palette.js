@@ -193,15 +193,18 @@
   }
 
   // Number-key navigation: 1-9 jumps to the corresponding sidebar
-  // section. Ordered to match the visible sidebar order. Adding a new
-  // page? Register it in the page module with a sidebar `order` value,
-  // then add it here so the number key works — the two lists are
+  // section. `0` is the 10th slot and opens API docs in a new tab
+  // (external link — see the api-docs page registration in app.js).
+  // Ordered to match the visible sidebar order. Adding a new page?
+  // Register it in the page module with a sidebar `order` value, then
+  // add it here so the number key works — the two lists are
   // intentionally decoupled so a persona-filtered page (System is
   // hidden under the homelab persona) still keeps a stable number.
   var NUMBER_NAV = [
     null, 'dashboard', 'containers', 'images', 'templates',
     'volumes', 'networks', 'compose', 'system', 'settings',
   ];
+  var NUMBER_ZERO_URL = '/api/docs';  // keyboard '0' opens this in a new tab
 
   window.addEventListener('keydown', function(e) {
     var isMeta = isMacLike() ? e.metaKey : e.ctrlKey;
@@ -224,9 +227,14 @@
       }
       return;
     }
-    // `1`-`9` → jump to sidebar section. Same editable-field guard so
-    // typing a number in a form stays a number.
+    // `1`-`9` → jump to sidebar section. `0` opens API docs.
+    // Same editable-field guard so typing a number in a form stays a number.
     if (!editable && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      if (e.key === '0') {
+        e.preventDefault();
+        window.open(NUMBER_ZERO_URL, '_blank', 'noopener');
+        return;
+      }
       var idx = parseInt(e.key, 10);
       if (idx >= 1 && idx <= 9 && NUMBER_NAV[idx]) {
         if (typeof window.showPage === 'function') {
@@ -271,6 +279,7 @@
       [formatShortcut(), 'Command palette — jump to any page or container'],
       ['?', 'This shortcut help'],
       ['1 – 9', 'Jump to sidebar section (Dashboard, Containers, Images, Templates, Volumes, Networks, Compose, System, Settings)'],
+      ['0', 'Open API docs (Swagger UI) in a new tab'],
       ['r', 'Open Run-container modal (on the Containers page)'],
       ['/', 'Focus the nearest search / filter input'],
       ['Esc', 'Close modal / palette / overlay'],

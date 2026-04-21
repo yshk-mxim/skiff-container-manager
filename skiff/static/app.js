@@ -480,18 +480,29 @@ function wsAuthOnOpen(ws) {
 // ── Toast notifications ──
 function toast(msg, type) {
   type = type || 'info';
+  // Historical behaviour rendered a floating toast in the viewport
+  // corner AND incremented the bell count — two notifications for
+  // one event, visually detached. Real users called this out as
+  // "double-notified from two places".
+  //
+  // New behaviour: the bell is the single notification surface.
+  // - Info/success: the notifications.js toast-patch is the only
+  //   render path — it increments the bell count and pulses the
+  //   glyph. This function returns without rendering a floating
+  //   element for those kinds.
+  // - Error: still render a floating toast so a failure the user
+  //   needs to act on is not buried behind a sidebar click. Error
+  //   toasts are stickier (10s) and keep their existing location.
+  //
+  // Undo bars are an ACTION AFFORDANCE, not a notification, and live
+  // in #undo-bar-container — unchanged by this rule.
+  if (type !== 'error') return;
   const c = document.getElementById('toast-container');
   const t = document.createElement('div');
   t.className = 'toast ' + type;
   t.textContent = msg;
   c.appendChild(t);
-  // Error toasts linger longer (10s) — they usually name a failed
-  // action the user needs to fix. Success/info fade after 6s, which
-  // is long enough to finish reading a two-line message without
-  // feeling like the UI is shouting. Previous 4s was too quick for
-  // anything with a container name in it (user feedback).
-  const dwell = type === 'error' ? 10000 : 6000;
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, dwell);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 10000);
 }
 
 // ── Login ──
@@ -717,6 +728,14 @@ function showPage(page) {
       keywords: ['prune', 'metrics', 'audit'] },
     { id: 'settings',   label: 'Settings',   order: 70,
       keywords: ['config', 'configuration', 'knob', 'env', 'toml', 'rate limit', 'session'] },
+    // 10th nav slot: API docs. External link (OpenAPI / Swagger UI)
+    // opens in a new tab so the operator can have their SKIFF session
+    // + reference docs side-by-side. `external: true` tells
+    // core/sidebar.js to emit an <a href target=_blank> instead of
+    // wiring a showPage() click handler.
+    { id: 'api-docs',   label: 'API docs',   order: 80,
+      external: true, href: '/api/docs',
+      keywords: ['api', 'openapi', 'swagger', 'reference'] },
   ].forEach(function(d) { UI.registerPage(d); });
 })();
 
@@ -1326,7 +1345,7 @@ function renderContainers(containers) {
       bg.append(
         makeActionBtn('Stop', function() { return guardedAction('stop-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/stop',{method:'POST'}).then(function(){toast(c.name+' stopped','info');loadContainers();}); }); }, undefined, 'Stopping\u2026'),
         makeActionBtn('Restart', function() { return guardedAction('restart-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/restart',{method:'POST'}).then(function(){loadContainers();}); }); }, undefined, 'Restarting\u2026'),
-        makeActionBtn('Pause', function() { return guardedAction('pause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/pause',{method:'POST'}).then(function(){toast(c.name+' paused','info');loadContainers();}); }); }),
+        makeActionBtn('Pause', function() { return guardedAction('pause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/pause',{method:'POST'}).then(function(){toast(c.name+' paused','info');loadContainers();}); }); }, undefined, 'Pausing\u2026'),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
         makeBtn('Terminal', function() { showDetail(c.id, c.name, 'terminal'); }),
         makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
@@ -1335,7 +1354,7 @@ function renderContainers(containers) {
       );
     } else if (c.state === 'paused') {
       bg.append(
-        makeActionBtn('Unpause', function() { return guardedAction('unpause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/unpause',{method:'POST'}).then(function(){loadContainers();}); }); }, 'btn primary'),
+        makeActionBtn('Unpause', function() { return guardedAction('unpause-c-'+c.id, function() { return apiFetch(API+'/containers/'+c.id+'/unpause',{method:'POST'}).then(function(){loadContainers();}); }); }, 'btn primary', 'Unpausing\u2026'),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
         makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
       );
@@ -1357,7 +1376,7 @@ function renderContainers(containers) {
               loadContainers();
             });
           });
-        }, 'btn primary'),
+        }, 'btn primary', 'Starting\u2026'),
         makeBtn('Logs', function() { showDetail(c.id, c.name, 'logs'); }),
         makeBtn('Inspect', function() { showDetail(c.id, c.name, 'inspect'); }),
       );

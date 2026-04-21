@@ -514,20 +514,39 @@ body.reviewer-mode .btn.danger { display: none !important; }
 .sidebar-footer .attr { margin-top: 2px; }
 .sidebar-footer .attr a { color: inherit; text-decoration: underline; }
 
-/* Primary sidebar link (API docs). Sits above the muted attribution
-   rows so first-time users can find the OpenAPI explorer without
-   hunting. Copyright + MIT License stay muted below. */
+/* Primary sidebar link (API docs). Styled to match .sidebar a
+   (the main nav items) so it reads as another tab/section rather
+   than a muted attribution line. First-time users called out that
+   API docs was too small to find at the old 12px size. */
 .sidebar-footer .sidebar-link {
-  display: block;
-  color: var(--sidebar-text-strong, var(--text));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--sidebar-text);
   text-decoration: none;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
-  padding: 4px 0;
-  margin-top: 4px;
-  margin-bottom: 6px;
+  padding: 9px 16px;
+  margin: 8px -16px 6px;   /* bleed to sidebar edges like .sidebar a */
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  transition: background 0.1s;
 }
-.sidebar-footer .sidebar-link:hover { text-decoration: underline; }
+.sidebar-footer .sidebar-link:hover,
+.sidebar-footer .sidebar-link:focus-visible {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
+  outline: none;
+  border-left-color: var(--sidebar-active, #0d9488);
+}
+/* External-link arrow after the label so the "opens in new tab"
+   semantics are visible, not just announced by target=_blank. */
+.sidebar-footer .sidebar-link::after {
+  content: "↗";
+  font-size: 11px;
+  opacity: 0.55;
+}
 
 /* Simple table-cell action row used by pages/*.js and UI.table actions column */
 .td-actions { display: flex; gap: 4px; flex-wrap: wrap; }

@@ -38,6 +38,7 @@
     compose:    '<path d="M3.5 1A1.5 1.5 0 002 2.5v11A1.5 1.5 0 003.5 15h9a1.5 1.5 0 001.5-1.5v-8L9.5 1h-6z"/>',
     system:     '<path d="M8 4.754a3.246 3.246 0 100 6.492 3.246 3.246 0 000-6.492z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.902 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 01-1.255-.52l-.094-.319z"/>',
     settings:   '<path d="M2 3h12v2H2V3zm0 4h12v2H2V7zm0 4h12v2H2v-2z"/><circle cx="4" cy="4" r="1" fill="white"/><circle cx="10" cy="8" r="1" fill="white"/><circle cx="6" cy="12" r="1" fill="white"/>',
+    'api-docs': '<path d="M3 2h7l3 3v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1zm7 0v3h3M5 8h6M5 10h6M5 12h4"/>',
   };
 
   // Persona source: /api/config returns `profile` for authed clients.
@@ -65,15 +66,31 @@
     pages.forEach(function(p, idx) {
       var a = document.createElement('a');
       a.setAttribute('data-page', p.id);
-      if (idx === 0) a.className = 'active';  // default first page highlighted
+      if (idx === 0 && !p.external) a.className = 'active';  // default first internal page highlighted
       // Icon (safe — ICONS is a static allowlist; no user data)
       a.innerHTML = iconSvg(p.id);
       // Label — textContent keeps safety regardless of label source
       var label = document.createTextNode(p.label || p.id);
       a.appendChild(label);
-      a.addEventListener('click', function() {
-        if (typeof showPage === 'function') showPage(p.id);
-      });
+      if (p.external) {
+        // External link (e.g. API docs, opens Swagger UI in a new tab).
+        // Use a real <a href target=_blank> so Cmd/Ctrl-click, middle-
+        // click, right-click → open-in-new-window all behave as users
+        // expect. Append an external-link glyph so the target is
+        // self-documenting without an aria-label noise.
+        a.href = p.href;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        var ext = document.createElement('span');
+        ext.className = 'sidebar-ext-arrow';
+        ext.setAttribute('aria-hidden', 'true');
+        ext.textContent = '\u2197';  // ↗
+        a.appendChild(ext);
+      } else {
+        a.addEventListener('click', function() {
+          if (typeof showPage === 'function') showPage(p.id);
+        });
+      }
       mount.appendChild(a);
     });
   }
