@@ -563,14 +563,19 @@ body.reviewer-mode .btn.danger { display: none !important; }
   outline-offset: -2px;
   background: var(--sidebar-hover, rgba(255, 255, 255, 0.04));
 }
-/* Pulse the bell briefly when a new notification arrives. This is
-   the visual link between a toast popping up in the corner and the
-   bell in the sidebar — no physical proximity needed. 1200ms, single
-   cycle. The prefers-reduced-motion rule at the top of this file
-   collapses animation-duration to 0.01ms so users who opt out of
-   motion see an instant colour flash instead of the bounce. */
+/* Pulse the bell briefly when a new notification arrives. Replaces
+   the old floating toast — bell is now the single notification
+   surface. 1200ms, single cycle. prefers-reduced-motion (global
+   rule above) collapses animation-duration to 0.01ms so users who
+   opt out of motion see an instant flash instead of the bounce. */
 .skiff-notif-bell.pulse {
   animation: skiffBellPulse 1.2s ease-out 1;
+}
+/* Red-tinted pulse for errors so severity reads at a glance without
+   a floating alert. Paired with the count chip being red, this gives
+   errors two layers of visual weight in the sidebar. */
+.skiff-notif-bell.pulse-error {
+  animation: skiffBellPulseError 1.2s ease-out 1;
 }
 @keyframes skiffBellPulse {
   0%   { transform: scale(1);    filter: brightness(1);   }
@@ -578,6 +583,13 @@ body.reviewer-mode .btn.danger { display: none !important; }
   40%  { transform: scale(1);    filter: brightness(1);   }
   60%  { transform: scale(1.15); filter: brightness(1.2); }
   100% { transform: scale(1);    filter: brightness(1);   }
+}
+@keyframes skiffBellPulseError {
+  0%   { transform: scale(1);    filter: drop-shadow(0 0 0 transparent); }
+  20%  { transform: scale(1.45); filter: drop-shadow(0 0 8px #ef4444); }
+  40%  { transform: scale(1);    filter: drop-shadow(0 0 0 transparent); }
+  60%  { transform: scale(1.2);  filter: drop-shadow(0 0 5px #ef4444); }
+  100% { transform: scale(1);    filter: drop-shadow(0 0 0 transparent); }
 }
 
 /* ── Context menu ────────────────────────────────────────── */

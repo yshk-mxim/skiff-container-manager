@@ -501,30 +501,23 @@ function wsAuthOnOpen(ws) {
 
 // ── Toast notifications ──
 function toast(msg, type) {
-  type = type || 'info';
-  // Historical behaviour rendered a floating toast in the viewport
-  // corner AND incremented the bell count — two notifications for
-  // one event, visually detached. Real users called this out as
-  // "double-notified from two places".
+  // The bell is the ONLY notification surface. `notifications.js`
+  // patches this function before call, records the event into the
+  // ring, increments the unread counter, and pulses the bell glyph
+  // (red for errors, teal for info/success — see bell animation).
   //
-  // New behaviour: the bell is the single notification surface.
-  // - Info/success: the notifications.js toast-patch is the only
-  //   render path — it increments the bell count and pulses the
-  //   glyph. This function returns without rendering a floating
-  //   element for those kinds.
-  // - Error: still render a floating toast so a failure the user
-  //   needs to act on is not buried behind a sidebar click. Error
-  //   toasts are stickier (10s) and keep their existing location.
+  // Errors still demand attention — the bell red-pulse + red count
+  // chip give severity two layers of visual weight in the sidebar,
+  // and the bell panel surfaces the full message. Truly critical
+  // failures should also render inline on the affected form / row
+  // (e.g. Run modal's own error banner), not rely on a global toast.
   //
-  // Undo bars are an ACTION AFFORDANCE, not a notification, and live
-  // in #undo-bar-container — unchanged by this rule.
-  if (type !== 'error') return;
-  const c = document.getElementById('toast-container');
-  const t = document.createElement('div');
-  t.className = 'toast ' + type;
-  t.textContent = msg;
-  c.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 10000);
+  // Undo bars are an ACTION AFFORDANCE and live in #undo-bar-container,
+  // unchanged by this rule.
+  if (type) { /* kind is recorded via the notifications.js patch */ }
+  // No floating render. Return so `toast(...)` stays usable as a
+  // side-effect-only call site without every caller having to swap
+  // to `window._notif.record`.
 }
 
 // ── Login ──

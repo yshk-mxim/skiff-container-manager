@@ -284,6 +284,11 @@
 
   function _paintCount() {
     if (!countEl) return;
+    // Self-heal: if the ring is empty, the count chip MUST be zero.
+    // Stops the "bell shows 1 but panel is empty" class of bug —
+    // any future path that accidentally increments unread without
+    // pushing to ring can't leave the user with a phantom badge.
+    if (!ring.length) unread = 0;
     if (unread > 0) {
       countEl.style.display = 'inline-block';
       countEl.textContent = unread > 99 ? '99+' : String(unread);
@@ -310,14 +315,20 @@
     if (ring.length > CAP) ring.splice(0, ring.length - CAP);
     unread++;
     _paintCount();
-    // Pulse the bell so the user connects "toast popped in the corner"
-    // with "the bell count went up". Class is toggled off after the
-    // animation so a rapid burst of toasts re-triggers the pulse.
+    // Pulse the bell so the user sees the increment without a
+    // floating element. Red-tinted pulse for errors so severity
+    // reads at a glance — matches the count chip colour so the two
+    // layers reinforce each other. Class is toggled off after the
+    // animation so a rapid burst re-triggers cleanly (force-reflow
+    // trick restarts a running animation).
     if (bellEl) {
-      bellEl.classList.remove('pulse');
-      void bellEl.offsetWidth;  // force reflow so restart takes effect
-      bellEl.classList.add('pulse');
-      setTimeout(function() { if (bellEl) bellEl.classList.remove('pulse'); }, 1300);
+      bellEl.classList.remove('pulse', 'pulse-error');
+      void bellEl.offsetWidth;
+      var pulseCls = kind === 'error' ? 'pulse-error' : 'pulse';
+      bellEl.classList.add(pulseCls);
+      setTimeout(function() {
+        if (bellEl) bellEl.classList.remove('pulse', 'pulse-error');
+      }, 1300);
     }
   }
 
