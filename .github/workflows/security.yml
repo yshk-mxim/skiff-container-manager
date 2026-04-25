@@ -16,11 +16,16 @@ permissions:
 
 jobs:
   # Claude-Code security review runs only on PRs opened from branches in
-  # this repo (where CLAUDE_API_KEY is available). Forked PRs skip this
-  # job — they cannot read repo secrets — so the check is "neutral/skipped"
-  # rather than a confusing red X the contributor can't fix.
+  # this repo (where CLAUDE_API_KEY is available). Forked PRs and
+  # Dependabot PRs skip this job — they cannot read repo secrets — so
+  # the check is "neutral/skipped" rather than a confusing red X the
+  # contributor can't fix.
   security:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      github.event_name != 'pull_request' || (
+        github.event.pull_request.head.repo.full_name == github.repository
+        && github.actor != 'dependabot[bot]'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
