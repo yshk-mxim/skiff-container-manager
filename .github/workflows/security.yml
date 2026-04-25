@@ -17,9 +17,11 @@ permissions:
 jobs:
   # Claude-Code security review runs only on PRs opened from branches in
   # this repo (where CLAUDE_API_KEY is available). Forked PRs and
-  # Dependabot PRs skip this job — they cannot read repo secrets — so
-  # the check is "neutral/skipped" rather than a confusing red X the
-  # contributor can't fix.
+  # Dependabot PRs skip this job at the `if:` gate — they cannot read
+  # repo secrets. A second guard at the step level skips the review
+  # when CLAUDE_API_KEY is unset (e.g. before the maintainer has
+  # configured the secret), so the overall check stays green instead of
+  # surfacing a confusing red X with "ANTHROPIC_API_KEY is not set".
   security:
     if: |
       github.event_name != 'pull_request' || (
@@ -33,7 +35,20 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
 
-      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+      - name: Detect CLAUDE_API_KEY availability
+        id: key
+        env:
+          KEY: ${{ secrets.CLAUDE_API_KEY }}
+        run: |
+          if [ -n "${KEY}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLAUDE_API_KEY is not configured for this repo; skipping Claude-Code security review."
+          fi
+
+      - if: steps.key.outputs.present == 'true'
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
         with:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
