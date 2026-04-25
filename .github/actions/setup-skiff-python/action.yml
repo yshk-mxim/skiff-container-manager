@@ -34,4 +34,9 @@ runs:
       # don't trust the caller even when the caller is yourself.
       env:
         SKIFF_EXTRAS: ${{ inputs.install-extras }}
-      run: pip install -e ".[${SKIFF_EXTRAS}]"
+      run: |
+        if [ -n "${SKIFF_EXTRAS}" ]; then
+          pip install -e ".[${SKIFF_EXTRAS}]"
+        else
+          pip install -e .
+        fi
