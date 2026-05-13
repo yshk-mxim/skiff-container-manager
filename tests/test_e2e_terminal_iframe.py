@@ -136,7 +136,7 @@ def test_terminal_iframe_mouse_selection_paints(page, live_server):
     assert selection, "mouse drag produced no terminal selection"
 
 
-def test_terminal_iframe_survives_moveBefore_tab_switch(page, live_server):
+def test_terminal_iframe_survives_movebefore_tab_switch(page, live_server):
     """Regression guard for the pre-CSP-refactor behaviour: switching
     away from the Terminal tab and back must preserve the iframe's
     contentWindow (and therefore xterm + WebSocket + scrollback). With
