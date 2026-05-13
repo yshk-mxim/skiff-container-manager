@@ -436,6 +436,24 @@ body.reviewer-mode .btn.danger { display: none !important; }
    scrolling buffer; xterm.js + cell rendering live inside the frame
    so the outer element only provides the layout box. */
 .terminal-iframe { display: block; width: 100%; height: 380px; padding: 0; overflow: hidden; border: 0; }
+/* Disconnect button is overlaid on the dark terminal iframe background;
+   the global `.btn.danger` style (red text on transparent) is hard to
+   read there. Solid red fill + white text + a subtle shadow gives the
+   ≥4.5:1 contrast WCAG AA requires on a #0d1117 backdrop. */
+#_term-host .btn.danger {
+  background: #b91c1c;
+  color: #fff;
+  border-color: #7f1d1d;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+#_term-host .btn.danger:hover {
+  background: #991b1b;
+  color: #fff;
+}
+#_term-host .btn.danger:focus-visible {
+  outline: 2px solid #fca5a5;
+  outline-offset: 2px;
+}
 
 /* Detail tabs */
 .detail-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 16px; }

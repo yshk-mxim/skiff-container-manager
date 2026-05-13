@@ -445,8 +445,8 @@ async def _exec_session(websocket: WebSocket, container_id: str, loop, ip: str) 
     sock, exec_id = await loop.run_in_executor(None, _start_exec_session, client, container, shell)
     read_task = asyncio.create_task(_exec_pump_output(websocket, sock, loop))
     keepalive_task = asyncio.create_task(auth.ws_keepalive(websocket))
-    try:
-        await _exec_pump_input(
+    input_task = asyncio.create_task(
+        _exec_pump_input(
             websocket,
             sock,
             loop,
@@ -455,14 +455,43 @@ async def _exec_session(websocket: WebSocket, container_id: str, loop, ip: str) 
             client=client,
             exec_id=exec_id,
         )
+    )
+    try:
+        # Race the two pumps. If the OUTPUT pump exits first the shell
+        # closed its stdout (user typed `exit` / Ctrl-D / process died);
+        # if the INPUT pump exits first the WebSocket disconnected on
+        # the client side. Either way the session is over, so we cancel
+        # the other and let the finally block tear down. Without this
+        # race the input pump blocks forever in `receive_text()` after
+        # the shell exits, leaving the operator staring at a dead
+        # terminal with no close signal — the bug behind the "Ctrl-D
+        # bricks the terminal" report.
+        done, _ = await asyncio.wait(
+            {read_task, input_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in done:
+            exc = t.exception()
+            if exc is not None and not isinstance(
+                exc,
+                (WebSocketDisconnect, OSError, RuntimeError, asyncio.CancelledError),
+            ):
+                raise exc
     except (WebSocketDisconnect, OSError, RuntimeError):
         # Disconnect: client hung up. OSError: socket gone.
         # RuntimeError: starlette on send-after-close.
         pass
     finally:
         read_task.cancel()
+        input_task.cancel()
         keepalive_task.cancel()
         sock.close()
+        # When the shell exited cleanly we still hold an open WebSocket
+        # — close it with 1000 so the client's onclose fires and the
+        # iframe's "Start new session" affordance surfaces immediately
+        # rather than after the iframe's reconnect-ceiling backoff (see
+        # MAX_RECONNECTS in static/terminal-frame.js).
+        await _ws_close_quiet(websocket)
         log.info("audit.ws_exec_disconnect", container=container_id, remote=ip)
 
 

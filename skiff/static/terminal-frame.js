@@ -79,6 +79,28 @@
     return proto + '//' + window.location.host + '/ws/exec/' + encodeURIComponent(id);
   }
 
+  // Render an in-iframe "Start new session" / "Reconnect" affordance
+  // once the WS has closed and won't auto-reconnect. Without this the
+  // operator either has to use the parent SPA's Disconnect button (and
+  // re-navigate through the tab to start over) or refresh the whole
+  // page. `window.location.reload()` re-runs terminal-frame.js end-to-
+  // end which spawns a fresh xterm + WS for the same container.
+  function _showRestartButton(label) {
+    if (document.getElementById('restart-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'restart-btn';
+    btn.type = 'button';
+    btn.textContent = label;
+    btn.addEventListener('click', function () {
+      try { window.location.reload(); } catch (e) { /* navigation race */ }
+    });
+    document.body.appendChild(btn);
+    // Re-focus so the operator can press Enter to activate without
+    // moving the mouse. xterm has hold of focus while the WS was up;
+    // ceding it now is correct since the terminal is no longer live.
+    try { btn.focus(); } catch (e) { /* ignore */ }
+  }
+
   function start() {
     var containerId = parseContainerId();
     if (!containerId) {
@@ -152,6 +174,10 @@
         // settled into its final layout (matters during iframe mount).
         setTimeout(sendResize, 100);
         attempt = 0;
+        // Clear any "Reconnect now" affordance left over from an
+        // earlier reconnect cycle — the session is live again.
+        var rb = document.getElementById('restart-btn');
+        if (rb && rb.parentNode) rb.parentNode.removeChild(rb);
         postToParent({ type: 'terminal-ready' });
       };
       ws.onmessage = function (e) {
@@ -171,8 +197,16 @@
           return;
         }
         if (evt.code === 1000) {
+          // Clean close from the server side — the operator typed
+          // `exit` or Ctrl-D, the PTY closed, and the WS handler
+          // shut down. Without an affordance to start over, the
+          // terminal sits visibly dead and the only escape is the
+          // parent SPA's Disconnect → switch-tab → re-enter dance.
+          // Show an in-iframe "Start new session" button instead.
           setStatus('disconnected', 'Closed');
-          postToParent({ type: 'terminal-disconnected', code: 1000, reason: 'Closed by server' });
+          term.write('\r\n[Shell exited]\r\n');
+          _showRestartButton('Start new session');
+          postToParent({ type: 'terminal-disconnected', code: 1000, reason: 'shell-exited' });
           return;
         }
         if (evt.code === SESSION_EXPIRED_CODE) {
@@ -184,9 +218,20 @@
         if (attempt >= MAX_RECONNECTS) {
           setStatus('error', 'Reconnect limit reached');
           term.write('\r\n[Max reconnect attempts reached]\r\n');
+          // Same affordance as the clean-close case — give the user
+          // an explicit way to re-establish a session without having
+          // to navigate back through the parent SPA's tab nav.
+          _showRestartButton('Reconnect');
           postToParent({ type: 'terminal-disconnected', code: evt.code, reason: 'max_retries' });
           return;
         }
+        // Surface a manual "Reconnect now" affordance while the auto-
+        // backoff is running too. The operator may not want to wait
+        // through five doubling delays (1 + 2 + 4 + 8 + 16 = 31s) when
+        // they know the underlying daemon just came back. Auto-
+        // reconnect continues in the background; clicking the button
+        // reloads the iframe end-to-end and produces a fresh WS.
+        _showRestartButton('Reconnect now');
         var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
         attempt += 1;
         term.write('\r\n[Reconnecting in ' + (delay / 1000) + 's…]\r\n');

@@ -111,9 +111,14 @@ def test_terminal_iframe_mouse_selection_paints(page, live_server):
     )
     page.wait_for_selector(".xterm", timeout=10_000)
     # Inject content via term.write — same path the WS message handler
-    # uses, no PTY required. Use a long string so the drag has room.
+    # uses, no PTY required. `term.clear()` first wipes any
+    # session-close messages terminal-frame.js may have already
+    # painted (e.g. `[Shell exited]` after the WS closes when no real
+    # container backs `/ws/exec/abcd1234`), so the row we type into is
+    # the first visible row of the screen.
     page.evaluate(
         """() => {
+            window._term.clear();
             window._term.write('selectable text content here that spans columns');
         }"""
     )

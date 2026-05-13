@@ -54,3 +54,27 @@ html, body {
 #status[data-state="disconnected"],
 #status[data-state="error"] { display: block; }
 #status[data-state="error"] { color: #f87171; }
+
+/* In-iframe restart affordance shown when the WS has closed and won't
+ * auto-reconnect (operator typed `exit` / Ctrl-D, or reconnect ceiling
+ * hit). Centred at the bottom so it doesn't obscure the final shell
+ * output above. Matches the SKIFF teal accent so it reads as a
+ * primary action without needing a separate framework. */
+#restart-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  background: #0d9488;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: 'DejaVu Sans Mono', monospace;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+#restart-btn:hover { background: #0f766e; }
+#restart-btn:focus { outline: 2px solid #5eead4; outline-offset: 2px; }
