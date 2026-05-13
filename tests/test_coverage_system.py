@@ -402,13 +402,29 @@ def test_api_docs_csp_allows_inline_style_not_inline_script(client):
 # ── Terminal iframe (CSP-isolated xterm.js host) ──────────────────────────────
 
 
-def test_terminal_frame_requires_auth(client):
-    """The iframe URL is auth-gated like the rest of /api/. Hitting it
-    without a bearer token (against an instance that HAS an API_TOKEN
-    configured) must 401 — never leak the embedded HTML, never reveal
-    that a container with that ID exists."""
+def test_terminal_frame_is_public_by_design(client):
+    """The iframe route is intentionally PUBLIC because a browser-
+    initiated iframe navigation cannot carry the Bearer token from
+    sessionStorage. The HTML it returns is pure boilerplate (xterm.js
+    + addon-fit + a stub div + the terminal-frame.js bootstrap) —
+    nothing here exposes Docker state or container existence. The
+    actual auth gate is `/ws/exec/{id}` which performs `AUTH <token>`
+    as the first WS frame. Defence-in-depth lives in:
+
+      * frame-ancestors 'self' (CSP) + X-Frame-Options: SAMEORIGIN —
+        no cross-origin embedding.
+      * rate-limited at the PUBLIC tier.
+      * container_id is regex-validated; nothing else echoes back.
+
+    Concrete regression guard: ensure the response status is 200
+    (not redirected to login), shape matches the iframe HTML.
+    """
     resp = client.get("/api/terminal-frame/abcd1234")  # no AUTH_HEADER
-    assert resp.status_code in (401, 403)
+    assert resp.status_code == 200
+    # Sanity: it's the iframe HTML, not the SPA login page.
+    body = resp.text
+    assert "/static/terminal-frame.js" in body
+    assert "/static/xterm/xterm.js" in body
 
 
 def test_terminal_frame_renders(client):

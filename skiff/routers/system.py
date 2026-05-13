@@ -751,9 +751,8 @@ _TERMINAL_FRAME_HTML = """<!DOCTYPE html>
     "/api/terminal-frame/{container_id}",
     include_in_schema=False,
     tags=["system"],
-    dependencies=AUTH,
 )
-@secure_route.read(RATE.READ)
+@secure_route.public(RATE.PUBLIC)
 def terminal_frame_page(request: Request, container_id: str) -> Response:
     """Serve the CSP-isolated HTML that hosts xterm.js for a container.
 
@@ -762,11 +761,23 @@ def terminal_frame_page(request: Request, container_id: str) -> Response:
     own route-scoped CSP so xterm's inline-style writes survive while
     the parent document stays under strict `style-src 'self'`.
 
-    The container ID is only used as a path component for the iframe's
-    JS to pluck back; this route itself doesn't talk to Docker. The
-    actual shell is opened by the iframe's WebSocket against
-    ``/ws/exec/{container_id}``, which performs its own AUTH +
-    audit-logged exec session.
+    **Public by design.** Bearer-token auth lives in sessionStorage on
+    the parent SPA and CANNOT travel with a browser-initiated iframe
+    navigation (sessionStorage is not a cookie). The HTML this route
+    returns is pure boilerplate — xterm.js + addon-fit script tags + a
+    stub div + the terminal-frame.js bootstrap. It exposes no Docker
+    state and no privileged information; the container_id in the path
+    is just a string the iframe's JS reads back. The real auth gate
+    is `/ws/exec/{id}`, which the iframe connects to over WebSocket
+    and authenticates via `AUTH <bearer-token>` as the first frame
+    (same pattern the WS protocol already uses, see logging_setup.py).
+    Pre-existing protections still apply:
+      * `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`
+        prevent cross-origin embedding, so a malicious site cannot
+        iframe this route to phish operators.
+      * `secure_route.public(RATE.PUBLIC)` rate-limits anonymous hits.
+      * The container_id is regex-validated below — anything outside
+        Docker's ID/name grammar → 400, never echoed into the HTML.
     """
     # Reject anything outside Docker's container-ID/name grammar so the
     # path never carries an exotic codepoint into the URL the iframe

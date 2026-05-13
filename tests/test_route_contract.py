@@ -45,6 +45,12 @@ _PUBLIC_ROUTES: frozenset[str] = frozenset(
         "/api/setup/tunnel",  # wizard: establish/teardown SSH tunnel; gated by
         # setup-window + per-IP lockout + token in body
         "/api/docs",  # CSP-safe OpenAPI landing — no data, just links
+        # Public-by-design: browser iframe navigation cannot carry the
+        # Bearer token from sessionStorage; the route serves only
+        # boilerplate HTML. The real auth gate is `/ws/exec/{id}`
+        # (AUTH frame). `frame-ancestors 'self'` + X-Frame-Options:
+        # SAMEORIGIN keep cross-origin embedders out.
+        "/api/terminal-frame/{container_id}",
         "/docs",  # FastAPI default (left enabled for non-CSP paths)
         "/openapi.json",
         "/",  # SPA shell

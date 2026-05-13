@@ -79,6 +79,13 @@ _PUBLIC_PATHS = frozenset(
         "/api/setup/tunnel",
         "/api/tunnel/status",
         "/api/tunnel/reconnect",
+        # Public-by-design: a browser iframe navigation cannot carry the
+        # Bearer token from sessionStorage, so this route serves only
+        # boilerplate HTML (xterm.js + addon-fit + a stub div). The real
+        # auth gate is `/ws/exec/{id}` (AUTH frame over WebSocket).
+        # `frame-ancestors 'self'` + X-Frame-Options: SAMEORIGIN keep
+        # cross-origin embedders out. See skiff/routers/system.py.
+        "/api/terminal-frame/{container_id}",
     }
 )
 
