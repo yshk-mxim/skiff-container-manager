@@ -31,7 +31,7 @@ async function showTemplates() {
     header.appendChild(h2);
     main.appendChild(header);
     var desc = document.createElement('p');
-    desc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
+    UI.setStyle(desc, 'color:var(--muted);font-size:12px;margin-bottom:16px');
     desc.textContent = 'Quick-start catalogues. Apps deploy a single container via the Run modal. Stacks deploy a multi-service docker-compose project.';
     main.appendChild(desc);
 
@@ -44,23 +44,23 @@ async function showTemplates() {
     // ── Apps section ───────────────────────────────────────────
     var appsH = document.createElement('h3');
     appsH.textContent = 'Apps (single container)';
-    appsH.style.cssText = 'font-size:15px;margin:20px 0 8px;color:var(--text-strong)';
+    UI.setStyle(appsH, 'font-size:15px;margin:20px 0 8px;color:var(--text-strong)');
     main.appendChild(appsH);
     var appsGrid = document.createElement('div');
-    appsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px';
+    UI.setStyle(appsGrid, 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px');
     main.appendChild(appsGrid);
 
     // ── Stacks section ──────────────────────────────────────────
     var stacksH = document.createElement('h3');
     stacksH.textContent = 'Stacks (docker-compose)';
-    stacksH.style.cssText = 'font-size:15px;margin:24px 0 8px;color:var(--text-strong)';
+    UI.setStyle(stacksH, 'font-size:15px;margin:24px 0 8px;color:var(--text-strong)');
     main.appendChild(stacksH);
     var stacksDesc = document.createElement('p');
-    stacksDesc.style.cssText = 'color:var(--muted);font-size:11px;margin-bottom:10px';
+    UI.setStyle(stacksDesc, 'color:var(--muted);font-size:11px;margin-bottom:10px');
     stacksDesc.textContent = 'Multi-service blueprints. Click a card to review env vars and deploy via compose up.';
     main.appendChild(stacksDesc);
     var stacksGrid = document.createElement('div');
-    stacksGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px';
+    UI.setStyle(stacksGrid, 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px');
     main.appendChild(stacksGrid);
 
     function _matches(tmpl, needle) {
@@ -76,23 +76,23 @@ async function showTemplates() {
       var card = document.createElement('div');
       card.className = 'template-card';
       card.setAttribute('data-testid', 'template-' + tmpl.id);
-      card.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;'
-        + (tmpl.is_allowed ? 'cursor:pointer' : 'opacity:0.55;cursor:not-allowed');
+      UI.setStyle(card, 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;'
+        + (tmpl.is_allowed ? 'cursor:pointer' : 'opacity:0.55;cursor:not-allowed'));
       if (!tmpl.is_allowed) {
         card.title = 'Not deployable: ' + (tmpl.reject_reason || 'registry not in allowlist');
       }
       var name = document.createElement('div');
-      name.style.cssText = 'font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:6px';
+      UI.setStyle(name, 'font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:6px');
       var nn = document.createElement('span'); nn.textContent = tmpl.name;
       var cat = document.createElement('span');
-      cat.style.cssText = 'font-size:10px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.04em';
+      UI.setStyle(cat, 'font-size:10px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.04em');
       cat.textContent = tmpl.category || '';
       name.append(nn, cat);
       var img = document.createElement('div');
-      img.style.cssText = 'font-family:monospace;font-size:11px;color:var(--muted)';
+      UI.setStyle(img, 'font-family:monospace;font-size:11px;color:var(--muted)');
       img.textContent = tmpl.image;
       var d = document.createElement('p');
-      d.style.cssText = 'font-size:12px;color:var(--text);margin:0';
+      UI.setStyle(d, 'font-size:12px;color:var(--text);margin:0');
       d.textContent = tmpl.description;
       card.append(name, img, d);
       if (tmpl.is_allowed) card.onclick = function() { _deployTemplate(tmpl); };
@@ -103,26 +103,26 @@ async function showTemplates() {
       var card = document.createElement('div');
       card.className = 'template-card stack-card';
       card.setAttribute('data-testid', 'stack-' + tmpl.id);
-      card.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;'
-        + (tmpl.is_allowed ? 'cursor:pointer' : 'opacity:0.55;cursor:not-allowed');
+      UI.setStyle(card, 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;'
+        + (tmpl.is_allowed ? 'cursor:pointer' : 'opacity:0.55;cursor:not-allowed'));
       if (!tmpl.is_allowed) {
         card.title = 'Not deployable: ' + (tmpl.reject_reason || 'registry not in allowlist');
       }
       var name = document.createElement('div');
-      name.style.cssText = 'font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:6px';
+      UI.setStyle(name, 'font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:6px');
       var nn = document.createElement('span'); nn.textContent = tmpl.name;
       var badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;font-weight:500;color:white;background:var(--accent);padding:2px 6px;border-radius:3px;letter-spacing:.04em';
+      UI.setStyle(badge, 'font-size:10px;font-weight:500;color:white;background:var(--accent);padding:2px 6px;border-radius:3px;letter-spacing:.04em');
       badge.textContent = 'STACK';
       name.append(nn, badge);
       var imgs = document.createElement('div');
-      imgs.style.cssText = 'font-family:monospace;font-size:11px;color:var(--muted);line-height:1.5';
+      UI.setStyle(imgs, 'font-family:monospace;font-size:11px;color:var(--muted);line-height:1.5');
       imgs.textContent = (tmpl.images || []).join(' · ');
       var d = document.createElement('p');
-      d.style.cssText = 'font-size:12px;color:var(--text);margin:0';
+      UI.setStyle(d, 'font-size:12px;color:var(--text);margin:0');
       d.textContent = tmpl.description;
       var meta = document.createElement('div');
-      meta.style.cssText = 'font-size:11px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap';
+      UI.setStyle(meta, 'font-size:11px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap');
       var svcCount = (tmpl.yaml.match(/^  \w+:$/gm) || []).length;
       if (svcCount) meta.appendChild(UI.el('span', { text: svcCount + ' services' }));
       if ((tmpl.env || []).length) meta.appendChild(UI.el('span', { text: tmpl.env.length + ' env knobs' }));
@@ -173,7 +173,7 @@ async function showTemplates() {
     _render('');
   } catch (e) {
     main.innerHTML = '';
-    var p = document.createElement('p'); p.style.color = 'var(--red)';
+    var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)');
     p.textContent = 'Failed to load templates: ' + e.message;
     main.appendChild(p);
   }

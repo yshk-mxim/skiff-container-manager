@@ -86,8 +86,8 @@ async function undoableDelete(url, kindLabel, refresh) {
     // Kick the progress-bar transition on the next frame so the browser
     // renders the 100% width before animating to 0% over the window.
     requestAnimationFrame(function() {
-      bar.style.transition = 'width ' + windowSecs + 's linear';
-      bar.style.width = '0%';
+      UI.setStyle(bar, 'transition', 'width ' + windowSecs + 's linear');
+      UI.setStyle(bar, 'width', '0%');
     });
     // Tick the countdown text every 500ms.
     var startedAt = Date.now();
@@ -97,7 +97,7 @@ async function undoableDelete(url, kindLabel, refresh) {
       var remainingS = Math.max(0, Math.ceil(remainingMs / 1000));
       if (remainingS <= 0) {
         labelSpan.textContent = t('undo.pending_finalizing', { kind: kindLabel });
-        undoLink.style.display = 'none';
+        UI.setStyle(undoLink, 'display', 'none');
         clearInterval(tick);
       } else {
         labelSpan.textContent = t('undo.pending_label', { kind: kindLabel, seconds: remainingS });
@@ -205,8 +205,8 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
   );
   container.appendChild(toastEl);
   requestAnimationFrame(function() {
-    bar.style.transition = 'width ' + windowSecs + 's linear';
-    bar.style.width = '0%';
+    UI.setStyle(bar, 'transition', 'width ' + windowSecs + 's linear');
+    UI.setStyle(bar, 'width', '0%');
   });
   var startedAt = Date.now();
   var tick = setInterval(function() {
@@ -215,7 +215,7 @@ function renderUndoToast(label, undoToken, windowSecs, refreshFn) {
     var remainingS = Math.max(0, Math.ceil(remainingMs / 1000));
     if (remainingS <= 0) {
       labelSpan.textContent = label + ' firing…';
-      undoLink.style.display = 'none';
+      UI.setStyle(undoLink, 'display', 'none');
       clearInterval(tick);
     } else {
       labelSpan.textContent = label + ' in ' + remainingS + 's — click Undo to cancel';
@@ -404,6 +404,17 @@ function sessionCleanup() {
   if (main) main._ws = null;
   document.querySelectorAll('.modal-bg').forEach(function(m) { m.remove(); });
   _refreshInFlight = false;
+  // Tear down every cached terminal iframe. closeAllWS doesn't touch
+  // these — the WebSockets live inside each iframe's contentWindow,
+  // not in the main document's WS registry. Without this, signing
+  // out (or hitting the 8-hour absolute timeout) leaves N background
+  // WS connections + xterm runtimes alive until the page is closed.
+  if (window._termCache) {
+    Object.keys(window._termCache).forEach(function (id) {
+      try { _termCacheClose(id); } catch (e) { /* ignore */ }
+    });
+  }
+  if (typeof _hideTermHost === 'function') _hideTermHost();
 }
 
 function checkSessionExpiry() {
@@ -524,32 +535,32 @@ function toast(msg, type) {
 function showLogin() {
   var main = document.getElementById('main');
   main.innerHTML = '';
-  var wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:70vh;';
+  var wrap = document.createElement('div'); UI.setStyle(wrap, 'display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:70vh;');
   // Brand
-  var brand = document.createElement('div'); brand.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:32px';
+  var brand = document.createElement('div'); UI.setStyle(brand, 'display:flex;align-items:center;gap:12px;margin-bottom:32px');
   brand.innerHTML = '<svg width="40" height="40" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="6" fill="#0d9488"/><rect x="6" y="6" width="16" height="16" rx="2" stroke="white" stroke-width="1.5" fill="none"/><line x1="6" y1="11" x2="22" y2="11" stroke="white" stroke-width="1.5"/><line x1="6" y1="16" x2="22" y2="16" stroke="white" stroke-width="1.5"/><circle cx="9" cy="8.5" r="1" fill="white"/><circle cx="9" cy="13.5" r="1" fill="white"/><circle cx="9" cy="18.5" r="1" fill="white"/></svg>';
-  var brandName = document.createElement('span'); brandName.textContent = 'SKIFF Container Manager'; brandName.style.cssText = 'font-size:22px;font-weight:700;color:var(--text)';
+  var brandName = document.createElement('span'); brandName.textContent = 'SKIFF Container Manager'; UI.setStyle(brandName, 'font-size:22px;font-weight:700;color:var(--text)');
   brand.appendChild(brandName);
   wrap.appendChild(brand);
-  var box = document.createElement('div'); box.style.cssText = 'width:340px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.07)';
-  var h3 = document.createElement('h3'); h3.textContent = 'Sign in'; h3.style.cssText = 'margin-bottom:4px;font-size:18px'; box.appendChild(h3);
-  var sub = document.createElement('p'); sub.innerHTML = 'Enter the API token you saved during setup.<br><span style="font-size:11px">If you chose &ldquo;Save .env&rdquo;, the token is in that file as <code>API_TOKEN=</code>.</span>'; sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:20px'; box.appendChild(sub);
+  var box = document.createElement('div'); UI.setStyle(box, 'width:340px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.07)');
+  var h3 = document.createElement('h3'); h3.textContent = 'Sign in'; UI.setStyle(h3, 'margin-bottom:4px;font-size:18px'); box.appendChild(h3);
+  var sub = document.createElement('p'); sub.innerHTML = 'Enter the API token you saved during setup.<br><span style="font-size:11px">If you chose &ldquo;Save .env&rdquo;, the token is in that file as <code>API_TOKEN=</code>.</span>'; UI.setStyle(sub, 'font-size:12px;color:var(--muted);margin-bottom:20px'); box.appendChild(sub);
   // WCAG 2.1 AA (Principle 1.3.1 F68, Principle 4.1.2 H91): the
   // password input needs a programmatically-associated label.
   // Setting `htmlFor` on the label + matching `id` on the input
   // ties them for assistive tech; `aria-label` on the input itself
   // is a belt-and-braces backup that survives any future refactor
   // that drops the DOM sibling order.
-  var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.htmlFor = 'login-token'; lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'; box.appendChild(lbl);
+  var lbl = document.createElement('label'); lbl.textContent = 'API Token'; lbl.htmlFor = 'login-token'; UI.setStyle(lbl, 'font-size:12px;font-weight:500;color:var(--muted);display:block;margin-bottom:6px'); box.appendChild(lbl);
   var inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'Paste your API token';
   inp.id = 'login-token';
   inp.setAttribute('aria-label', 'API Token');
   inp.setAttribute('autocomplete', 'current-password');
-  inp.style.cssText = 'width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--card);color:var(--text)';
+  UI.setStyle(inp, 'width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--card);color:var(--text)');
   box.appendChild(inp);
-  var btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Sign in'; btn.style.cssText = 'margin-top:16px;width:100%;padding:10px;font-size:14px';
+  var btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Sign in'; UI.setStyle(btn, 'margin-top:16px;width:100%;padding:10px;font-size:14px');
   btn.onclick = function() {
-    if (!inp.value.trim()) { inp.style.borderColor = 'var(--red)'; return; }
+    if (!inp.value.trim()) { UI.setStyle(inp, 'borderColor', 'var(--red)'); return; }
     setToken(inp.value.trim());
     // The init IIFE exits early when there's no token at page-load time, so
     // /api/config (which populates _appDockerHost for the unreachable-Docker
@@ -576,7 +587,7 @@ function showLogin() {
     }).catch(function() {}).finally(function() { showPage('containers'); });
   };
   inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') btn.click(); });
-  inp.addEventListener('input', function() { inp.style.borderColor=''; });
+  inp.addEventListener('input', function() { UI.setStyle(inp, 'borderColor', ''); });
   box.appendChild(btn);
   wrap.appendChild(box);
   main.appendChild(wrap);
@@ -712,6 +723,12 @@ function showPage(page) {
   }
   clearAllIntervals();
   closeDetailWS();
+  // Hide the body-level terminal overlay so it doesn't paint over the
+  // new page. The iframe stays mounted in `#_term-host` (separate from
+  // #main), so its contentWindow + WS + scrollback survive the
+  // navigation. Returning to a container's Terminal tab will
+  // reattach the same session.
+  _hideTermHost();
   currentPage = page;
   window.currentPage = page;
   // Remember the last-viewed page so a reload keeps the user where
@@ -824,39 +841,39 @@ function _renderStartDockerHelper(parent) {
   var showLinux = !isMac || !navigator.platform;
 
   var card = document.createElement('div');
-  card.style.cssText = 'margin-top:20px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:640px;text-align:left';
+  UI.setStyle(card, 'margin-top:20px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:640px;text-align:left');
 
   var h4 = document.createElement('p');
-  h4.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em';
+  UI.setStyle(h4, 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em');
   h4.textContent = 'First time? Start your container runtime';
   card.appendChild(h4);
 
   var intro = document.createElement('p');
-  intro.style.cssText = 'font-size:13px;color:var(--text);margin-bottom:14px;line-height:1.5';
+  UI.setStyle(intro, 'font-size:13px;color:var(--text);margin-bottom:14px;line-height:1.5');
   intro.textContent = 'Pick the runtime you have installed (or install one), then click Copy and paste the command in a terminal. No admin rights needed for the recommended options.';
   card.appendChild(intro);
 
   function addRuntime(name, descr, cmd, tag) {
     var row = document.createElement('div');
-    row.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--border-subtle)';
+    UI.setStyle(row, 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--border-subtle)');
     var head = document.createElement('div');
-    head.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:4px;';
+    UI.setStyle(head, 'display:flex;align-items:center;gap:8px;margin-bottom:4px;');
     var nameEl = document.createElement('strong');
-    nameEl.style.cssText = 'font-size:13px;color:var(--text-strong)';
+    UI.setStyle(nameEl, 'font-size:13px;color:var(--text-strong)');
     nameEl.textContent = name;
     head.appendChild(nameEl);
     if (tag) {
       var tagEl = document.createElement('span');
-      tagEl.style.cssText = 'font-size:10px;padding:1px 8px;border-radius:10px;background:' +
+      UI.setStyle(tagEl, 'font-size:10px;padding:1px 8px;border-radius:10px;background:' +
         (tag === 'recommended' ? 'var(--badge-running-bg);color:var(--badge-running-fg)' :
          tag === 'sudo' ? 'var(--badge-stopped-bg);color:var(--badge-stopped-fg)' :
-         'var(--border);color:var(--muted)');
+         'var(--border);color:var(--muted)'));
       tagEl.textContent = tag;
       head.appendChild(tagEl);
     }
     row.appendChild(head);
     var descrEl = document.createElement('div');
-    descrEl.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:6px';
+    UI.setStyle(descrEl, 'font-size:12px;color:var(--muted);margin-bottom:6px');
     descrEl.textContent = descr;
     row.appendChild(descrEl);
     row.appendChild(_makeCopyableCommand(cmd));
@@ -907,7 +924,7 @@ function _renderStartDockerHelper(parent) {
   );
 
   var note = document.createElement('p');
-  note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5';
+  UI.setStyle(note, 'font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5');
   note.textContent = 'After starting the runtime, reload this page. If you already used one of these and it\'s running, check that DOCKER_HOST points at its socket (see the "Common values" hint in the setup wizard).';
   card.appendChild(note);
 
@@ -928,7 +945,7 @@ function _renderUnreachableDocker(main) {
   h3.textContent = 'Cannot reach Docker engine';
   errDiv.appendChild(h3);
   var p = document.createElement('p');
-  p.style.cssText = 'margin-top:8px;max-width:480px';
+  UI.setStyle(p, 'margin-top:8px;max-width:480px');
   var isTunnelSocket = _appDockerHost && /^unix:\/\/.*(skiff|tunnel)/i.test(_appDockerHost);
   if (!isTunnelSocket) {
     p.textContent = 'Your container runtime isn\'t responding at ' + (_appDockerHost || 'the configured socket') + '. Start it and reload this page.';
@@ -948,30 +965,30 @@ function _renderUnreachableDocker(main) {
     h.textContent = 'Cannot reach Docker engine';
     errDiv.appendChild(h);
     var desc = document.createElement('p');
-    desc.style.cssText = 'margin-top:8px;max-width:480px';
+    UI.setStyle(desc, 'margin-top:8px;max-width:480px');
     if (st.managed) {
       desc.textContent = 'The managed SSH tunnel to your Docker host dropped. Reconnect to restore the link — SKIFF will reuse the SSH target it stored during setup.';
       errDiv.appendChild(desc);
       var btnWrap = document.createElement('div');
-      btnWrap.style.cssText = 'margin-top:16px;display:flex;gap:10px;align-items:center;';
+      UI.setStyle(btnWrap, 'margin-top:16px;display:flex;gap:10px;align-items:center;');
       var btn = document.createElement('button');
       btn.className = 'btn primary';
       btn.textContent = 'Reconnect tunnel';
       var status = document.createElement('span');
-      status.style.cssText = 'font-size:12px;color:var(--muted);';
+      UI.setStyle(status, 'font-size:12px;color:var(--muted);');
       btn.addEventListener('click', function() {
         btn.disabled = true;
         var original = btn.textContent;
         btn.textContent = 'Reconnecting\u2026';
         status.textContent = '';
         apiFetch(API + '/tunnel/reconnect', { method: 'POST' }).then(function() {
-          status.style.color = 'var(--green, #22c55e)';
+          UI.setStyle(status, 'color', 'var(--green, #22c55e)');
           status.textContent = '\u2713 Tunnel re-opened';
           setTimeout(function() { loadContainers(); }, 500);
         }).catch(function(err) {
           btn.disabled = false;
           btn.textContent = original;
-          status.style.color = 'var(--red, #f87171)';
+          UI.setStyle(status, 'color', 'var(--red, #f87171)');
           // err.message is already the server's classified message; err.detail may carry help
           var help = (err && err.detail && err.detail.help) ? ' \u2014 ' + err.detail.help : '';
           status.textContent = '\u2717 ' + (err.message || 'Reconnect failed') + help;
@@ -993,7 +1010,7 @@ function _renderUnreachableDocker(main) {
     h.textContent = 'Cannot reach Docker engine';
     errDiv.appendChild(h);
     var d = document.createElement('p');
-    d.style.cssText = 'margin-top:8px;max-width:480px';
+    UI.setStyle(d, 'margin-top:8px;max-width:480px');
     d.textContent = 'Could not query tunnel status. Try reloading the page.';
     errDiv.appendChild(d);
   });
@@ -1139,7 +1156,7 @@ function renderContainers(containers) {
   if (filtered.length === 0) {
     var empty = document.createElement('div'); empty.className = 'empty-state';
     empty.innerHTML = containers.length === 0 ? '<h3>No containers</h3><p style="margin-top:8px">No containers found on the connected Docker engine.</p>' : '<h3>No matches</h3><p>No containers match your search.</p>';
-    if (containers.length === 0) { var runBtn = makeBtn('Run new container', function() { showRunModal(); }, 'btn primary'); runBtn.style.marginTop = '16px'; empty.appendChild(runBtn); }
+    if (containers.length === 0) { var runBtn = makeBtn('Run new container', function() { showRunModal(); }, 'btn primary'); UI.setStyle(runBtn, 'marginTop', '16px'); empty.appendChild(runBtn); }
     main.appendChild(empty); return;
   }
 
@@ -1158,8 +1175,8 @@ function renderContainers(containers) {
     if (!_bulkSelected.size) return;
     var bar = document.createElement('div');
     bar.className = 'bulk-bar';
-    bar.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-    var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:13px;font-weight:500';
+    UI.setStyle(bar, 'background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap');
+    var lbl = document.createElement('span'); UI.setStyle(lbl, 'font-size:13px;font-weight:500');
     lbl.textContent = _bulkSelected.size + ' selected';
     bar.appendChild(lbl);
     // Capture each per-item rejection with its server envelope message, then
@@ -1224,7 +1241,7 @@ function renderContainers(containers) {
   var headerRow = document.createElement('tr');
   // Header checkbox — toggles select-all among visible rows.
   var thChk = document.createElement('th');
-  thChk.style.cssText = 'width:24px';
+  UI.setStyle(thChk, 'width:24px');
   var headerChk = document.createElement('input');
   headerChk.type = 'checkbox';
   headerChk.setAttribute('aria-label', 'Select all containers');
@@ -1235,7 +1252,7 @@ function renderContainers(containers) {
     var th = document.createElement('th');
     th.textContent = col[0];
     if (col[1]) {
-      th.style.cursor = 'pointer';
+      UI.setStyle(th, 'cursor', 'pointer');
       if (_containerSort === col[1]) th.textContent += _containerSortDir === 1 ? ' \u25B2' : ' \u25BC';
       th.onclick = function() {
         if (_containerSort === col[1]) _containerSortDir *= -1;
@@ -1305,8 +1322,8 @@ function renderContainers(containers) {
           undoableDelete(API + '/containers/' + c.id, c.name, loadContainers);
         });
     }, 'danger');
-    menu.style.left = Math.min(ev.clientX, window.innerWidth - 180) + 'px';
-    menu.style.top = Math.min(ev.clientY, window.innerHeight - 200) + 'px';
+    UI.setStyle(menu, 'left', Math.min(ev.clientX, window.innerWidth - 180) + 'px');
+    UI.setStyle(menu, 'top', Math.min(ev.clientY, window.innerHeight - 200) + 'px');
     document.body.appendChild(menu);
     function _off(e) {
       if (menu.contains(e.target)) return;
@@ -1330,7 +1347,7 @@ function renderContainers(containers) {
   filtered.forEach(function(c) {
     var tr = document.createElement('tr');
     tr.oncontextmenu = function(ev) { _showCtxMenu(ev, c); };
-    var tdChk = document.createElement('td'); tdChk.style.cssText = 'width:24px';
+    var tdChk = document.createElement('td'); UI.setStyle(tdChk, 'width:24px');
     var rowChk = document.createElement('input');
     rowChk.type = 'checkbox';
     rowChk.setAttribute('aria-label', 'Select ' + c.name);
@@ -1346,7 +1363,7 @@ function renderContainers(containers) {
     var nd = document.createElement('div'); nd.className = 'container-name'; nd.textContent = c.name;
     var id = document.createElement('div'); id.className = 'container-id'; id.textContent = c.id;
     tdName.append(nd, id);
-    var tdImage = document.createElement('td'); tdImage.style.cssText = 'font-size:12px;color:var(--muted)'; tdImage.textContent = c.image;
+    var tdImage = document.createElement('td'); UI.setStyle(tdImage, 'font-size:12px;color:var(--muted)'); tdImage.textContent = c.image;
     var tdStatus = document.createElement('td');
     var ss = document.createElement('span'); ss.className = 'status ' + c.state; ss.textContent = c.status;
     tdStatus.appendChild(ss);
@@ -1366,10 +1383,10 @@ function renderContainers(containers) {
           a.rel = 'noopener';
           tdPorts.appendChild(a);
         } else {
-          var s = document.createElement('span'); s.style.cssText = 'font-size:12px;color:var(--muted)'; s.textContent = ps; tdPorts.appendChild(s);
+          var s = document.createElement('span'); UI.setStyle(s, 'font-size:12px;color:var(--muted)'); s.textContent = ps; tdPorts.appendChild(s);
         }
       });
-    } else { tdPorts.textContent = '\u2014'; tdPorts.style.color = 'var(--muted)'; }
+    } else { tdPorts.textContent = '\u2014'; UI.setStyle(tdPorts, 'color', 'var(--muted)'); }
     var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(c.created);
     var tdActions = document.createElement('td');
     var bg = document.createElement('div'); bg.className = 'btn-group';
@@ -1457,18 +1474,20 @@ function showDetail(id, name, tab) {
   clearAllIntervals();
   var main = document.getElementById('main');
   // `main._ws` holds the CURRENT tab's WS. For logs we always close
-  // on tab-switch (a fresh tail starts on re-entry). For the terminal
-  // we DON'T close — the session is cached via `_termCache[id]` and
-  // must survive tab switches so the user's shell + scrollback stay.
-  // Detect the case by checking cache membership before closing.
+  // on tab-switch (a fresh tail starts on re-entry). The terminal WS
+  // now lives inside the iframe's window — stashing the iframe in
+  // body (below) keeps it attached so its WS doesn't die.
   if (main._ws) {
-    var keepAlive = window._termCache && window._termCache[id] &&
-                    window._termCache[id].ws === main._ws;
-    if (!keepAlive) {
-      try { main._ws.close(); } catch(e) {}
-    }
+    try { main._ws.close(); } catch(e) {}
     main._ws = null;
   }
+  // Hide the body-level terminal overlay before wiping #main so it
+  // doesn't paint over the new tab's content. The iframe itself lives
+  // in `#_term-host` (not in main), so the wipe doesn't touch it —
+  // its contentWindow, WebSocket, and xterm scrollback survive.
+  // If the new tab is Terminal again, showShellContent re-shows the
+  // overlay and reattaches to the new slot.
+  _hideTermHost();
   main.innerHTML = '';
   var header = document.createElement('div'); header.className = 'page-header';
   var h2 = document.createElement('h2'); h2.textContent = name;
@@ -1633,227 +1652,267 @@ function _surfaceWsLockout(evt) {
   });
 }
 
-// ── Terminal ──
+// ── Terminal (iframe-sandboxed xterm.js) ──
 //
-// Uses xterm.js (vendored under /static/xterm/) as the PTY renderer.
-// Pre-xterm the terminal was a `<input>` + scrolling `<div>` — that
-// limped through line-based commands but couldn't render ANSI colours,
-// readline sequences (arrow-key history, Ctrl-A/E/K/W), Tab completion,
-// or any TUI program (vim, htop, less). xterm.js is the de-facto web-
-// terminal — VS Code's integrated terminal and GitHub Codespaces use it,
-// as do other browser-based exec surfaces. The SKIFF server already
-// emits PTY-raw bytes over the WS; xterm.js just needs to render them.
-var MAX_EXEC_RECONNECTS = 5;
-// Per-container terminal-session cache. Users regularly switch between
-// Terminal → Logs → Inspect → Terminal and expect their shell + scroll
-// buffer to survive. The previous implementation blew the session away
-// on every tab switch because showDetail() does `main.innerHTML = ''`.
-// We now park the xterm DOM + WS under this cache when leaving Terminal
-// and reattach on re-entry.
+// xterm.js writes inline element.style assignments during render — a
+// pattern the SPA's strict `style-src 'self'` (no 'unsafe-inline')
+// CSP would otherwise block. To keep the rest of the SPA under the
+// strict policy without losing the terminal, xterm is confined to a
+// same-origin iframe served by `GET /api/terminal-frame/{id}`. That
+// route ships its own route-scoped CSP that DOES allow 'unsafe-inline'
+// for style-src; the relaxation never bleeds into the parent document.
+//
+// All terminal behaviour (xterm.Terminal, FitAddon, WS reconnect,
+// resize, keystroke wiring) lives in `/static/terminal-frame.js` and
+// runs inside the iframe's window. The parent just embeds the iframe
+// and exchanges intent via postMessage:
+//
+//   parent ← iframe : { type: 'terminal-ready' }
+//                     { type: 'terminal-disconnected', code, reason }
+//                     { type: 'terminal-session-expired' }
+//                     { type: 'terminal-error', message }
+//   iframe ← parent : { type: 'focus' }
+//                     { type: 'disconnect' }
+//
+// Origin checks: the iframe only honours messages from window.parent
+// at window.location.origin; the parent only handles messages whose
+// `event.origin` equals `window.location.origin`. The route also pins
+// `frame-ancestors 'self'` so the page cannot be embedded cross-site.
+//
+// Per-container session cache: the iframe element is held in
+// `_termCache[id]` so Terminal → Logs → Terminal preserves the live
+// session. The iframe is detached/re-attached rather than re-created;
+// in browsers that re-load on re-attach, terminal-frame.js's
+// reconnect-on-close path picks the session back up.
 if (!window._termCache) window._termCache = {};
-function _termCacheEntry(id) { return window._termCache[id] || null; }
-function _termCacheClose(id) {
-  // Hard-close: drop the cached session (called when user clicks
-  // Disconnect or navigates fully back to the list).
-  var c = window._termCache[id];
-  if (!c) return;
-  try { if (c.ws) c.ws.close(1000, 'session closed'); } catch (e) {}
-  try { if (c.term) c.term.dispose(); } catch (e) {}
-  delete window._termCache[id];
-}
-function showShellContent(id) {
-  var el = document.getElementById('detail-content'); el.innerHTML = '';
-  // Reattach a cached terminal if this container already has a live
-  // session from an earlier tab visit. The WS stays open across tab
-  // switches; only Disconnect or leaving the detail view closes it.
-  var cached = _termCacheEntry(id);
-  if (cached && cached.termWrap && cached.ws && cached.ws.readyState === 1) {
-    el.appendChild(cached.termWrap);
-    if (cached.fit) { try { cached.fit.fit(); } catch (e) {} }
-    if (cached.term) { try { cached.term.focus(); } catch (e) {} }
-    // Re-add the disconnect button (lives outside termWrap).
-    var reDisc = makeBtn('Disconnect', function() {
-      _termCacheClose(id);
-      if (cached.term) cached.term.write('\r\n[Disconnected]\r\n');
-    }, 'btn small danger');
-    reDisc.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2';
-    el.style.position = 'relative';
-    el.appendChild(reDisc);
-    return;
-  }
-  // Container retains id="term-output" for test compat — many e2e
-  // assertions look up the terminal by this id. The DOM class is
-  // .terminal so the dark background + padding from styles.css still
-  // applies while xterm.js paints its own cells on top.
-  var termWrap = document.createElement('div');
-  termWrap.className = 'terminal';
-  termWrap.id = 'term-output';
-  termWrap.style.padding = '0';  // xterm.js supplies its own padding
-  el.append(termWrap);
-  el.style.position = 'relative';
-  var _execClosed = false;
-  var term = null;
-  if (window.Terminal) {
-    term = new window.Terminal({
-      cursorBlink: true,
-      fontFamily: '"DejaVu Sans Mono","Liberation Mono","Noto Sans Mono","Courier New",monospace',
-      fontSize: 13,
-      theme: {
-        background: '#0d1117',
-        foreground: '#e6edf3',
-        cursor: '#e6edf3',
-      },
-      scrollback: 10000,
-      convertEol: true,  // shells emit \n; without this long output lacks \r
-    });
-    var fit = null;
-    if (window.FitAddon && window.FitAddon.FitAddon) {
-      fit = new window.FitAddon.FitAddon();
-      term.loadAddon(fit);
-    }
-    term.open(termWrap);
-    if (fit) { try { fit.fit(); } catch (e) {} }
-    // Exposed so the disconnect handler + resize logic in connectExecWS
-    // can reach the live Terminal / FitAddon instances.
-    termWrap._term = term;
-    termWrap._fit = fit;
-  } else {
-    // Fallback: xterm.js script didn't load. Fall back to the legacy
-    // div+input shape so the UI still works in degraded form.
-    termWrap.className = 'terminal';
-    var input = document.createElement('input');
-    input.className = 'terminal-input';
-    input.placeholder = 'Type command... (xterm.js failed to load — degraded mode)';
-    el.appendChild(input);
-    termWrap._legacyInput = input;
-  }
-  var disconnectBtn = makeBtn('Disconnect', function() {
-    _execClosed = true;
-    _termCacheClose(id);
-    if (term) { term.write('\r\n[Disconnected]\r\n'); }
-    else if (termWrap._legacyInput) { termWrap.textContent += '\r\n[Disconnected]'; }
-  }, 'btn small danger');
-  disconnectBtn.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2';
-  el.appendChild(disconnectBtn);
-  connectExecWS(id, 0, termWrap, term, el, function() { return _execClosed; }, function(v) { _execClosed = v; });
-  // Cache the session so Terminal → Logs → Terminal re-mounts the same
-  // xterm with the same WS and scrollback. Populated AFTER the WS is
-  // constructed inside connectExecWS (where `main._ws` is set); we store
-  // a reference to the wrap here and the WS will be picked up by the
-  // cache-lookup branch on re-entry via `cached.ws`.
-  var _bindCache = function() {
-    var ws = document.getElementById('main') && document.getElementById('main')._ws;
-    window._termCache[id] = { termWrap: termWrap, ws: ws, term: term, fit: termWrap._fit };
-  };
-  // connectExecWS kicks async WS construction; register the cache after
-  // a microtask so `main._ws` is populated.
-  setTimeout(_bindCache, 0);
-  if (term) term.focus(); else if (termWrap._legacyInput) termWrap._legacyInput.focus();
+
+// Stable parent for terminal iframes. Lives at <body> level, so tab
+// switches that wipe `#main` never touch it. Moving an <iframe>
+// element between parents via appendChild destroys its contentWindow
+// (and therefore its WebSocket + xterm scrollback); `Node.moveBefore`
+// would preserve it, but as of 2026 Safari doesn't ship moveBefore.
+// We sidestep the move entirely: the iframe lives in `#_term-host`
+// for its whole lifetime, and we use CSS positioning to overlay it
+// onto the `.terminal-slot` placeholder that showShellContent paints
+// inside the detail content area.
+function _ensureTermHost() {
+  var host = document.getElementById('_term-host');
+  if (host) return host;
+  host = document.createElement('div');
+  host.id = '_term-host';
+  // Positioned out of flow at body level. Coordinates are recomputed
+  // from the active slot's getBoundingClientRect; scroll listeners
+  // keep the overlay glued to the slot as the page moves.
+  UI.setStyle(host, 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:auto;');
+  // Hidden until showShellContent activates a specific container.
+  UI.setStyle(host, 'display', 'none');
+  document.body.appendChild(host);
+  return host;
 }
 
-/**
- * Open an interactive exec WebSocket and wire it to an xterm.js
- * Terminal (or the legacy input-fallback when xterm.js failed to
- * load). Reconnects on unexpected close up to MAX_EXEC_RECONNECTS.
- * @param {string} id - Container short ID
- * @param {number} attempt - Current reconnect attempt count
- * @param {HTMLElement} termWrap - Div hosting the Terminal (has id="term-output")
- * @param {Terminal|null} term - xterm.js Terminal instance, or null (legacy mode)
- * @param {HTMLElement} el - Wrapping container (used to mount error buttons)
- * @param {Function} isClosed - Returns true if the user disconnected
- * @param {Function} setClosed - Call to mark the session closed
- */
-function connectExecWS(id, attempt, termWrap, term, el, isClosed, setClosed) {
-  if (isClosed()) return;
-  // Shorthand: write a status line to the terminal in either xterm or
-  // legacy-fallback mode without branching at every call site.
-  function writeStatus(msg) {
-    if (term) { term.write('\r\n' + msg + '\r\n'); }
-    else { termWrap.textContent += '\r\n' + msg; }
-  }
-  if (attempt >= MAX_EXEC_RECONNECTS) {
-    writeStatus('[Max reconnect attempts reached]');
-    var btn = makeBtn('Reconnect shell', function() {
-      setClosed(false);
-      connectExecWS(id, 0, termWrap, term, el, isClosed, setClosed);
-    }, 'btn primary');
-    btn.style.marginTop = '8px';
-    el.appendChild(btn);
-    return;
-  }
-  var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
-  var prevWs = document.getElementById('main') && document.getElementById('main')._ws;
-  if (prevWs && prevWs.readyState < WebSocket.CLOSING) {
-    try { prevWs.close(1000, 'reconnecting'); } catch(e) {}
-  }
-  var ws = registerWS(new WebSocket(wsUrl('/ws/exec/' + id)));
-  document.getElementById('main')._ws = ws;
-  // Resize: xterm.js + FitAddon computes the exact cols/rows that fit
-  // the current container size. The server honours the
-  // {"type":"resize","cols":N,"rows":M} frame via exec_resize; without
-  // it the shell stays pinned at 80×24 and TUI apps (vim, htop, less)
-  // wrap badly. Legacy fallback keeps the old pixel-estimate shape.
-  function _sendTerminalResize() {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    var cols, rows;
-    if (term && termWrap._fit) {
-      try { termWrap._fit.fit(); } catch (e) {}
-      cols = term.cols;
-      rows = term.rows;
-    } else {
-      var rect = termWrap.getBoundingClientRect();
-      cols = Math.max(20, Math.floor((rect.width || 640) / 8));
-      rows = Math.max(6, Math.floor((rect.height || 400) / 16));
-    }
-    try { ws.send(JSON.stringify({type: 'resize', cols: cols, rows: rows})); } catch (e) {}
-  }
-  var _resizeTimer = null;
-  function _onWindowResize() {
-    if (_resizeTimer) clearTimeout(_resizeTimer);
-    _resizeTimer = setTimeout(_sendTerminalResize, 150);
-  }
-  window.addEventListener('resize', _onWindowResize);
-  ws.addEventListener('close', function() { window.removeEventListener('resize', _onWindowResize); });
-  ws.onopen = function() {
-    wsAuthOnOpen(ws);
-    if (attempt > 0) { writeStatus('[Reconnected]'); }
-    setTimeout(_sendTerminalResize, 100);
-  };
-  ws.onmessage = function(e) {
-    if (isClosed()) return;
-    if (term) { term.write(e.data); }
-    else { termWrap.textContent += e.data; termWrap.scrollTop = termWrap.scrollHeight; }
-  };
-  ws.onerror = function() { writeStatus('[Connection error]'); };
-  ws.onclose = function(evt) {
-    if (isClosed()) { writeStatus('[Session ended]'); return; }
-    if (evt.code === 1000) return;
-    if (evt.code === 4003) {
-      _surfaceWsLockout(evt);
-      writeStatus('[Session expired — please log in again]');
-      toast('Session expired — please log in again', 'error');
-      return;
-    }
-    if (document.getElementById('term-output')) {
-      writeStatus('[Reconnecting in ' + (delay / 1000) + 's...]');
-      setTimeout(function() { connectExecWS(id, attempt + 1, termWrap, term, el, isClosed, setClosed); }, delay);
-    }
-  };
-  // Keystroke wiring: xterm.js emits raw PTY bytes (arrow keys as ANSI
-  // escapes, Ctrl-C as \x03, Tab as \t, readline chords — all handled
-  // by the shell, not us). Legacy fallback ships line-at-a-time on Enter.
-  if (term) {
-    term.onData(function(data) {
-      if (ws.readyState === WebSocket.OPEN) { try { ws.send(data); } catch(e) {} }
-    });
-  } else if (termWrap._legacyInput) {
-    termWrap._legacyInput.onkeydown = function(e) {
-      if (e.key === 'Enter') {
-        if (ws.readyState === WebSocket.OPEN) { ws.send(termWrap._legacyInput.value + '\n'); }
-        termWrap._legacyInput.value = '';
+// Reposition `#_term-host` to overlay `slot` exactly. Doc-relative
+// coords (left + window.scrollX, top + window.scrollY) so the host
+// scrolls with the page even though it lives at body level. Called
+// on initial mount and on every resize / scroll event while the
+// terminal is active.
+function _positionTermHost(slot) {
+  var host = _ensureTermHost();
+  if (!slot || !slot.isConnected) return;
+  var r = slot.getBoundingClientRect();
+  UI.setStyle(host, 'top', (r.top + window.scrollY) + 'px');
+  UI.setStyle(host, 'left', (r.left + window.scrollX) + 'px');
+  UI.setStyle(host, 'width', r.width + 'px');
+  UI.setStyle(host, 'height', r.height + 'px');
+}
+
+// Tracker for the current slot + observers, so we can swap targets
+// when the user moves between containers' Terminal tabs.
+window._termActive = window._termActive || { slot: null, ro: null, scrollHandler: null, resizeHandler: null };
+
+function _attachTermToSlot(slot, id) {
+  var host = _ensureTermHost();
+  UI.setStyle(host, 'display', 'block');
+  // Show the requested container's iframe; hide all others.
+  if (window._termCache) {
+    Object.keys(window._termCache).forEach(function (otherId) {
+      var entry = window._termCache[otherId];
+      if (!entry || !entry.iframe) return;
+      UI.setStyle(entry.iframe, 'display', otherId === id ? 'block' : 'none');
+      // Sized to fill the host. Set on every attach because the host
+      // dimensions are recomputed from the slot.
+      if (otherId === id) {
+        UI.setStyle(entry.iframe, 'width:100%;height:100%;border:0;display:block;');
       }
-    };
+    });
   }
+  // Position now, and re-position on the events that can move the slot.
+  _positionTermHost(slot);
+  // Tear down any prior listeners — we only track ONE slot at a time.
+  _detachTermSlotListeners();
+  function reposition() { _positionTermHost(slot); }
+  window._termActive.slot = slot;
+  window._termActive.resizeHandler = reposition;
+  window._termActive.scrollHandler = reposition;
+  window.addEventListener('resize', reposition);
+  window.addEventListener('scroll', reposition, true);  // capture: catch
+                                                        // scroll on inner
+                                                        // scrollable
+                                                        // ancestors too
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(reposition);
+    ro.observe(slot);
+    ro.observe(document.documentElement);
+    window._termActive.ro = ro;
+  }
+}
+
+function _detachTermSlotListeners() {
+  var a = window._termActive;
+  if (!a) return;
+  if (a.resizeHandler) window.removeEventListener('resize', a.resizeHandler);
+  if (a.scrollHandler) window.removeEventListener('scroll', a.scrollHandler, true);
+  if (a.ro) { try { a.ro.disconnect(); } catch (e) { /* ignore */ } }
+  a.slot = null;
+  a.ro = null;
+  a.resizeHandler = null;
+  a.scrollHandler = null;
+}
+
+// Called from any flow that leaves the Terminal-active state (showDetail
+// to a non-terminal tab, showPage navigating away, sign-out). Hides
+// the host overlay but DOES NOT touch the cached iframes — they keep
+// their contentWindow (and WS + scrollback) alive so a return visit
+// reattaches the same session.
+function _hideTermHost() {
+  var host = document.getElementById('_term-host');
+  if (host) UI.setStyle(host, 'display', 'none');
+  _detachTermSlotListeners();
+}
+
+function _termCacheClose(id) {
+  // Hard-close: drop the cached iframe entirely (called when user
+  // clicks Disconnect or navigates back to the container list).
+  var c = window._termCache[id];
+  if (!c) return;
+  if (c.iframe) {
+    // Politely tell the iframe to close its WS before we detach.
+    try {
+      c.iframe.contentWindow.postMessage(
+        { type: 'disconnect' },
+        window.location.origin,
+      );
+    } catch (e) { /* iframe may have already navigated away */ }
+    if (c.iframe.parentNode) {
+      try { c.iframe.parentNode.removeChild(c.iframe); } catch (e) { /* ignore */ }
+    }
+  }
+  delete window._termCache[id];
+}
+
+function showShellContent(id) {
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '';
+  UI.setStyle(el, 'position', 'relative');
+
+  // Plant the slot — a 380px-tall placeholder div that reserves layout
+  // space for the terminal overlay. The slot lives inside detail-content
+  // (and gets wiped along with everything else on tab switch); the
+  // iframe overlay itself lives in `#_term-host` at body level so it
+  // survives tab switches without DOM moves (Safari has no
+  // Node.moveBefore yet, and plain appendChild destroys the iframe's
+  // contentWindow). Slot id="term-output" is preserved so existing
+  // selectors keep working.
+  var slot = document.createElement('div');
+  slot.id = 'term-output';
+  slot.className = 'terminal terminal-slot';
+  el.appendChild(slot);
+
+  // First-time mount: create the iframe inside the stable host so it
+  // can be reused across every subsequent showShellContent call for
+  // this container.
+  var cached = window._termCache[id];
+  if (!cached || !cached.iframe) {
+    var host = _ensureTermHost();
+    var iframe = document.createElement('iframe');
+    iframe.src = '/api/terminal-frame/' + encodeURIComponent(id);
+    iframe.title = 'Container shell';
+    // No class — sizing is set on the host via _attachTermToSlot. The
+    // old `.terminal-iframe` rule pins a 380px height which now lives
+    // on the slot (the layout-space owner) instead.
+    // Restrictive sandbox: allow-scripts for xterm.js, allow-same-origin
+    // for sessionStorage AUTH + same-origin WS to /ws/exec/. Nothing
+    // else — no popups, no top-nav, no form submission.
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    host.appendChild(iframe);
+    cached = { iframe: iframe };
+    window._termCache[id] = cached;
+  }
+
+  // Overlay the host on the slot and start tracking layout changes.
+  _attachTermToSlot(slot, id);
+
+  // Disconnect button lives INSIDE `#_term-host`, on top of the iframe.
+  // Putting it in detail-content would stack it under the body-level
+  // overlay (different stacking contexts; document-order siblings stack
+  // later siblings on top), so the button would be invisible.
+  // Inside the host, both share the same context and z-index:3 keeps it
+  // above the iframe. Recreated per `showShellContent` call so the
+  // closure captures the right container id; the host is cleared of
+  // any previous detached button below before re-mount.
+  var host = _ensureTermHost();
+  // Remove any previous Disconnect button (one per active container);
+  // keep only the iframe(s) themselves.
+  Array.prototype.slice.call(host.querySelectorAll('button.btn')).forEach(function (b) {
+    if (b.parentNode === host) host.removeChild(b);
+  });
+  var disconnectBtn = makeBtn('Disconnect', function() {
+    _termCacheClose(id);
+  }, 'btn small danger');
+  UI.setStyle(disconnectBtn, 'position:absolute;top:8px;right:8px;z-index:3');
+  host.appendChild(disconnectBtn);
+
+  // Single message listener per parent. Tracked on window so re-entry
+  // doesn't stack duplicates that double-handle every event.
+  if (!window._termFrameListenerInstalled) {
+    window._termFrameListenerInstalled = true;
+    window.addEventListener('message', _onTerminalFrameMessage);
+  }
+
+  // Defer focus so the iframe has time to attach its own message
+  // listener before we send the focus command.
+  setTimeout(function () {
+    try {
+      cached.iframe.contentWindow.postMessage(
+        { type: 'focus' },
+        window.location.origin,
+      );
+    } catch (e) { /* iframe still loading — terminal-frame.js focuses
+                     itself on init anyway, so this is best-effort */ }
+  }, 200);
+}
+
+function _onTerminalFrameMessage(e) {
+  // Origin pin: only honour messages from the same origin (the iframe).
+  // A cross-origin embedder would post an `origin` of "null" or its own
+  // host; rejecting those is the parent half of the protocol.
+  if (e.origin !== window.location.origin) return;
+  var data = e.data || {};
+  if (data.type === 'terminal-session-expired') {
+    // Reuse the existing session-expiry surface so the user sees the
+    // same banner + toast they'd see for an API call that 401s.
+    toast('Session expired — please log in again', 'error');
+    if (typeof _surfaceWsLockout === 'function') {
+      _surfaceWsLockout({ code: 4003, reason: 'session-expired' });
+    }
+  } else if (data.type === 'terminal-error') {
+    // Most terminal-error events are transient WS hiccups that the
+    // iframe's own reconnect handles. Log to console for debug; only
+    // surface a toast when the iframe declared a fatal failure.
+    try { console.warn('terminal-frame:', data.message); } catch (err) { /* ignore */ }
+  }
+  // 'terminal-ready' and 'terminal-disconnected' are informational —
+  // the iframe shows its own status banner inside the frame, so the
+  // parent doesn't need to surface them.
 }
 
 // ── Inspect ──
@@ -1889,8 +1948,8 @@ async function showInspectContent(id) {
       panel.appendChild(UI.kvSection(title, entries));
     }
     // Rename + Clone row
-    var actionRow = document.createElement('div'); actionRow.style.cssText = 'margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-    var renameInp = document.createElement('input'); renameInp.value = d.name; renameInp.style.cssText = 'padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;width:200px';
+    var actionRow = document.createElement('div'); UI.setStyle(actionRow, 'margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap');
+    var renameInp = document.createElement('input'); renameInp.value = d.name; UI.setStyle(renameInp, 'padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;width:200px');
     actionRow.append(renameInp, makeActionBtn('Rename', function() {
       var newName = renameInp.value;
       if (newName === d.name) throw new Error('Name unchanged');
@@ -1938,12 +1997,12 @@ function _renderEditableResources(panel, d, containerId) {
   var hc = d.host_config || {};
   var sec = document.createElement('div'); sec.className = 'inspect-section';
   var hdr = document.createElement('div');
-  hdr.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:6px;';
+  UI.setStyle(hdr, 'display:flex;align-items:center;gap:10px;margin-bottom:6px;');
   var h4 = document.createElement('h4'); h4.textContent = 'Resources';
-  h4.style.cssText = 'margin:0;';
+  UI.setStyle(h4, 'margin:0;');
   var badge = document.createElement('span');
   badge.textContent = 'Live-updatable';
-  badge.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:12px;background:#1e3a5f;color:#93c5fd;';
+  UI.setStyle(badge, 'font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:12px;background:#1e3a5f;color:#93c5fd;');
   badge.title = 'These fields can be changed without recreating the container.';
   hdr.append(h4, badge);
   sec.appendChild(hdr);
@@ -2002,9 +2061,9 @@ function _renderEditableResources(panel, d, containerId) {
   var rpRow = document.createElement('div'); rpRow.className = 'inspect-kv';
   var rpK = document.createElement('div'); rpK.className = 'k'; rpK.textContent = 'Restart policy';
   var rpV = document.createElement('div'); rpV.className = 'v';
-  rpV.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  UI.setStyle(rpV, 'display:flex;gap:6px;align-items:center;');
   var rpSel = document.createElement('select');
-  rpSel.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--card);color:var(--text);';
+  UI.setStyle(rpSel, 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--card);color:var(--text);');
   ['no', 'on-failure', 'unless-stopped', 'always'].forEach(function(n) {
     var o = document.createElement('option'); o.value = n; o.textContent = n;
     if (n === curRp) o.selected = true;
@@ -2014,11 +2073,11 @@ function _renderEditableResources(panel, d, containerId) {
   var rpRetry = document.createElement('input');
   rpRetry.type = 'number'; rpRetry.min = '0'; rpRetry.max = '5';
   rpRetry.value = curRetry; rpRetry.placeholder = 'retries';
-  rpRetry.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;width:80px;background:var(--card);color:var(--text);';
+  UI.setStyle(rpRetry, 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;width:80px;background:var(--card);color:var(--text);');
   rpRetry.dataset.originalValue = String(curRetry);
-  rpRetry.style.display = (curRp === 'on-failure') ? 'inline-block' : 'none';
+  UI.setStyle(rpRetry, 'display', (curRp === 'on-failure') ? 'inline-block' : 'none');
   rpSel.addEventListener('change', function() {
-    rpRetry.style.display = (rpSel.value === 'on-failure') ? 'inline-block' : 'none';
+    UI.setStyle(rpRetry, 'display', (rpSel.value === 'on-failure') ? 'inline-block' : 'none');
     updateButtons();
   });
   rpRetry.addEventListener('input', updateButtons);
@@ -2029,7 +2088,7 @@ function _renderEditableResources(panel, d, containerId) {
 
   // Save / Cancel buttons — hidden until a change is made
   var btnRow = document.createElement('div');
-  btnRow.style.cssText = 'margin-top:10px;display:flex;gap:8px;align-items:center;';
+  UI.setStyle(btnRow, 'margin-top:10px;display:flex;gap:8px;align-items:center;');
   var saveBtn = document.createElement('button');
   saveBtn.className = 'btn primary small';
   saveBtn.textContent = 'Save changes';
@@ -2039,7 +2098,7 @@ function _renderEditableResources(panel, d, containerId) {
   cancelBtn.textContent = 'Revert';
   cancelBtn.disabled = true;
   var status = document.createElement('span');
-  status.style.cssText = 'font-size:12px;color:var(--muted);';
+  UI.setStyle(status, 'font-size:12px;color:var(--muted);');
   btnRow.append(saveBtn, cancelBtn, status);
   sec.appendChild(btnRow);
 
@@ -2056,7 +2115,7 @@ function _renderEditableResources(panel, d, containerId) {
   }
   cancelBtn.addEventListener('click', function() {
     for (var key in inputs) { inputs[key].value = inputs[key].dataset.originalValue; }
-    rpRetry.style.display = (rpSel.value === 'on-failure') ? 'inline-block' : 'none';
+    UI.setStyle(rpRetry, 'display', (rpSel.value === 'on-failure') ? 'inline-block' : 'none');
     updateButtons();
     status.textContent = '';
   });
@@ -2074,7 +2133,7 @@ function _renderEditableResources(panel, d, containerId) {
       if (inp.value !== inp.dataset.originalValue) {
         var num = inp.value.trim() === '' ? null : parseInt(inp.value, 10);
         if (num !== null && isNaN(num)) {
-          status.style.color = 'var(--red, #f87171)';
+          UI.setStyle(status, 'color', 'var(--red, #f87171)');
           status.textContent = k + ' must be a whole number';
           throw new Error('invalid ' + k);
         }
@@ -2092,19 +2151,19 @@ function _renderEditableResources(panel, d, containerId) {
     }
     if (Object.keys(body).length === 0) { return; }
     saveBtn.disabled = true; cancelBtn.disabled = true;
-    status.style.color = 'var(--muted)'; status.textContent = 'Saving\u2026';
+    UI.setStyle(status, 'color', 'var(--muted)'); status.textContent = 'Saving\u2026';
     apiFetch(API + '/containers/' + containerId + '/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(function() {
-      status.style.color = 'var(--green, #22c55e)';
+      UI.setStyle(status, 'color', 'var(--green, #22c55e)');
       status.textContent = '\u2713 Saved';
       // Re-render Inspect to pick up canonicalised values from the server
       setTimeout(function() { showDetail(containerId, d.name, 'inspect'); }, 400);
     }).catch(function(err) {
       saveBtn.disabled = false; cancelBtn.disabled = false;
-      status.style.color = 'var(--red, #f87171)';
+      UI.setStyle(status, 'color', 'var(--red, #f87171)');
       status.textContent = '\u2717 ' + (err.message || 'Update failed');
     });
   });
@@ -2113,7 +2172,7 @@ function _renderEditableResources(panel, d, containerId) {
   // container's create-time config and cannot be live-updated; a future "Clone
   // with changes" button (future) will expose the recreate path.
   var roRow = document.createElement('div'); roRow.className = 'inspect-kv';
-  roRow.style.cssText = 'margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;';
+  UI.setStyle(roRow, 'margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;');
   var roK = document.createElement('div'); roK.className = 'k'; roK.textContent = 'Read-only rootfs';
   var roV = document.createElement('div'); roV.className = 'v mono';
   roV.textContent = hc.readonly_rootfs ? 'yes' : 'no';
@@ -2158,7 +2217,7 @@ async function showStatsContent(id) {
       });
     } catch (e) {
       var grid = document.getElementById('stats-grid');
-      if (grid) { grid.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent='Error: '+e.message; grid.appendChild(p); }
+      if (grid) { grid.innerHTML = ''; var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent='Error: '+e.message; grid.appendChild(p); }
       if (e.message.indexOf('not running') !== -1 || e.message.indexOf('not found') !== -1 || e.message.indexOf('unreachable') !== -1) clearInterval(refreshTimer);
     } finally { _statsInFlight = false; }
   }
@@ -2194,13 +2253,13 @@ async function showProcessesContent(id) {
       var tbody = document.createElement('tbody');
       data.processes.forEach(function(proc) {
         var tr = document.createElement('tr');
-        proc.forEach(function(val) { var td = document.createElement('td'); td.className = 'mono'; td.style.fontSize='12px'; td.textContent = val; tr.appendChild(td); });
+        proc.forEach(function(val) { var td = document.createElement('td'); td.className = 'mono'; UI.setStyle(td, 'fontSize', '12px'); td.textContent = val; tr.appendChild(td); });
         tbody.appendChild(tr);
       });
       table.appendChild(tbody); el2.appendChild(table);
     } catch (e) {
       var el2 = document.getElementById('detail-content');
-      if (el2) { el2.innerHTML = ''; var p = document.createElement('p'); p.style.color='var(--red)'; p.textContent = e.message; el2.appendChild(p); }
+      if (el2) { el2.innerHTML = ''; var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent = e.message; el2.appendChild(p); }
       if (e.message.indexOf('not running') !== -1 || e.message.indexOf('not found') !== -1 || e.message.indexOf('unreachable') !== -1 || e.message.indexOf('conflict') !== -1) clearInterval(refreshTimer);
     } finally { _topInFlight = false; }
   }
@@ -2231,20 +2290,20 @@ async function showFilesContent(id) {
   el.innerHTML = '';
   var tabBar = document.createElement('div');
   tabBar.className = 'detail-subtabs';
-  tabBar.style.cssText = 'display:flex;gap:6px;margin-bottom:12px';
+  UI.setStyle(tabBar, 'display:flex;gap:6px;margin-bottom:12px');
   var browserPanel = document.createElement('div');
   var changesPanel = document.createElement('div');
-  changesPanel.style.display = 'none';
+  UI.setStyle(changesPanel, 'display', 'none');
   function _mkSubTab(label, panel, onActivate) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'btn small';
     b.textContent = label;
     b.onclick = function() {
-      [browserPanel, changesPanel].forEach(function(p) { p.style.display = 'none'; });
+      [browserPanel, changesPanel].forEach(function(p) { UI.setStyle(p, 'display', 'none'); });
       tabBar.querySelectorAll('button').forEach(function(x) { x.classList.remove('primary'); });
       b.classList.add('primary');
-      panel.style.display = '';
+      UI.setStyle(panel, 'display', '');
       if (onActivate) onActivate();
     };
     return b;
@@ -2264,16 +2323,16 @@ async function _renderFileBrowser(id, panel) {
   // Header: breadcrumb, Refresh, Upload, New folder is not supported
   // (docker has no mkdir primitive over cp — require the user to exec).
   var header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+  UI.setStyle(header, 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap');
   var breadcrumb = document.createElement('div');
-  breadcrumb.style.cssText = 'flex:1;font-size:13px;font-family:monospace';
+  UI.setStyle(breadcrumb, 'flex:1;font-size:13px;font-family:monospace');
   function _paintBreadcrumb(p) {
     breadcrumb.innerHTML = '';
     var parts = p.split('/').filter(Boolean);
     function _crumbLink(label, navPath) {
       var a = document.createElement('a');
       a.href = '#'; a.textContent = label;
-      a.style.cssText = 'color:var(--accent,#0d9488);text-decoration:none;cursor:pointer';
+      UI.setStyle(a, 'color:var(--accent,#0d9488);text-decoration:none;cursor:pointer');
       a.onclick = function(ev) { ev.preventDefault(); _filesPath[id] = navPath; _renderFileBrowser(id, panel); };
       return a;
     }
@@ -2304,7 +2363,7 @@ async function _renderFileBrowser(id, panel) {
     if (path !== '/') {
       var parent = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
       var upTr = document.createElement('tr');
-      upTr.style.cursor = 'pointer';
+      UI.setStyle(upTr, 'cursor', 'pointer');
       upTr.onclick = function() { _filesPath[id] = parent; _renderFileBrowser(id, panel); };
       upTr.innerHTML = '<td>\u21B0</td><td colspan="4" style="color:var(--muted)">.. (up to ' + esc(parent) + ')</td>';
       tbody.appendChild(upTr);
@@ -2326,7 +2385,7 @@ async function _renderFileBrowser(id, panel) {
         var nameSpan = document.createElement('span');
         nameSpan.textContent = e.name + (e.type === 'link' && e.target ? ' \u2192 ' + e.target : '');
         if (e.type === 'dir' || e.type === 'link') {
-          nameSpan.style.cssText = 'color:var(--accent,#0d9488);cursor:pointer';
+          UI.setStyle(nameSpan, 'color:var(--accent,#0d9488);cursor:pointer');
           nameSpan.onclick = function() {
             var next = path.replace(/\/+$/, '') + '/' + e.name;
             _filesPath[id] = next;
@@ -2336,12 +2395,12 @@ async function _renderFileBrowser(id, panel) {
         tdName.appendChild(nameSpan);
         var tdSize = document.createElement('td');
         tdSize.textContent = e.type === 'file' ? _formatBytes(e.size) : '';
-        tdSize.style.cssText = 'font-family:monospace;color:var(--muted);font-size:12px';
+        UI.setStyle(tdSize, 'font-family:monospace;color:var(--muted);font-size:12px');
         var tdMode = document.createElement('td');
-        tdMode.style.cssText = 'font-family:monospace;font-size:11px;color:var(--muted)';
+        UI.setStyle(tdMode, 'font-family:monospace;font-size:11px;color:var(--muted)');
         tdMode.textContent = e.mode || '';
         var tdAct = document.createElement('td');
-        tdAct.style.cssText = 'display:flex;gap:4px';
+        UI.setStyle(tdAct, 'display:flex;gap:4px');
         if (e.type === 'file' || e.type === 'link' || e.type === 'dir') {
           if (e.type !== 'dir') {
             var dlBtn = makeBtn('Download', (function(n) {
@@ -2404,18 +2463,18 @@ async function _renderFileBrowser(id, panel) {
     }
     if (data.truncated) {
       var note = document.createElement('p');
-      note.style.cssText = 'font-size:11px;color:var(--amber,#f59e0b);margin-top:8px';
+      UI.setStyle(note, 'font-size:11px;color:var(--amber,#f59e0b);margin-top:8px');
       note.textContent = 'Directory truncated at ' + entries.length + ' entries. Raise CONTAINER_LS_MAX_ENTRIES on the server to see more.';
       panel.appendChild(note);
     }
     panel.appendChild(table);
 
     // Drag-and-drop upload target.
-    panel.ondragover = function(ev) { ev.preventDefault(); panel.style.outline = '2px dashed var(--accent,#0d9488)'; };
-    panel.ondragleave = function() { panel.style.outline = ''; };
+    panel.ondragover = function(ev) { ev.preventDefault(); UI.setStyle(panel, 'outline', '2px dashed var(--accent,#0d9488)'); };
+    panel.ondragleave = function() { UI.setStyle(panel, 'outline', ''); };
     panel.ondrop = function(ev) {
       ev.preventDefault();
-      panel.style.outline = '';
+      UI.setStyle(panel, 'outline', '');
       var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (f) _doUpload(id, path, f, panel);
     };
@@ -2423,7 +2482,7 @@ async function _renderFileBrowser(id, panel) {
     panel.innerHTML = '';
     panel.appendChild(header);
     var errP = document.createElement('p');
-    errP.style.color = 'var(--red)';
+    UI.setStyle(errP, 'color', 'var(--red)');
     errP.textContent = 'Cannot list ' + path + ': ' + e.message;
     panel.appendChild(errP);
   }
@@ -2484,9 +2543,9 @@ async function _renderDiff(id, panel) {
     panel.innerHTML = '';
     if (!data || data.length === 0) {
       var empty = document.createElement('div'); empty.className = 'empty-state';
-      var line1 = document.createElement('p'); line1.style.cssText = 'margin-bottom:6px;font-weight:500';
+      var line1 = document.createElement('p'); UI.setStyle(line1, 'margin-bottom:6px;font-weight:500');
       line1.textContent = 'No files have changed since this container started.';
-      var line2 = document.createElement('p'); line2.style.cssText = 'font-size:12px;color:var(--muted);margin:0 auto;max-width:520px';
+      var line2 = document.createElement('p'); UI.setStyle(line2, 'font-size:12px;color:var(--muted);margin:0 auto;max-width:520px');
       line2.textContent = 'This view shows the output of `docker diff` — paths the container has added, modified, or deleted versus its base image. An empty list means the container has only read from its image layers (typical for a read-only service, or a container that has just started).';
       empty.append(line1, line2);
       panel.appendChild(empty);
@@ -2502,16 +2561,16 @@ async function _renderDiff(id, panel) {
       badge.className = 'status ' + (d.kind === 'Added' ? 'running' : d.kind === 'Deleted' ? 'exited' : 'created');
       badge.textContent = d.kind;
       tdKind.appendChild(badge);
-      var tdPath = document.createElement('td'); tdPath.className = 'mono'; tdPath.style.fontSize = '12px'; tdPath.textContent = d.path;
+      var tdPath = document.createElement('td'); tdPath.className = 'mono'; UI.setStyle(tdPath, 'fontSize', '12px'); tdPath.textContent = d.path;
       tr.append(tdKind, tdPath); tbody.appendChild(tr);
     });
     table.appendChild(tbody); panel.appendChild(table);
-    var note = document.createElement('p'); note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px';
+    var note = document.createElement('p'); UI.setStyle(note, 'font-size:11px;color:var(--muted);margin-top:8px');
     note.textContent = data.length + ' change(s) from base image';
     panel.appendChild(note);
   } catch (e) {
     panel.innerHTML = '';
-    var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = e.message;
+    var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent = e.message;
     panel.appendChild(p);
   }
 }
@@ -2536,23 +2595,23 @@ var POPULAR_IMAGES = [
  */
 function buildHubSearch(onSelect) {
   var section = document.createElement('div');
-  var label = document.createElement('p'); label.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em'; label.textContent = 'Search Docker Hub';
+  var label = document.createElement('p'); UI.setStyle(label, 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em'); label.textContent = 'Search Docker Hub';
   section.appendChild(label);
 
   // Popular starter chips
-  var popular = document.createElement('div'); popular.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px';
+  var popular = document.createElement('div'); UI.setStyle(popular, 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px');
   POPULAR_IMAGES.forEach(function(img) {
     var chip = document.createElement('button'); chip.type = 'button';
-    chip.style.cssText = 'font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:4px';
+    UI.setStyle(chip, 'font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:4px');
     chip.innerHTML = '<strong>' + esc(img.name) + '</strong><span style="color:var(--muted)"> · ' + esc(img.desc) + '</span>';
     chip.onclick = function() { showTags(img.name); };
     popular.appendChild(chip);
   });
   section.appendChild(popular);
 
-  var row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px';
-  var hubInp = document.createElement('input'); hubInp.placeholder = 'Search by image name, e.g. postgres'; hubInp.style.flex = '1';
-  var results = document.createElement('div'); results.style.cssText = 'max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px'; results.setAttribute('data-testid','hub-results');
+  var row = document.createElement('div'); UI.setStyle(row, 'display:flex;gap:8px;margin-bottom:8px');
+  var hubInp = document.createElement('input'); hubInp.placeholder = 'Search by image name, e.g. postgres'; UI.setStyle(hubInp, 'flex', '1');
+  var results = document.createElement('div'); UI.setStyle(results, 'max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px'); results.setAttribute('data-testid','hub-results');
 
   function showTags(imageName) {
     results.innerHTML = '<span style="font-size:12px;color:var(--muted)">Loading tags for ' + esc(imageName) + '…</span>';
@@ -2560,15 +2619,15 @@ function buildHubSearch(onSelect) {
       .then(function(data) {
         results.innerHTML = '';
         var back = document.createElement('div');
-        back.style.cssText = 'font-size:11px;color:var(--accent,#0d9488);cursor:pointer;margin-bottom:6px;display:flex;align-items:center;gap:4px';
+        UI.setStyle(back, 'font-size:11px;color:var(--accent,#0d9488);cursor:pointer;margin-bottom:6px;display:flex;align-items:center;gap:4px');
         back.innerHTML = '&#8592; Back to search';
         back.onclick = function() { results.innerHTML = ''; };
         results.appendChild(back);
         var tags = data.tags || [];
         var header = document.createElement('div');
-        header.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;gap:8px';
+        UI.setStyle(header, 'font-size:13px;font-weight:600;margin-bottom:6px;padding:4px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:baseline;gap:8px');
         var nameSpan = document.createElement('span'); nameSpan.textContent = imageName + ' — pick a tag:';
-        var count = document.createElement('span'); count.style.cssText = 'font-size:11px;font-weight:400;color:var(--muted)';
+        var count = document.createElement('span'); UI.setStyle(count, 'font-size:11px;font-weight:400;color:var(--muted)');
         // Use the explicit `truncated` + `upstream_total` fields now that
         // the server surfaces them; fall back to the length heuristic
         // (`length >= 100`) if an older server's response is in play.
@@ -2593,10 +2652,10 @@ function buildHubSearch(onSelect) {
         filter.type = 'search';
         filter.placeholder = 'Filter tags (e.g. 3.12-slim)';
         filter.setAttribute('data-testid', 'hub-tag-filter');
-        filter.style.cssText = 'width:100%;padding:4px 8px;font-size:12px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)';
+        UI.setStyle(filter, 'width:100%;padding:4px 8px;font-size:12px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)');
         results.appendChild(filter);
         var tagList = document.createElement('div');
-        tagList.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+        UI.setStyle(tagList, 'display:flex;flex-direction:column;gap:4px');
         results.appendChild(tagList);
         // `tags` is the recent-100 list. When the user types a filter with
         // no local match (stable tags like `3.12-slim` often aren't in the
@@ -2610,7 +2669,7 @@ function buildHubSearch(onSelect) {
           list.forEach(function(tag) {
             var full = imageName + ':' + tag;
             var t = document.createElement('div');
-            t.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; t.setAttribute('data-testid','hub-tag-row');
+            UI.setStyle(t, 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'); t.setAttribute('data-testid','hub-tag-row');
             t.innerHTML = '<span style="font-size:13px;font-family:monospace">' + esc(tag) + '</span>' +
               '<span style="font-size:11px;color:var(--accent,#0d9488)">Select ↵</span>';
             t.onclick = function() { onSelect(full); results.innerHTML = ''; hubInp.value = ''; };
@@ -2671,7 +2730,7 @@ function buildHubSearch(onSelect) {
           var name = item.repo_name || item.name;
           var pulls = item.pull_count > 1e6 ? Math.round(item.pull_count/1e6)+'M' : item.pull_count > 1e3 ? Math.round(item.pull_count/1e3)+'K' : (item.pull_count||'');
           var r2 = document.createElement('div');
-          r2.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'; r2.setAttribute('data-testid','hub-result-row');
+          UI.setStyle(r2, 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg)'); r2.setAttribute('data-testid','hub-result-row');
           r2.innerHTML = '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(name) + '</div>' +
             '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis">' + esc(item.short_description||'') + '</div></div>' +
             (pulls ? '<span style="font-size:11px;color:var(--muted);white-space:nowrap">' + esc(pulls) + ' pulls</span>' : '');
@@ -2687,7 +2746,7 @@ function buildHubSearch(onSelect) {
   row.append(hubInp, btn); section.appendChild(row); section.appendChild(results);
   // Hide if docker.io not allowed
   apiFetch(API+'/config').then(function(cfg) {
-    if (!(cfg.allowed_registries||[]).some(function(r) { return r.replace(/\/$/, '') === 'docker.io'; })) section.style.display = 'none';
+    if (!(cfg.allowed_registries||[]).some(function(r) { return r.replace(/\/$/, '') === 'docker.io'; })) UI.setStyle(section, 'display', 'none');
   }).catch(function(){});
   return { section: section, focus: function() { hubInp.focus(); } };
 }
@@ -2725,7 +2784,7 @@ function showRunModal(prefillImage, prefillSource) {
   box.appendChild(h3);
   if (prefillSource) {
     var sub = document.createElement('p');
-    sub.style.cssText = 'font-size:12px;color:var(--muted);margin:-4px 0 12px';
+    UI.setStyle(sub, 'font-size:12px;color:var(--muted);margin:-4px 0 12px');
     sub.textContent = 'Fields pre-filled from ' + prefillSource.name + '. Edit any field, then launch. Env values are preserved server-side and never displayed.';
     box.appendChild(sub);
   }
@@ -2736,24 +2795,24 @@ function showRunModal(prefillImage, prefillSource) {
   // Now the banner sits under the header until the next submit clears it.
   var runErrorBanner = document.createElement('div');
   runErrorBanner.className = 'field-error';
-  runErrorBanner.style.display = 'none';
+  UI.setStyle(runErrorBanner, 'display', 'none');
   runErrorBanner.setAttribute('role', 'alert');
   runErrorBanner.setAttribute('aria-live', 'polite');
   box.appendChild(runErrorBanner);
   function _runError(msg) {
-    if (msg) { runErrorBanner.textContent = msg; runErrorBanner.style.display = 'block'; }
-    else     { runErrorBanner.textContent = ''; runErrorBanner.style.display = 'none'; }
+    if (msg) { runErrorBanner.textContent = msg; UI.setStyle(runErrorBanner, 'display', 'block'); }
+    else     { runErrorBanner.textContent = ''; UI.setStyle(runErrorBanner, 'display', 'none'); }
   }
 
   // Available images quick-pick
   var pickSection = document.createElement('div');
-  pickSection.style.cssText = 'margin-bottom:16px';
+  UI.setStyle(pickSection, 'margin-bottom:16px');
   var pickLabel = document.createElement('p');
-  pickLabel.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em';
+  UI.setStyle(pickLabel, 'font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em');
   pickLabel.textContent = 'Available images on this engine';
   pickSection.appendChild(pickLabel);
   var pickList = document.createElement('div');
-  pickList.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;min-height:28px';
+  UI.setStyle(pickList, 'display:flex;flex-wrap:wrap;gap:6px;min-height:28px');
   pickList.innerHTML = '<span style="font-size:12px;color:var(--muted)">Loading…</span>';
   pickSection.appendChild(pickList);
   box.appendChild(pickSection);
@@ -2767,7 +2826,7 @@ function showRunModal(prefillImage, prefillSource) {
   }
   // Docker Hub search
   var hubSearch = buildHubSearch(function(name) { imgInput.value = name; });
-  hubSearch.section.style.marginBottom = '16px';
+  UI.setStyle(hubSearch.section, 'marginBottom', '16px');
   box.appendChild(hubSearch.section);
 
   var imgInput = addField('Image','run-image', 'registry/image:tag');
@@ -2777,7 +2836,7 @@ function showRunModal(prefillImage, prefillSource) {
   imgInput.setAttribute('list','image-list');
 
   var imgHint = document.createElement('p');
-  imgHint.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px';
+  UI.setStyle(imgHint, 'font-size:11px;color:var(--muted);margin-top:4px');
   imgHint.id = 'run-registry-hint';
   imgHint.textContent = 'Loading registry configuration…';
   box.appendChild(imgHint);
@@ -2792,7 +2851,7 @@ function showRunModal(prefillImage, prefillSource) {
   // static hint sits directly under the field so it's visible while the user
   // is still filling it in.
   var volHint = document.createElement('p');
-  volHint.style.cssText = 'font-size:11px;color:var(--muted);margin:-6px 0 10px';
+  UI.setStyle(volHint, 'font-size:11px;color:var(--muted);margin:-6px 0 10px');
   volHint.textContent = 'Format: NAME:/absolute/path — one per line. Example: test_volume:/data. The volume must already exist or will be created on first run.';
   box.appendChild(volHint);
   var labelsInp = addField('Labels (one per line, key=value)','run-labels','app=myapp','textarea');
@@ -2885,14 +2944,14 @@ function showRunModal(prefillImage, prefillSource) {
   // Users can uncheck for images that need an unrestricted writable rootfs.
   // In clone mode: inherit the source's choice so we don't silently widen or
   // narrow the original container's hardening posture.
-  var roWrap = document.createElement('div'); roWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:12px;';
+  var roWrap = document.createElement('div'); UI.setStyle(roWrap, 'display:flex;align-items:center;gap:8px;margin-top:12px;');
   var roCb = document.createElement('input'); roCb.type = 'checkbox'; roCb.id = 'run-readonly';
   roCb.checked = prefillSource ?
     !!(prefillSource.host_config && prefillSource.host_config.readonly_rootfs) :
     true;
-  roCb.style.cssText = 'width:auto;margin:0;';
+  UI.setStyle(roCb, 'width:auto;margin:0;');
   var roLbl = document.createElement('label'); roLbl.htmlFor = 'run-readonly';
-  roLbl.style.cssText = 'margin:0;font-size:13px;cursor:pointer;';
+  UI.setStyle(roLbl, 'margin:0;font-size:13px;cursor:pointer;');
   roLbl.textContent = 'Read-only root filesystem (recommended)';
   roWrap.appendChild(roCb);
   roWrap.appendChild(roLbl);
@@ -2905,7 +2964,7 @@ function showRunModal(prefillImage, prefillSource) {
   ));
   box.appendChild(roWrap);
   var roHint = document.createElement('p');
-  roHint.style.cssText = 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;';
+  UI.setStyle(roHint, 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;');
   roHint.textContent = 'Auto-mounts tmpfs on /tmp, /run, /var/run, /var/cache so most images work. Uncheck for images that write elsewhere on rootfs.';
   box.appendChild(roHint);
   // Clone-only: "Replace original" checkbox. Off by default → both containers
@@ -2914,15 +2973,15 @@ function showRunModal(prefillImage, prefillSource) {
   // source is preserved — safety-by-ordering at the server.
   var replaceCb = null;
   if (prefillSource) {
-    var repWrap = document.createElement('div'); repWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
+    var repWrap = document.createElement('div'); UI.setStyle(repWrap, 'display:flex;align-items:center;gap:8px;margin-top:8px;');
     replaceCb = document.createElement('input'); replaceCb.type = 'checkbox'; replaceCb.id = 'run-replace';
-    replaceCb.style.cssText = 'width:auto;margin:0;';
+    UI.setStyle(replaceCb, 'width:auto;margin:0;');
     var repLbl = document.createElement('label'); repLbl.htmlFor = 'run-replace';
-    repLbl.style.cssText = 'margin:0;font-size:13px;cursor:pointer;';
+    UI.setStyle(repLbl, 'margin:0;font-size:13px;cursor:pointer;');
     repLbl.textContent = 'Replace original (stop & remove ' + prefillSource.name + ' after this one starts)';
     repWrap.appendChild(replaceCb); repWrap.appendChild(repLbl); box.appendChild(repWrap);
     var repHint = document.createElement('p');
-    repHint.style.cssText = 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;';
+    UI.setStyle(repHint, 'font-size:11px;color:var(--muted);margin:4px 0 8px 22px;');
     repHint.textContent = 'If this container fails to start, the original is preserved.';
     box.appendChild(repHint);
   }
@@ -3012,7 +3071,7 @@ function showRunModal(prefillImage, prefillSource) {
       var chip = document.createElement('button');
       chip.type = 'button';
       chip.textContent = tag;
-      chip.style.cssText = 'font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis';
+      UI.setStyle(chip, 'font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--text);cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis');
       chip.title = tag;
       chip.onclick = function() { imgInput.value = tag; };
       pickList.appendChild(chip);

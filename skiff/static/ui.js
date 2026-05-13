@@ -22,6 +22,218 @@
 "use strict";
 
 (function(root) {
+  // ── CSP-safe inline style helper ────────────────────────────────────
+  // Strict CSP (`style-src 'self'`, no 'unsafe-inline') blocks every form
+  // of element-level style assignment from JS: `element.style.X = "..."`,
+  // `element.style.cssText = "..."`, `element.setAttribute("style", ...)`,
+  // and inline `style=""` attributes in HTML. CSP nonces only cover
+  // `<style>` elements, not inline style attributes, so they don't help.
+  //
+  // CSSOM mutations on an already-loaded same-origin stylesheet (here
+  // `/static/styles.css`) are NOT subject to `style-src`: the sheet was
+  // permitted at load time, and `CSSStyleSheet.insertRule` /
+  // `CSSStyleRule.style.setProperty` mutate that loaded sheet in place
+  // without introducing new inline content. So we route every JS-set
+  // style through a unique `_csp_N` class whose rule lives in styles.css.
+  //
+  //   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+  //   UI.setStyle(el, "color", "red")            → set one property
+  //
+  // Each element gets one `_csp_N` class on first call; subsequent calls
+  // mutate that one rule. WeakMap'd so the element→className lookup
+  // doesn't pin the element from GC. The rule itself remains in the sheet
+  // for the page's lifetime (bounded for a SPA that periodically reloads).
+  var _cspStyleSheet = null;
+  var _cspClassMap = new WeakMap();
+  var _cspClassRules = new Map();
+  var _cspClassCounter = 0;
+
+  function _cspGetSheet() {
+    if (_cspStyleSheet) return _cspStyleSheet;
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      var s = document.styleSheets[i];
+      if (s.href && s.href.indexOf('/static/styles.css') !== -1) {
+        _cspStyleSheet = s;
+        return _cspStyleSheet;
+      }
+    }
+    // Fallback: first same-origin sheet whose cssRules we can read.
+    // Accessing cssRules throws SecurityError on cross-origin sheets.
+    for (var j = 0; j < document.styleSheets.length; j++) {
+      try {
+        void document.styleSheets[j].cssRules;
+        _cspStyleSheet = document.styleSheets[j];
+        return _cspStyleSheet;
+      } catch (e) { /* cross-origin sheet, skip */ }
+    }
+    return null;
+  }
+
+  function _cspGetOrCreateRule(node) {
+    var className = _cspClassMap.get(node);
+    if (className) {
+      var existing = _cspClassRules.get(className);
+      if (existing) return existing;
+    }
+    var sheet = _cspGetSheet();
+    if (!sheet) return null;
+    if (!className) {
+      className = '_csp_' + (++_cspClassCounter);
+      node.classList.add(className);
+      _cspClassMap.set(node, className);
+    }
+    var idx = sheet.insertRule('.' + className + ' {}', sheet.cssRules.length);
+    var rule = sheet.cssRules[idx];
+    _cspClassRules.set(className, rule);
+    return rule;
+  }
+
+  /**
+   * Apply CSS to an element under a strict `style-src 'self'` CSP (no
+   * `'unsafe-inline'`). Routes the assignment through a per-element
+   * `_csp_N` rule inserted into /static/styles.css via the CSSOM API,
+   * so it survives a CSP that would block `element.style.X = ...`.
+   *
+   * Two call shapes:
+   *
+   *   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+   *   UI.setStyle(el, "color", "red")            → set one property
+   *
+   * Passing `""` or `null` as the value removes the property. The
+   * underlying rule persists for the page lifetime (acceptable for a
+   * SPA that periodically navigates / reloads).
+   */
+  // CSSStyleDeclaration.setProperty expects the CSS property name in
+  // kebab-case (`max-width`), but JS callers naturally write the
+  // CSSStyleDeclaration camelCase form (`maxWidth`). Auto-convert so
+  // both styles work without ceremony.
+  function _toKebab(s) {
+    return String(s).replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
+  }
+
+  /**
+   * Apply CSS to an element under a strict `style-src 'self'` CSP (no
+   * `'unsafe-inline'`). Routes the assignment through a per-element
+   * `_csp_N` rule inserted into /static/styles.css via the CSSOM API,
+   * so it survives a CSP that would block `element.style.X = ...`.
+   *
+   * Two call shapes:
+   *
+   *   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+   *   UI.setStyle(el, "color", "red")            → set one property
+   *
+   * The single-property form accepts both kebab-case (`max-width`) and
+   * camelCase (`maxWidth`) — JS callers naturally write the
+   * CSSStyleDeclaration form so the helper auto-kebabs. Passing `""`
+   * or `null` as the value removes the property. The underlying rule
+   * persists for the page lifetime (acceptable for a SPA that
+   * periodically reloads).
+   */
+  function setStyle(node, propOrCssText, value) {
+    if (!node) return;
+    var rule = _cspGetOrCreateRule(node);
+    if (!rule) return;
+    if (value === undefined) {
+      // Full cssText replacement.
+      rule.style.cssText = propOrCssText;
+    } else if (value === '' || value == null) {
+      rule.style.removeProperty(_toKebab(propOrCssText));
+    } else {
+      rule.style.setProperty(_toKebab(propOrCssText), String(value));
+    }
+  }
+
+  // ── Inline-style migrator ─────────────────────────────────────────
+  // Some call sites still use `innerHTML = '<div style="…">'` with
+  // literal `style=""` attributes baked into the HTML string. Strict
+  // `style-src 'self'` (no 'unsafe-inline') blocks these from being
+  // applied. To keep those templates working without refactoring every
+  // call site, a MutationObserver watches for elements arriving with a
+  // `style` attribute — for each, the attribute is migrated to a
+  // `_csp_N` CSSOM rule (via setStyle) and removed from the element.
+  // CSP-blocked styles then become CSP-compatible class-based styles
+  // applied a microtask later.
+  //
+  // Caveats:
+  //   * The browser fires CSP violation reports synchronously at parse
+  //     time, before the observer can move the attribute. The console
+  //     surface stays noisy until each template is properly refactored
+  //     (long-form follow-up). Visually the styles DO apply.
+  //   * One-microtask FOUC: the unstyled DOM paints first, then the
+  //     migrator runs. Acceptable trade-off for keeping the existing
+  //     HTML templates functional under strict CSP.
+  function _migrateInlineStyle(node) {
+    if (!node || node.nodeType !== 1) return;  // ELEMENT_NODE
+    var attr = node.getAttribute && node.getAttribute('style');
+    if (attr) {
+      setStyle(node, attr);
+      node.removeAttribute('style');
+    }
+    // Recurse into the subtree; `innerHTML` produces an arbitrary
+    // depth of descendants in one parse.
+    if (node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        _migrateInlineStyle(node.children[i]);
+      }
+    }
+  }
+
+  var _styleObserver = new MutationObserver(function (records) {
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      if (r.type === 'childList') {
+        for (var j = 0; j < r.addedNodes.length; j++) {
+          _migrateInlineStyle(r.addedNodes[j]);
+        }
+      } else if (r.type === 'attributes' && r.attributeName === 'style') {
+        _migrateInlineStyle(r.target);
+      }
+    }
+  });
+
+  function _startStyleObserver() {
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', _startStyleObserver);
+      return;
+    }
+    // Sweep any inline styles that arrived BEFORE the observer started
+    // (e.g. on the static index.html shell or fragments already in
+    // <body> when this script runs).
+    _migrateInlineStyle(document.body);
+    _styleObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+  }
+  _startStyleObserver();
+
+  /**
+   * Read a style property value that was set via `UI.setStyle`. Under
+   * strict CSP, `element.style.X` returns `""` (we never write to the
+   * inline attribute), so any call site that needs to inspect a JS-set
+   * style must go through `UI.getStyle`. Falls back to
+   * `getComputedStyle` if no `_csp_N` rule has been created yet, so
+   * CSS-stylesheet defaults remain observable.
+   */
+  function getStyle(node, prop) {
+    if (!node) return '';
+    var className = _cspClassMap.get(node);
+    if (className) {
+      var rule = _cspClassRules.get(className);
+      if (rule) {
+        var v = rule.style.getPropertyValue(_toKebab(prop));
+        if (v) return v;
+      }
+    }
+    try {
+      return window.getComputedStyle(node).getPropertyValue(_toKebab(prop));
+    } catch (e) {
+      return '';
+    }
+  }
+
   /**
    * Build an HTML element with attributes and children in one call.
    *
@@ -30,7 +242,8 @@
    *
    * Special attribute handling:
    *   - `class`     → element.className
-   *   - `style`     → element.style.cssText (pass a plain string)
+   *   - `style`     → routed through `UI.setStyle` so a `_csp_N` rule
+   *                   is inserted into styles.css (CSP-strict safe)
    *   - `dataset`   → attrs.dataset is a dict applied to element.dataset
    *   - `on`        → {click: fn, …} attaches listeners
    *   - `text`      → element.textContent (convenient shorthand)
@@ -40,11 +253,15 @@
   function el(tag, attrs, ...children) {
     var n = document.createElement(tag);
     if (attrs) {
+      // Process `class` first so any later `_csp_N` class added by
+      // `setStyle` via the `style:` attribute uses classList.add (which
+      // it does) rather than fighting an overwriting `n.className = v`.
+      if (typeof attrs.class === 'string') { n.className = attrs.class; }
       Object.keys(attrs).forEach(function(k) {
+        if (k === 'class') return;  // already handled above
         var v = attrs[k];
         if (v == null || v === false) return;
-        if (k === 'class')    { n.className = v; return; }
-        if (k === 'style')    { n.style.cssText = v; return; }
+        if (k === 'style')    { setStyle(n, v); return; }
         if (k === 'text')     { n.textContent = v; return; }
         if (k === 'html')     { n.innerHTML = v; return; }  // deliberate opt-in
         if (k === 'dataset')  { Object.keys(v).forEach(function(dk) { n.dataset[dk] = v[dk]; }); return; }
@@ -350,7 +567,7 @@
 
     function setError(msg) {
       errorBanner.textContent = msg == null ? '' : String(msg);
-      errorBanner.style.display = msg ? 'block' : 'none';
+      setStyle(errorBanner, 'display', msg ? 'block' : 'none');
     }
     function clearError() { setError(''); }
 
@@ -682,6 +899,8 @@
 
   root.UI = {
     el: el,
+    setStyle: setStyle,
+    getStyle: getStyle,
     kvRow: kvRow,
     kvSection: kvSection,
     copy: copy,

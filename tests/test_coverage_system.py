@@ -397,3 +397,146 @@ def test_api_docs_csp_allows_inline_style_not_inline_script(client):
     # self-hosted build should not need it — catch it here.
     assert "script-src 'self'" in csp
     assert "script-src 'self' 'unsafe-inline'" not in csp
+
+
+# ── Terminal iframe (CSP-isolated xterm.js host) ──────────────────────────────
+
+
+def test_terminal_frame_is_public_by_design(client):
+    """The iframe route is intentionally PUBLIC because a browser-
+    initiated iframe navigation cannot carry the Bearer token from
+    sessionStorage. The HTML it returns is pure boilerplate (xterm.js
+    + addon-fit + a stub div + the terminal-frame.js bootstrap) —
+    nothing here exposes Docker state or container existence. The
+    actual auth gate is `/ws/exec/{id}` which performs `AUTH <token>`
+    as the first WS frame. Defence-in-depth lives in:
+
+      * frame-ancestors 'self' (CSP) + X-Frame-Options: SAMEORIGIN —
+        no cross-origin embedding.
+      * rate-limited at the PUBLIC tier.
+      * container_id is regex-validated; nothing else echoes back.
+
+    Concrete regression guard: ensure the response status is 200
+    (not redirected to login), shape matches the iframe HTML.
+    """
+    resp = client.get("/api/terminal-frame/abcd1234")  # no AUTH_HEADER
+    assert resp.status_code == 200
+    # Sanity: it's the iframe HTML, not the SPA login page.
+    body = resp.text
+    assert "/static/terminal-frame.js" in body
+    assert "/static/xterm/xterm.js" in body
+
+
+def test_terminal_frame_renders(client):
+    """Authenticated GET returns the minimal HTML that hosts xterm.js
+    inside the iframe — references the vendored xterm assets and the
+    terminal-frame.js module, nothing else."""
+    resp = client.get("/api/terminal-frame/abcd1234", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    body = resp.text
+    assert "/static/xterm/xterm.js" in body
+    assert "/static/xterm/addon-fit.js" in body
+    assert "/static/xterm/xterm.css" in body
+    assert "/static/terminal-frame.js" in body
+    assert "/static/terminal-frame.css" in body
+    # The iframe page must not pull in the main SPA bundle — that would
+    # defeat the CSP isolation and re-introduce xterm into the parent
+    # document's CSP scope.
+    assert "/static/app.js" not in body
+    assert "/static/ui.js" not in body
+
+
+def test_terminal_frame_csp_isolates_unsafe_inline_to_frame(client):
+    """The route's CSP keeps `'unsafe-inline'` for style-src (xterm
+    writes inline styles), but the relaxation is route-scoped — the
+    parent SPA's CSP stays strict."""
+    resp = client.get("/api/terminal-frame/abcd1234", headers=AUTH_HEADER)
+    csp = resp.headers.get("Content-Security-Policy", "")
+    # Required relaxation for xterm.js cell rendering.
+    assert "style-src 'self' 'unsafe-inline'" in csp
+    # script-src must NOT carry 'unsafe-inline'; all scripts ship under /static/.
+    assert "script-src 'self'" in csp
+    assert "script-src 'self' 'unsafe-inline'" not in csp
+    # Embedding contract: only same-origin parents may iframe this page.
+    assert "frame-ancestors 'self'" in csp
+    # WebSocket back to /ws/exec/ requires connect-src; nothing else.
+    assert "connect-src 'self'" in csp
+    # Defence-in-depth header for old user-agents that don't honour
+    # frame-ancestors.
+    assert resp.headers.get("X-Frame-Options", "").upper() == "SAMEORIGIN"
+
+
+def test_terminal_frame_rejects_invalid_container_id(client):
+    """The container_id path component must match Docker's name/ID
+    grammar. Anything outside it returns 400, never echoes the raw
+    value into the HTML response, and never reaches /ws/exec/.
+
+    Pick a value that reaches the handler (no slashes / unsafe chars
+    that FastAPI's routing would reject upstream) but trips the
+    CONTAINER_ID_RE / CONTAINER_NAME_RE check inside the handler. `!`
+    is outside both grammars: container-name allows
+    `[a-zA-Z0-9_.-]`, container-ID is hex.
+    """
+    resp = client.get("/api/terminal-frame/bad!chars")
+    assert resp.status_code == 400
+    assert "Invalid container id" in resp.text
+    # The body must not contain the offending input — anything echoed
+    # back into the HTML would reopen a reflected-XSS vector.
+    assert "bad!chars" not in resp.text
+    # Also covers the path-traversal case for completeness.
+    resp2 = client.get("/api/terminal-frame/" + "../etc/passwd")
+    assert resp2.status_code in (400, 404, 422)
+
+
+def test_main_html_no_longer_loads_xterm(client):
+    """xterm.js was relocated into the iframe. The main index.html
+    must NOT load /static/xterm/xterm.js directly — otherwise the
+    parent document would still need `style-src 'self' 'unsafe-inline'`
+    for xterm's cell renderer."""
+    resp = client.get("/static/index.html")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "/static/xterm/xterm.js" not in body
+    assert "/static/xterm/addon-fit.js" not in body
+
+
+def test_spa_index_root_serves_index_html(client):
+    """`GET /` serves the SPA shell. Existed but untested at the
+    coverage tier — coverage of the SPA index handler keeps `/` from
+    silently regressing on a refactor that touches the static-file
+    plumbing."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    # Sanity: it's the real shell, not an error page.
+    assert "<html" in resp.text.lower()
+
+
+def test_docker_host_label_empty_returns_unset():
+    """`_docker_host_label('')` short-circuits to the literal `'unset'`
+    so an empty `DOCKER_HOST` doesn't surface as the SHA-256 of an
+    empty string (which would still be a stable scrape-time identifier
+    and could mislead a Prometheus dashboard into thinking the field
+    is set). The empty-input early return was uncovered until now."""
+    from skiff.routers.system import _docker_host_label
+
+    assert _docker_host_label("") == "unset"
+    # Non-empty input takes the hash branch.
+    val = _docker_host_label("unix:///tmp/skiff-docker.sock")
+    assert val.startswith("h_")
+    assert len(val) == 14  # h_ + 12 hex chars
+
+
+def test_global_csp_has_no_unsafe_inline_for_style(client):
+    """After the iframe-sandbox migration, the global CSP applied by
+    the audit middleware must not include `'unsafe-inline'` in
+    style-src. Inline-style writes have all been migrated to
+    UI.setStyle (CSSOM-rule backed). Regression here would
+    re-introduce the CSS-injection attack surface ZAP 10055 flags."""
+    resp = client.get("/api/config", headers=AUTH_HEADER)
+    csp = resp.headers.get("Content-Security-Policy", "")
+    assert "style-src 'self'" in csp
+    assert "style-src 'self' 'unsafe-inline'" not in csp
+    # frame-src 'self' is required so the iframe can load.
+    assert "frame-src 'self'" in csp

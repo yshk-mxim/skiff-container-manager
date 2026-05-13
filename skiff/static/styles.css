@@ -431,6 +431,11 @@ body.reviewer-mode .btn.danger { display: none !important; }
 /* Terminal — same rationale as log viewer */
 .terminal { background: var(--terminal-bg); border-radius: 8px 8px 0 0; padding: 12px; font-size: 13px; line-height: 1.5; height: 380px; overflow-y: auto; white-space: pre-wrap; color: var(--terminal-text); }
 .terminal-input { width: 100%; background: var(--terminal-input-bg); border: none; border-top: 1px solid var(--terminal-border); color: var(--terminal-text); font-size: 13px; padding: 10px 12px; outline: none; border-radius: 0 0 8px 8px; font-family: 'DejaVu Sans Mono','Liberation Mono','Noto Sans Mono',monospace; }
+/* The iframe form of the terminal (CSP-sandboxed xterm.js host). The
+   iframe element itself replaces the old `<div class="terminal">`
+   scrolling buffer; xterm.js + cell rendering live inside the frame
+   so the outer element only provides the layout box. */
+.terminal-iframe { display: block; width: 100%; height: 380px; padding: 0; overflow: hidden; border: 0; }
 
 /* Detail tabs */
 .detail-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 16px; }

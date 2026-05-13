@@ -40,7 +40,7 @@ async function showDashboard() {
 
     // Stat grid — totals for each resource plus per-state container breakdown.
     var grid = document.createElement('div');
-    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px';
+    UI.setStyle(grid, 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px');
     var c = data.containers || {};
     grid.append(
       _stat('Containers', c.total || 0, (c.running || 0) + ' running, ' + (c.exited || 0) + ' exited'),
@@ -52,11 +52,11 @@ async function showDashboard() {
 
     // Quick actions — the flows a new user most wants in the first 30s.
     var actH = document.createElement('h3');
-    actH.style.cssText = 'font-size:16px;margin-bottom:12px';
+    UI.setStyle(actH, 'font-size:16px;margin-bottom:12px');
     actH.textContent = 'Quick actions';
     main.appendChild(actH);
     var actBar = document.createElement('div');
-    actBar.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px';
+    UI.setStyle(actBar, 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px');
     actBar.append(
       makeBtn('Run a container', function() { showPage('containers'); showRunModal(); }, 'btn primary'),
       makeBtn('Quick-start from template', function() { showPage('templates'); }, 'btn'),
@@ -67,15 +67,15 @@ async function showDashboard() {
 
     // Recent events — last 5 minutes.
     var evH = document.createElement('h3');
-    evH.style.cssText = 'font-size:16px;margin-bottom:8px';
+    UI.setStyle(evH, 'font-size:16px;margin-bottom:8px');
     evH.textContent = 'Recent activity (last 5 min)';
     main.appendChild(evH);
     var evDesc = document.createElement('p');
-    evDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:8px';
+    UI.setStyle(evDesc, 'color:var(--muted);font-size:12px;margin-bottom:8px');
     evDesc.textContent = 'Live stream of Docker daemon events. Full log on the System page.';
     main.appendChild(evDesc);
     var evBox = document.createElement('pre');
-    evBox.style.cssText = 'background:var(--sidebar-bg);color:#e2e8f0;padding:12px;border-radius:6px;font-size:12px;max-height:240px;overflow:auto;font-family:monospace';
+    UI.setStyle(evBox, 'background:var(--sidebar-bg);color:#e2e8f0;padding:12px;border-radius:6px;font-size:12px;max-height:240px;overflow:auto;font-family:monospace');
     var events = data.recent_events || [];
     if (!events.length) {
       evBox.textContent = '(no events in the last 5 minutes — the daemon is idle)';
@@ -111,7 +111,7 @@ async function showDashboard() {
     }, DASHBOARD_POLL_MS);
   } catch (e) {
     main.innerHTML = '';
-    var p = document.createElement('p'); p.style.color = 'var(--red)';
+    var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)');
     p.textContent = 'Failed to load overview: ' + e.message;
     main.appendChild(p);
   }

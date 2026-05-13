@@ -40,7 +40,7 @@ async function loadNetworks() {
     );
     header.append(h2, ha); main.appendChild(header);
     var desc = document.createElement('p');
-    desc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
+    UI.setStyle(desc, 'color:var(--muted);font-size:12px;margin-bottom:16px');
     desc.textContent = 'Docker networks are internal to the container environment and used for container-to-container communication. They are not externally accessible.';
     main.appendChild(desc);
     var search = document.createElement('input');
@@ -67,18 +67,18 @@ async function loadNetworks() {
         (needle && filtered.length !== networks.length ? '/' + networks.length : '') + ')';
       if (filtered.length === 0) {
         var tr = document.createElement('tr'); var td = document.createElement('td');
-        td.colSpan = 7; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
+        td.colSpan = 7; UI.setStyle(td, 'text-align:center;color:var(--muted);padding:40px');
         td.textContent = needle ? 'No matches' : 'No networks found';
         tr.appendChild(td); tbody.appendChild(tr);
         return;
       }
       filtered.forEach(function(n) {
         var tr = document.createElement('tr');
-        var tdN = document.createElement('td'); tdN.style.fontWeight = '500'; tdN.textContent = n.name;
+        var tdN = document.createElement('td'); UI.setStyle(tdN, 'fontWeight', '500'); tdN.textContent = n.name;
         if (['bridge', 'host', 'none'].indexOf(n.name) !== -1) {
           var def = document.createElement('span');
           def.textContent = 'built-in';
-          def.style.cssText = 'margin-left:6px;font-size:10px;font-weight:500;color:var(--muted);background:#f0f0f0;padding:1px 5px;border-radius:4px';
+          UI.setStyle(def, 'margin-left:6px;font-size:10px;font-weight:500;color:var(--muted);background:#f0f0f0;padding:1px 5px;border-radius:4px');
           tdN.appendChild(def);
         }
         var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = n.id;
@@ -87,7 +87,7 @@ async function loadNetworks() {
         var tdC = document.createElement('td');
         var containerNames = Object.values(n.containers || {});
         tdC.textContent = containerNames.length > 0 ? containerNames.join(', ') : 'none';
-        tdC.style.color = containerNames.length > 0 ? 'var(--text)' : 'var(--muted)';
+        UI.setStyle(tdC, 'color', containerNames.length > 0 ? 'var(--text)' : 'var(--muted)');
         var tdSubnet = document.createElement('td'); tdSubnet.className = 'container-id';
         tdSubnet.textContent = (n.ipam && n.ipam.length)
           ? n.ipam.map(function(c) { return c.Subnet || ''; }).filter(Boolean).join(', ') : '';
@@ -139,7 +139,7 @@ async function loadNetworks() {
     table.appendChild(tbody); main.appendChild(table);
   } catch (e) {
     main.innerHTML = '';
-    var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: ' + e.message;
+    var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent = 'Failed: ' + e.message;
     main.appendChild(p);
   }
 }

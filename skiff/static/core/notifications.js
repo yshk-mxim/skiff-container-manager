@@ -231,8 +231,8 @@
         var msg = document.createElement('div');
         _styleInline(msg, { flex: '1', wordBreak: 'break-word' });
         msg.textContent = n.message;
-        if (n.kind === 'error')   msg.style.color = '#f87171';
-        else if (n.kind === 'success') msg.style.color = '#86efac';
+        if (n.kind === 'error')   UI.setStyle(msg, 'color', '#f87171');
+        else if (n.kind === 'success') UI.setStyle(msg, 'color', '#86efac');
         r.append(ts, msg);
         body.appendChild(r);
       });
@@ -247,8 +247,8 @@
     var top = rect.top;
     if (left + 340 > window.innerWidth) left = window.innerWidth - 348;
     if (top + 420 > window.innerHeight) top = Math.max(8, window.innerHeight - 428);
-    panelEl.style.left = left + 'px';
-    panelEl.style.top = top + 'px';
+    UI.setStyle(panelEl, 'left', left + 'px');
+    UI.setStyle(panelEl, 'top', top + 'px');
 
     document.body.appendChild(panelEl);
     // Move focus to the first focusable control inside the panel
@@ -290,13 +290,13 @@
     // pushing to ring can't leave the user with a phantom badge.
     if (!ring.length) unread = 0;
     if (unread > 0) {
-      countEl.style.display = 'inline-block';
+      UI.setStyle(countEl, 'display', 'inline-block');
       countEl.textContent = unread > 99 ? '99+' : String(unread);
       // Screen readers otherwise announce the chip as just "3" with
       // no context. A proper label + role makes it self-describing.
       countEl.setAttribute('aria-label', unread + ' unread notification' + (unread === 1 ? '' : 's'));
     } else {
-      countEl.style.display = 'none';
+      UI.setStyle(countEl, 'display', 'none');
       countEl.removeAttribute('aria-label');
     }
     // Update the button's accessible name so it reads "Notifications,

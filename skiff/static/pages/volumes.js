@@ -35,22 +35,22 @@ function _deleteVolumeWithAttachedContainers(v) {
     bg.className = 'modal-bg';
     bg.onclick = function(ev) { if (ev.target === bg) { bg.remove(); reject(new Error('Cancelled')); } };
     var box = document.createElement('div'); box.className = 'modal';
-    box.style.maxWidth = '480px';
+    UI.setStyle(box, 'maxWidth', '480px');
     var h3 = document.createElement('h3'); h3.textContent = 'Volume "' + v.name + '" is in use';
     var p1 = document.createElement('p');
-    p1.style.cssText = 'font-size:13px;margin:10px 0';
+    UI.setStyle(p1, 'font-size:13px;margin:10px 0');
     p1.textContent = 'Deleting this volume requires first stopping + removing every container that mounts it:';
     var list = document.createElement('ul');
-    list.style.cssText = 'font-family:monospace;font-size:12px;background:var(--bg-elevated);padding:8px 12px 8px 28px;border-radius:4px;margin:0 0 12px;max-height:140px;overflow:auto';
+    UI.setStyle(list, 'font-family:monospace;font-size:12px;background:var(--bg-elevated);padding:8px 12px 8px 28px;border-radius:4px;margin:0 0 12px;max-height:140px;overflow:auto');
     v.containers.forEach(function(cname) {
       var li = document.createElement('li'); li.textContent = cname; list.appendChild(li);
     });
     var p2 = document.createElement('p');
-    p2.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:14px';
+    UI.setStyle(p2, 'font-size:12px;color:var(--muted);margin-bottom:14px');
     p2.textContent = 'Each container will be stopped + force-removed; then the volume is deleted with an undo window (~'
       + (window.UNDO_WINDOW_SECS || 5) + 's).';
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+    UI.setStyle(row, 'display:flex;gap:8px;justify-content:flex-end');
     var cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = 'Cancel';
     cancel.onclick = function() { bg.remove(); reject(new Error('Cancelled')); };
     var go = document.createElement('button');
@@ -156,7 +156,10 @@ async function _showVolumeInspectModal(name) {
       makeBtn(t('common.close'), function() { m.close(); }),
     ],
   });
-  m.box.style.cssText += 'max-width:540px;';
+  // `m.box` already has a `.modal` cssText from UI.modal — this adds
+  // max-width without replacing it. UI.setStyle (CSSOM-rule backed)
+  // accumulates properties on the element's `_csp_N` rule.
+  UI.setStyle(m.box, 'max-width', '540px');
   try {
     var d = await apiFetch(API + '/volumes/' + encodeURIComponent(name) + '/inspect');
     _raw = d;
@@ -226,7 +229,7 @@ async function loadVolumes() {
     );
     header.append(h2, ha); main.appendChild(header);
     var volDesc = document.createElement('p');
-    volDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
+    UI.setStyle(volDesc, 'color:var(--muted);font-size:12px;margin-bottom:16px');
     volDesc.textContent = t('volumes.description');
     main.appendChild(volDesc);
     // Search bar (matches the pattern used by containers + images pages).
@@ -266,14 +269,14 @@ async function loadVolumes() {
         (needle && filtered.length !== volumes.length ? '/' + volumes.length : '') + ')';
       if (filtered.length === 0) {
         var tr = document.createElement('tr'); var td = document.createElement('td');
-        td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
+        td.colSpan = 5; UI.setStyle(td, 'text-align:center;color:var(--muted);padding:40px');
         td.textContent = needle ? t('common.no_matches') : t('volumes.empty');
         tr.appendChild(td); tbody.appendChild(tr);
         return;
       }
       filtered.forEach(function(v) {
         var tr = document.createElement('tr');
-        var tdN = document.createElement('td'); tdN.style.fontWeight = '500'; tdN.textContent = v.name;
+        var tdN = document.createElement('td'); UI.setStyle(tdN, 'fontWeight', '500'); tdN.textContent = v.name;
         var tdD = document.createElement('td'); tdD.textContent = v.driver;
         var tdU = document.createElement('td');
         if (v.in_use) {
@@ -282,12 +285,12 @@ async function loadVolumes() {
           badge.textContent = v.containers.join(', ');
           tdU.appendChild(badge);
         } else {
-          tdU.textContent = t('volumes.unused'); tdU.style.color = 'var(--muted)';
+          tdU.textContent = t('volumes.unused'); UI.setStyle(tdU, 'color', 'var(--muted)');
         }
         var tdC = document.createElement('td'); tdC.className = 'created-time';
         tdC.textContent = v.created ? new Date(v.created).toLocaleString() : '';
         var tdA = document.createElement('td');
-        tdA.style.cssText = 'display:flex;gap:4px;';
+        UI.setStyle(tdA, 'display:flex;gap:4px;');
         tdA.appendChild(makeBtn(t('volumes.actions.inspect'), (function(name) {
           return function() { _showVolumeInspectModal(name); };
         })(v.name), 'btn small'));
@@ -320,7 +323,7 @@ async function loadVolumes() {
   } catch (e) {
     main.innerHTML = '';
     var p = document.createElement('p');
-    p.style.color = 'var(--red)';
+    UI.setStyle(p, 'color', 'var(--red)');
     p.textContent = t('common.error') + ': ' + e.message;
     main.appendChild(p);
   }

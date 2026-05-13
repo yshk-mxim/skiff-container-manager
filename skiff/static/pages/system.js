@@ -27,15 +27,15 @@ async function _renderAccountSection(main) {
 
   var h3 = document.createElement('h3');
   h3.textContent = 'Account';
-  h3.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px;';
+  UI.setStyle(h3, 'margin-top:28px;margin-bottom:4px;font-size:18px;');
   main.appendChild(h3);
   var desc = document.createElement('p');
-  desc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px;';
+  UI.setStyle(desc, 'font-size:12px;color:var(--muted);margin-bottom:12px;');
   desc.textContent = 'Rotate the API token without restarting, or reset config to re-run the setup wizard.';
   main.appendChild(desc);
 
   var row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+  UI.setStyle(row, 'display:flex;gap:8px;flex-wrap:wrap;');
 
   // Rotate token — opens a modal with a generated token + copy + save
   row.appendChild(makeBtn('Rotate API token', function() { _showRotateTokenModal(); }, 'btn'));
@@ -86,21 +86,21 @@ function _showRotateTokenModal() {
     });
   }, 'btn primary', 'Saving\u2026');
   sessionBtn.disabled = true;
-  sessionBtn.style.opacity = '0.6';
+  UI.setStyle(sessionBtn, 'opacity', '0.6');
   sessionBtn.title = 'Copy the new token first to unlock';
 
   var genBtn = makeBtn('Generate', function() {
     var bytes = crypto.getRandomValues(new Uint8Array(24));
     inp.value = Array.from(bytes).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-    warnCopied.style.display = 'block';
-    sessionBtn.disabled = true; sessionBtn.style.opacity = '0.6';
+    UI.setStyle(warnCopied, 'display', 'block');
+    sessionBtn.disabled = true; UI.setStyle(sessionBtn, 'opacity', '0.6');
   }, 'btn small');
   var copyBtn = makeBtn('Copy', function() {
     if (!inp.value) return;
     navigator.clipboard.writeText(inp.value).then(function() {
       copyBtn.textContent = 'Copied!';
       setTimeout(function() { copyBtn.textContent = 'Copy'; }, 1500);
-      sessionBtn.disabled = false; sessionBtn.style.opacity = '1';
+      sessionBtn.disabled = false; UI.setStyle(sessionBtn, 'opacity', '1');
     });
   }, 'btn small');
 
@@ -243,7 +243,7 @@ async function loadSystem() {
     });
     main.appendChild(grid);
 
-    var dfH = document.createElement('h3'); dfH.textContent = 'Disk Usage'; dfH.style.cssText = 'margin-top:28px;margin-bottom:16px;font-size:18px'; main.appendChild(dfH);
+    var dfH = document.createElement('h3'); dfH.textContent = 'Disk Usage'; UI.setStyle(dfH, 'margin-top:28px;margin-bottom:16px;font-size:18px'); main.appendChild(dfH);
     var dfGrid = document.createElement('div'); dfGrid.className = 'info-grid';
     [['Images',df.images_mb+' MB',df.images_count+' images, '+df.images_reclaimable_mb+' MB reclaimable',null],
      ['Containers',df.containers_mb+' MB',df.containers_count+' containers',null],
@@ -290,10 +290,10 @@ async function loadSystem() {
 
     // Security options
     if (info.security_options && info.security_options.length) {
-      var secH = document.createElement('h3'); secH.textContent = 'Security'; secH.style.cssText = 'margin-top:28px;margin-bottom:12px;font-size:18px'; main.appendChild(secH);
-      var secList = document.createElement('div'); secList.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px';
+      var secH = document.createElement('h3'); secH.textContent = 'Security'; UI.setStyle(secH, 'margin-top:28px;margin-bottom:12px;font-size:18px'); main.appendChild(secH);
+      var secList = document.createElement('div'); UI.setStyle(secList, 'background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px');
       info.security_options.forEach(function(opt) {
-        var p = document.createElement('div'); p.className = 'mono'; p.style.cssText = 'font-size:12px;padding:2px 0'; p.textContent = opt; secList.appendChild(p);
+        var p = document.createElement('div'); p.className = 'mono'; UI.setStyle(p, 'font-size:12px;padding:2px 0'); p.textContent = opt; secList.appendChild(p);
       });
       main.appendChild(secList);
     }
@@ -303,15 +303,15 @@ async function loadSystem() {
     // on the CLI. Polls every 5s while the page is visible.
     var eventsH = document.createElement('h3');
     eventsH.textContent = 'Docker Events';
-    eventsH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px';
+    UI.setStyle(eventsH, 'margin-top:28px;margin-bottom:4px;font-size:18px');
     main.appendChild(eventsH);
     var eventsDesc = document.createElement('p');
-    eventsDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px';
+    UI.setStyle(eventsDesc, 'font-size:12px;color:var(--muted);margin-bottom:12px');
     eventsDesc.textContent = 'Live daemon events for the last minute. Refreshes every 5 seconds while this page is open.';
     main.appendChild(eventsDesc);
     var eventsBox = document.createElement('pre');
     eventsBox.setAttribute('data-testid', 'events-viewer');
-    eventsBox.style.cssText = 'background:var(--sidebar-bg);color:#e2e8f0;padding:12px;border-radius:6px;font-size:12px;max-height:240px;overflow:auto;font-family:monospace;margin-bottom:16px';
+    UI.setStyle(eventsBox, 'background:var(--sidebar-bg);color:#e2e8f0;padding:12px;border-radius:6px;font-size:12px;max-height:240px;overflow:auto;font-family:monospace;margin-bottom:16px');
     eventsBox.textContent = 'Loading\u2026';
     main.appendChild(eventsBox);
     function _refreshEvents() {
@@ -335,15 +335,15 @@ async function loadSystem() {
     managedInterval(_refreshEvents, EVENTS_POLL_MS);
 
     // Audit log
-    var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; auditH.style.cssText = 'margin-top:28px;margin-bottom:4px;font-size:18px'; main.appendChild(auditH);
-    var auditDesc = document.createElement('p'); auditDesc.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px'; auditDesc.textContent = 'Recent API requests made to this app.'; main.appendChild(auditDesc);
-    var auditToolbar = document.createElement('div'); auditToolbar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap';
+    var auditH = document.createElement('h3'); auditH.textContent = 'Audit Log'; UI.setStyle(auditH, 'margin-top:28px;margin-bottom:4px;font-size:18px'); main.appendChild(auditH);
+    var auditDesc = document.createElement('p'); UI.setStyle(auditDesc, 'font-size:12px;color:var(--muted);margin-bottom:12px'); auditDesc.textContent = 'Recent API requests made to this app.'; main.appendChild(auditDesc);
+    var auditToolbar = document.createElement('div'); UI.setStyle(auditToolbar, 'display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap');
     // Tail-size selector — backend caps at MAX_AUDIT_LINES (2000 by default).
     // Showing only 200 with no affordance to see more was silent truncation.
     var tailSelect = document.createElement('select');
     tailSelect.setAttribute('data-testid', 'audit-tail-select');
     tailSelect.setAttribute('aria-label', 'Audit log tail size');
-    tailSelect.style.cssText = 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:13px';
+    UI.setStyle(tailSelect, 'padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:13px');
     [200, 500, 1000, 2000].forEach(function(n) {
       var opt = document.createElement('option'); opt.value = String(n); opt.textContent = 'Last ' + n;
       tailSelect.appendChild(opt);
@@ -353,7 +353,7 @@ async function loadSystem() {
     auditFilter.className = 'search-bar';
     auditFilter.placeholder = 'Filter by event, path, method, or status...';
     auditFilter.setAttribute('data-testid', 'audit-filter');
-    auditFilter.style.cssText = 'flex:1;min-width:220px;margin:0';
+    UI.setStyle(auditFilter, 'flex:1;min-width:220px;margin:0');
     var auditRefreshBtn = makeBtn('Refresh', function() { loadAuditLog(auditBody, tailSelect, auditFilter, auditH); }, 'btn small');
     var auditDlBtn = makeBtn('Download .jsonl', function() {
       var a = document.createElement('a'); a.href = API+'/system/audit-log/download';
@@ -370,7 +370,7 @@ async function loadSystem() {
     auditFilter.addEventListener('input', function() { loadAuditLog(auditBody, tailSelect, auditFilter, auditH, true); });
     loadAuditLog(auditBody, tailSelect, auditFilter, auditH);
 
-  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); p.style.color='var(--red)'; p.textContent='Failed: '+e.message; main.appendChild(p); }
+  } catch (e) { main.innerHTML=''; var p=document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent='Failed: '+e.message; main.appendChild(p); }
 }
 
 // Cache of the most recently fetched rows so an input filter doesn't re-hit
@@ -398,7 +398,7 @@ function loadAuditLog(tbody, tailSelect, auditFilter, auditH, reuseCache) {
     }
     if (!matching.length) {
       var tr0 = document.createElement('tr'); var td0 = document.createElement('td');
-      td0.colSpan = 7; td0.style.cssText = 'text-align:center;color:var(--muted);padding:20px';
+      td0.colSpan = 7; UI.setStyle(td0, 'text-align:center;color:var(--muted);padding:20px');
       td0.textContent = needle ? 'No audit entries match "' + needle + '".' : 'No audit entries yet.';
       tr0.appendChild(td0); tbody.appendChild(tr0); return;
     }
@@ -415,7 +415,7 @@ function loadAuditLog(tbody, tailSelect, auditFilter, auditH, reuseCache) {
     var tr = document.createElement('tr');
     var td = document.createElement('td');
     td.colSpan = 7;
-    td.style.cssText = 'color:var(--red);padding:12px';
+    UI.setStyle(td, 'color:var(--red);padding:12px');
     td.textContent = 'Failed: ' + e.message;
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -430,17 +430,17 @@ function _paintAuditRow(row, tbody) {
       var statusColor = statusCode >= 400 ? 'var(--red)' : statusCode >= 200 ? 'var(--green,#22c55e)' : '';
       function _auditCell(text, extraStyle) {
         var td = document.createElement('td');
-        td.style.cssText = 'font-size:12px;' + (extraStyle || '');
+        UI.setStyle(td, 'font-size:12px;' + (extraStyle || ''));
         td.textContent = text;
         return td;
       }
       var td0 = document.createElement('td');
-      td0.style.cssText = 'font-size:11px;color:var(--muted);white-space:nowrap';
+      UI.setStyle(td0, 'font-size:11px;color:var(--muted);white-space:nowrap');
       td0.textContent = ts;
       var td4 = _auditCell(String(row.status || ''));
-      if (statusColor) td4.style.color = statusColor;
+      if (statusColor) UI.setStyle(td4, 'color', statusColor);
       var td3 = document.createElement('td');
-      td3.style.cssText = 'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      UI.setStyle(td3, 'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
       td3.title = row.path || '';
       td3.textContent = row.path || '';
       // Resource column: server-classified resource_type + resource_id

@@ -56,11 +56,11 @@
     ov.className = 'tour-overlay';
     ov.setAttribute('data-testid', 'tour-overlay');
     var card = document.createElement('div'); card.className = 'tour-card';
-    var h = document.createElement('h3'); h.style.cssText = 'font-size:18px;margin:0 0 8px'; h.textContent = steps[idx].title;
-    var p = document.createElement('p'); p.style.cssText = 'color:var(--muted);font-size:13px;margin-bottom:18px'; p.textContent = steps[idx].body;
-    var bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center';
+    var h = document.createElement('h3'); UI.setStyle(h, 'font-size:18px;margin:0 0 8px'); h.textContent = steps[idx].title;
+    var p = document.createElement('p'); UI.setStyle(p, 'color:var(--muted);font-size:13px;margin-bottom:18px'); p.textContent = steps[idx].body;
+    var bar = document.createElement('div'); UI.setStyle(bar, 'display:flex;gap:8px;justify-content:flex-end;align-items:center');
     var progress = document.createElement('span');
-    progress.style.cssText = 'font-size:11px;color:var(--muted);margin-right:auto';
+    UI.setStyle(progress, 'font-size:11px;color:var(--muted);margin-right:auto');
     progress.textContent = (idx + 1) + ' / ' + steps.length;
     var skip = document.createElement('button'); skip.className = 'btn'; skip.textContent = 'Skip';
     skip.onclick = function() { _markDone(); ov.remove(); };

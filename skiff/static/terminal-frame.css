@@ -1,0 +1,56 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright 2026 Yakov Shkolnikov and contributors
+ *
+ * Stylesheet served alongside `/api/terminal-frame/{id}` — the route
+ * that returns a CSP-isolated HTML document hosting xterm.js inside an
+ * iframe. The main SPA serves a strict `style-src 'self'` (no
+ * 'unsafe-inline'). xterm.js cannot live under that policy because it
+ * writes element.style.X assignments during cell rendering — so it
+ * gets its own route-scoped CSP with 'unsafe-inline' for style-src,
+ * containing the relaxation to this iframe only.
+ *
+ * Everything not directly required by xterm is intentionally absent:
+ * no fonts (xterm.css ships its own), no theme tokens (the parent
+ * keeps theme state, the iframe is intentionally a black box), no
+ * keyboard handling beyond what xterm provides.
+ */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0d1117;
+  overflow: hidden;
+  /* iOS Safari otherwise inserts a 16px scroll inertia gap. */
+  -webkit-overflow-scrolling: auto;
+}
+
+/* xterm's `Terminal.open(div)` paints a canvas + a few absolutely-
+ * positioned helper divs into this container. It needs `position:
+ * relative` for the helper layers and an explicit size so FitAddon
+ * can compute the right cols/rows. */
+#term {
+  position: absolute;
+  inset: 0;
+}
+
+/* Status line for connection state. Hidden by default; the JS
+ * toggles `data-state="..."` to surface (re)connect / error messages
+ * without painting over the live terminal. */
+#status {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-family: 'DejaVu Sans Mono', monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  background: rgba(13, 17, 23, 0.75);
+  padding: 2px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  display: none;
+}
+#status[data-state="connecting"],
+#status[data-state="reconnecting"],
+#status[data-state="disconnected"],
+#status[data-state="error"] { display: block; }
+#status[data-state="error"] { color: #f87171; }

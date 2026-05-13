@@ -830,9 +830,22 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 headers["X-Content-Type-Options"] = "nosniff"
-                headers["X-Frame-Options"] = "DENY"
+                # Route handlers may set their own `X-Frame-Options` (e.g.
+                # the iframe-hosting `/api/terminal-frame/{id}` sets
+                # `SAMEORIGIN` so it can be embedded by the same-origin
+                # SPA). Only fall back to the strict global default when
+                # the handler hasn't already chosen.
+                if "X-Frame-Options" not in headers:
+                    headers["X-Frame-Options"] = "DENY"
                 headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-                headers["Content-Security-Policy"] = config._CSP
+                # Likewise for CSP — route handlers that need a different
+                # policy (Swagger UI's inline styles, xterm's inline
+                # styles inside the terminal iframe) set the header
+                # themselves; the middleware then leaves it alone instead
+                # of clobbering the route-scoped relaxation back to the
+                # strict global default.
+                if "Content-Security-Policy" not in headers:
+                    headers["Content-Security-Policy"] = config._CSP
                 headers["Permissions-Policy"] = config._PERMISSIONS_POLICY
                 if scheme == "https":
                     headers["Strict-Transport-Security"] = config.HSTS_HEADER

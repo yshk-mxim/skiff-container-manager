@@ -22,3 +22,4 @@ carries the narrative and threat-model context.
 | GET | `/api/system/overview` | — | 60/minute | — | `system_overview` | Aggregated counts + recent events — powers the Dashboard home page. |
 | POST | `/api/system/prune` | — | 10/minute | ✓ | `system_prune` | Remove all stopped containers, dangling images, and unused networks. |
 | POST | `/api/system/prune-build-cache` | — | 10/minute | ✓ | `prune_build_cache` | Clear the Docker build cache. Default queues the op so a misclick |
+| GET | `/api/terminal-frame/{container_id}` | — | 120/minute | — | `terminal_frame_page` | Serve the CSP-isolated HTML that hosts xterm.js for a container. |

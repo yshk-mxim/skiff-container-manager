@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from skiff import config, docker_client
+from skiff import config, docker_client, validators
 from skiff.auth import AUTH  # decorator arg — direct import for readability
 from skiff.contract.errors import http_error
 from skiff.rate import RATE
@@ -708,6 +708,119 @@ def api_docs_landing(request: Request) -> Response:
             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'",
+        },
+    )
+
+
+# ── Terminal iframe (sandboxed xterm.js host) ──
+# xterm.js writes element.style.X assignments during cell rendering — a
+# pattern the main SPA's strict `style-src 'self'` (no 'unsafe-inline')
+# CSP would block. We confine xterm to this iframe-served HTML, which
+# carries its own route-scoped CSP that DOES allow 'unsafe-inline' for
+# style-src. The container ID lives in the URL path; the iframe's JS
+# pulls the AUTH token from sessionStorage (same-origin with the parent)
+# and connects directly to `/ws/exec/{container_id}`. The parent SPA
+# embeds this route via `<iframe src="/api/terminal-frame/{id}">` and
+# communicates via postMessage (see terminal-frame.js for the protocol).
+#
+# `frame-ancestors 'self'` permits embedding only by the same-origin
+# parent — third-party sites cannot iframe this terminal.
+
+_TERMINAL_FRAME_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKIFF Terminal</title>
+<link rel="stylesheet" href="/static/xterm/xterm.css">
+<link rel="stylesheet" href="/static/terminal-frame.css">
+</head>
+<body>
+<div id="term" aria-label="Container shell"></div>
+<div id="status" role="status" aria-live="polite"></div>
+<script src="/static/xterm/xterm.js"></script>
+<script src="/static/xterm/addon-fit.js"></script>
+<script src="/static/terminal-frame.js"></script>
+</body>
+</html>
+"""
+
+
+@router.get(
+    "/api/terminal-frame/{container_id}",
+    include_in_schema=False,
+    tags=["system"],
+)
+@secure_route.public(RATE.PUBLIC)
+def terminal_frame_page(request: Request, container_id: str) -> Response:
+    """Serve the CSP-isolated HTML that hosts xterm.js for a container.
+
+    The main SPA embeds this route in an iframe via
+    ``<iframe src="/api/terminal-frame/{id}">``. The frame brings its
+    own route-scoped CSP so xterm's inline-style writes survive while
+    the parent document stays under strict `style-src 'self'`.
+
+    **Public by design.** Bearer-token auth lives in sessionStorage on
+    the parent SPA and CANNOT travel with a browser-initiated iframe
+    navigation (sessionStorage is not a cookie). The HTML this route
+    returns is pure boilerplate — xterm.js + addon-fit script tags + a
+    stub div + the terminal-frame.js bootstrap. It exposes no Docker
+    state and no privileged information; the container_id in the path
+    is just a string the iframe's JS reads back. The real auth gate
+    is `/ws/exec/{id}`, which the iframe connects to over WebSocket
+    and authenticates via `AUTH <bearer-token>` as the first frame
+    (same pattern the WS protocol already uses, see logging_setup.py).
+    Pre-existing protections still apply:
+      * `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`
+        prevent cross-origin embedding, so a malicious site cannot
+        iframe this route to phish operators.
+      * `secure_route.public(RATE.PUBLIC)` rate-limits anonymous hits.
+      * The container_id is regex-validated below — anything outside
+        Docker's ID/name grammar → 400, never echoed into the HTML.
+    """
+    # Reject anything outside Docker's container-ID/name grammar so the
+    # path never carries an exotic codepoint into the URL the iframe
+    # exposes. Accept either short-ID (hex) or container-name shapes;
+    # the actual auth + Docker lookup happens inside /ws/exec/{id}.
+    if not (validators.CONTAINER_ID_RE.fullmatch(container_id) or validators.CONTAINER_NAME_RE.fullmatch(container_id)):
+        return Response(
+            content="Invalid container id",
+            media_type="text/plain; charset=utf-8",
+            status_code=400,
+        )
+    return Response(
+        content=_TERMINAL_FRAME_HTML,
+        media_type="text/html; charset=utf-8",
+        headers={
+            # `default-src 'none'` denies-by-default; every category is
+            # explicitly enumerated below.
+            #  - script-src 'self' — xterm.js + addon-fit + terminal-frame.js
+            #    all ship from /static/. No inline scripts, no CDNs.
+            #  - style-src 'self' 'unsafe-inline' — xterm.js writes
+            #    inline element.style during render; this exception is
+            #    what justifies sandbox-via-iframe. Scoped to this
+            #    response; the parent SPA keeps strict style-src 'self'.
+            #  - connect-src 'self' — WebSocket back to /ws/exec/.
+            #  - img-src 'self' data: — xterm's cursor cell uses data URIs.
+            #  - frame-ancestors 'self' — embeddable only by same-origin.
+            #  - form-action 'none' — no form posts from this page.
+            #  - base-uri 'none' — defence against <base> injection.
+            #  - object-src 'none' — no plugin embeds.
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "connect-src 'self'; "
+                "img-src 'self' data:; "
+                "font-src 'self'; "
+                "frame-ancestors 'self'; "
+                "form-action 'none'; "
+                "base-uri 'none'; "
+                "object-src 'none'"
+            ),
+            # Defence-in-depth on top of the in-CSP frame-ancestors
+            # directive. Some older user-agents only honour XFO.
+            "X-Frame-Options": "SAMEORIGIN",
         },
     )
 

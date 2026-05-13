@@ -321,10 +321,13 @@ def test_r8_logout_and_relogin(page, live_server):
     )
     stored = page.evaluate("sessionStorage.getItem('api_token')")
     assert stored == E2E_TOKEN
-    # And the logout button eventually shows — accept either the .visible
-    # class or inline style.display being non-none (older build compat).
+    # And the logout button eventually shows. We can't use
+    # `el.style.display` here because the strict-CSP refactor routes
+    # JS-set styles through CSSOM rules (`_csp_N`), leaving the inline
+    # `style` attribute empty. `getComputedStyle` reflects the rule.
     page.wait_for_function(
         "() => { const el = document.getElementById('sidebar-logout'); "
-        "  return el && (el.classList.contains('visible') || el.style.display !== 'none'); }",
+        "  return el && (el.classList.contains('visible')"
+        "    || getComputedStyle(el).display !== 'none'); }",
         timeout=LONG,
     )

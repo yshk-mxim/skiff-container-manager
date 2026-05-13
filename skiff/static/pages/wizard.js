@@ -53,13 +53,13 @@ function _paintCountdown(secs) {
     if (!el) return;
     if (secs <= 0) {
         el.textContent = '';
-        el.style.display = 'none';
+        UI.setStyle(el, 'display', 'none');
         return;
     }
     // Self-labelling copy — previous "Nm Ss left" didn't say what was
     // counting down, so reviewers thought it was their session.
     el.textContent = 'Setup window closes in ' + _formatRemaining(secs);
-    el.style.display = '';
+    UI.setStyle(el, 'display', '');
 }
 
 function _applyWizardState(state) {
@@ -95,7 +95,7 @@ function _applyWizardState(state) {
         if (sessionBtn && sessionBtn.dataset.tokenAck === '1') sessionBtn.disabled = false;
         if (window.statusBanner) window.statusBanner.clear('setup_window_expired');
     } else {
-        countdown.style.display = 'none';
+        UI.setStyle(countdown, 'display', 'none');
         wrap.classList.add('wizard-expired');
         if (submitBtn) submitBtn.disabled = true;
         if (sessionBtn) sessionBtn.disabled = true;
@@ -173,7 +173,7 @@ function showSetupWizard(state) {
     document.body.appendChild(toastContainer);
     const wrap = document.createElement('div');
     wrap.id = 'sw-wrap';
-    wrap.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;';
+    UI.setStyle(wrap, 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box;');
     // Use safe string values; server-supplied data assigned via textContent/value only
     const defaultSocket = String((state && state.tunnel_socket) || '/tmp/skiff-docker.sock');
     const tunnelActive = !!(state && state.tunnel_active);
@@ -245,7 +245,7 @@ function showSetupWizard(state) {
     function _unlockSessionBtn() {
         var btn = document.getElementById('sw-btn-session');
         btn.disabled = false;
-        btn.style.opacity = '1';
+        UI.setStyle(btn, 'opacity', '1');
         btn.removeAttribute('title');
         // Mark as "ack'd by user so the setup-state poller doesn't re-lock
         // this button when it re-runs _applyWizardState on the next tick.
@@ -253,11 +253,11 @@ function showSetupWizard(state) {
     }
     document.getElementById('sw-gen-btn').addEventListener('click', function() {
         document.getElementById('sw-token').value = Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-        document.getElementById('sw-token-warn').style.display = 'block';
+        UI.setStyle(document.getElementById('sw-token-warn'), 'display', 'block');
         // Re-lock session-only button when a fresh token is generated
         var sbtn = document.getElementById('sw-btn-session');
         sbtn.disabled = true;
-        sbtn.style.opacity = '0.6';
+        UI.setStyle(sbtn, 'opacity', '0.6');
         sbtn.title = 'Copy the token first to unlock';
         delete sbtn.dataset.tokenAck;  // keep the poller from auto-reenabling
     });
@@ -294,7 +294,7 @@ function showSetupWizard(state) {
     const customInput = document.getElementById('sw-host-custom');
     customInput.value = 'unix:///var/run/docker.sock';
     customInput.addEventListener('input', function() {
-        if (document.getElementById('sw-panel-local').style.display !== 'none') {
+        if (UI.getStyle(document.getElementById('sw-panel-local'), 'display') !== 'none') {
             hostInput.value = customInput.value.trim() || 'unix:///var/run/docker.sock';
         }
     });
@@ -310,7 +310,7 @@ function showSetupWizard(state) {
         var hint = document.getElementById('sw-host-custom');
         var hintHolder = document.createElement('div');
         hintHolder.id = 'sw-host-detect';
-        hintHolder.style.cssText = 'font-size:11px;margin-top:4px;font-weight:500';
+        UI.setStyle(hintHolder, 'font-size:11px;margin-top:4px;font-weight:500');
         // Remove any existing detect hint (re-runs on page refresh)
         var old = document.getElementById('sw-host-detect');
         if (old) old.remove();
@@ -318,11 +318,11 @@ function showSetupWizard(state) {
           var winner = probe.reachable[0];
           hint.value = winner;
           hostInput.value = winner;
-          hintHolder.style.color = '#4ade80';
+          UI.setStyle(hintHolder, 'color', '#4ade80');
           hintHolder.textContent = '\u2713 Runtime detected at ' + winner +
             (probe.reachable.length > 1 ? ' (and ' + (probe.reachable.length - 1) + ' other)' : '');
         } else {
-          hintHolder.style.color = '#94a3b8';
+          UI.setStyle(hintHolder, 'color', '#94a3b8');
           hintHolder.textContent = 'No runtime detected. Start one first (see Containers tab after setup for help).';
         }
         hint.parentNode.insertBefore(hintHolder, hint.nextSibling);
@@ -333,10 +333,10 @@ function showSetupWizard(state) {
         // as the host, so the user can reuse it instead of accidentally switching to Local.
         swSetMode('tunnel');
         hostInput.value = 'unix://' + defaultSocket;
-        statusEl.style.color = '#4ade80';
+        UI.setStyle(statusEl, 'color', '#4ade80');
         statusEl.textContent = '\u2713 Tunnel active \u2014 ' + defaultSocket;
     } else {
-        statusEl.style.color = '#64748b';
+        UI.setStyle(statusEl, 'color', '#64748b');
         statusEl.textContent = 'Requires key-based SSH auth (no passphrase).';
         // Default tab is Local — sw-host tracks the Local input
         hostInput.value = customInput.value;
@@ -349,15 +349,15 @@ function showSetupWizard(state) {
 
 function swSetMode(mode) {
     const isTunnel = mode === 'tunnel';
-    document.getElementById('sw-panel-tunnel').style.display = isTunnel ? 'block' : 'none';
-    document.getElementById('sw-panel-local').style.display = isTunnel ? 'none' : 'block';
+    UI.setStyle(document.getElementById('sw-panel-tunnel'), 'display', isTunnel ? 'block' : 'none');
+    UI.setStyle(document.getElementById('sw-panel-local'), 'display', isTunnel ? 'none' : 'block');
     // Active tab = teal. Inactive tab = slate-700 so it still reads as a
     // real clickable button (old transparent rendering blended into the
     // card background and users missed it as an option).
-    document.getElementById('sw-tab-tunnel').style.background = isTunnel ? '#0d9488' : '#334155';
-    document.getElementById('sw-tab-tunnel').style.color = isTunnel ? 'white' : '#e2e8f0';
-    document.getElementById('sw-tab-local').style.background = isTunnel ? '#334155' : '#0d9488';
-    document.getElementById('sw-tab-local').style.color = isTunnel ? '#e2e8f0' : 'white';
+    UI.setStyle(document.getElementById('sw-tab-tunnel'), 'background', isTunnel ? '#0d9488' : '#334155');
+    UI.setStyle(document.getElementById('sw-tab-tunnel'), 'color', isTunnel ? 'white' : '#e2e8f0');
+    UI.setStyle(document.getElementById('sw-tab-local'), 'background', isTunnel ? '#334155' : '#0d9488');
+    UI.setStyle(document.getElementById('sw-tab-local'), 'color', isTunnel ? '#e2e8f0' : 'white');
     if (!isTunnel) {
         document.getElementById('sw-host').value = document.getElementById('sw-host-custom').value.trim() || 'unix:///var/run/docker.sock';
     }
@@ -367,8 +367,8 @@ async function swConnectTunnel() {
     const target = document.getElementById('sw-ssh-target').value.trim();
     const statusEl = document.getElementById('sw-tunnel-status');
     const btn = document.getElementById('sw-tunnel-btn');
-    if (!target) { statusEl.style.color = '#f87171'; statusEl.textContent = 'Enter user@host first.'; return; }
-    statusEl.style.color = '#94a3b8';
+    if (!target) { UI.setStyle(statusEl, 'color', '#f87171'); statusEl.textContent = 'Enter user@host first.'; return; }
+    UI.setStyle(statusEl, 'color', '#94a3b8');
     statusEl.textContent = 'Connecting\u2026';
     btn.disabled = true;
     try {
@@ -381,7 +381,7 @@ async function swConnectTunnel() {
         if (!r.ok) {
             _renderTunnelError(statusEl, d && d.detail, target);
         } else {
-            statusEl.style.color = '#4ade80';
+            UI.setStyle(statusEl, 'color', '#4ade80');
             // Use DOM methods to insert server-supplied socket_path safely
             while (statusEl.firstChild) statusEl.removeChild(statusEl.firstChild);
             statusEl.appendChild(document.createTextNode('\u2713 Tunnel active \u2014 ' + d.socket_path));
@@ -391,7 +391,7 @@ async function swConnectTunnel() {
             sessionStorage.removeItem('tunnelHost');
         }
     } catch (e) {
-        statusEl.style.color = '#f87171';
+        UI.setStyle(statusEl, 'color', '#f87171');
         statusEl.textContent = '\u2717 Could not reach server';
     }
     btn.disabled = false;
@@ -400,7 +400,7 @@ async function swConnectTunnel() {
 // Render a classified SSH tunnel error with actionable guidance.
 // `detail` is either a string (plain error) or object {message, code, help}.
 function _renderTunnelError(statusEl, detail, target) {
-    statusEl.style.color = '#f87171';
+    UI.setStyle(statusEl, 'color', '#f87171');
     while (statusEl.firstChild) statusEl.removeChild(statusEl.firstChild);
     var code = (detail && typeof detail === 'object') ? (detail.code || 'other') : 'other';
     var msg = (detail && typeof detail === 'object') ? (detail.message || 'Connection failed') : String(detail || 'Connection failed');
@@ -410,7 +410,7 @@ function _renderTunnelError(statusEl, detail, target) {
     statusEl.appendChild(line1);
     if (help) {
         var line2 = document.createElement('div');
-        line2.style.cssText = 'color:#94a3b8;margin-top:4px;';
+        UI.setStyle(line2, 'color:#94a3b8;margin-top:4px;');
         line2.textContent = help;
         statusEl.appendChild(line2);
     }
@@ -419,7 +419,7 @@ function _renderTunnelError(statusEl, detail, target) {
     // by the regex on the submit path) — assigned via textContent so no HTML injection.
     if (code === 'auth_failed' || code === 'no_key' || code === 'host_key_mismatch') {
         var cmd = document.createElement('div');
-        cmd.style.cssText = 'margin-top:8px;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:#e2e8f0;cursor:pointer;user-select:all;';
+        UI.setStyle(cmd, 'margin-top:8px;background:#0f172a;border:1px solid #334155;border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:#e2e8f0;cursor:pointer;user-select:all;');
         cmd.title = 'Click to copy';
         var shellCmd = (code === 'host_key_mismatch')
             ? 'ssh ' + target
@@ -429,20 +429,20 @@ function _renderTunnelError(statusEl, detail, target) {
         cmd.textContent = shellCmd;
         cmd.addEventListener('click', function() {
             navigator.clipboard.writeText(shellCmd).then(function() {
-                cmd.style.outline = '2px solid #22c55e';
-                setTimeout(function() { cmd.style.outline = ''; }, 1200);
+                UI.setStyle(cmd, 'outline', '2px solid #22c55e');
+                setTimeout(function() { UI.setStyle(cmd, 'outline', ''); }, 1200);
             });
         });
         statusEl.appendChild(cmd);
         var note = document.createElement('div');
-        note.style.cssText = 'color:#64748b;font-size:11px;margin-top:4px;';
+        UI.setStyle(note, 'color:#64748b;font-size:11px;margin-top:4px;');
         note.textContent = 'Run this in your terminal, then click Connect again. SKIFF never sees your password.';
         statusEl.appendChild(note);
     }
 }
 
 async function swSubmit(saveEnv) {
-    const isTunnel = document.getElementById('sw-panel-tunnel').style.display !== 'none';
+    const isTunnel = UI.getStyle(document.getElementById('sw-panel-tunnel'), 'display') !== 'none';
     let host = document.getElementById('sw-host').value.trim();
     if (!isTunnel) {
         host = document.getElementById('sw-host-custom').value.trim() || host;
@@ -450,17 +450,17 @@ async function swSubmit(saveEnv) {
     const token = document.getElementById('sw-token').value.trim();
     const regs = document.getElementById('sw-regs').value.trim();
     const errEl = document.getElementById('sw-error');
-    errEl.style.display = 'none';
+    UI.setStyle(errEl, 'display', 'none');
     if (isTunnel) {
         const statusEl = document.getElementById('sw-tunnel-status');
         if (!statusEl || !statusEl.textContent.startsWith('\u2713')) {
             errEl.textContent = 'Connect the SSH tunnel first, or switch to Local / Custom.';
-            errEl.style.display = 'block';
+            UI.setStyle(errEl, 'display', 'block');
             return;
         }
     }
-    if (!host) { errEl.textContent = 'Docker host is required.'; errEl.style.display = 'block'; return; }
-    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (minimum 16 characters).'; errEl.style.display = 'block'; return; }
+    if (!host) { errEl.textContent = 'Docker host is required.'; UI.setStyle(errEl, 'display', 'block'); return; }
+    if (!token || token.length < 16) { errEl.textContent = 'Generate a token first (minimum 16 characters).'; UI.setStyle(errEl, 'display', 'block'); return; }
 
     if (saveEnv) {
         const lines = [
@@ -495,12 +495,12 @@ async function swSubmit(saveEnv) {
                 msg = detail || 'Setup failed.';
             }
             errEl.textContent = msg;
-            errEl.style.display = 'block';
+            UI.setStyle(errEl, 'display', 'block');
             return;
         }
     } catch (e) {
         errEl.textContent = 'Could not reach server.';
-        errEl.style.display = 'block';
+        UI.setStyle(errEl, 'display', 'block');
         return;
     }
 

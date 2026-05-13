@@ -165,6 +165,12 @@ def test_all_routes_have_auth_dependency():
         "/api/contract/error-codes",
         "/api/openapi.json",
         "/api/docs",  # Swagger UI HTML — no data
+        # Iframe boilerplate — browser iframe nav cannot carry a Bearer
+        # token from sessionStorage; the route returns xterm.js loader
+        # HTML only. The actual auth gate is `/ws/exec/{id}` (AUTH frame
+        # over WebSocket). `frame-ancestors 'self'` + X-Frame-Options:
+        # SAMEORIGIN keep external embedders out.
+        "/api/terminal-frame/{container_id}",
         "/api/setup/probe-docker",  # wizard-only, rate-limited
         "/api/setup/tunnel",  # wizard-only, rate-limited
         "/api/tunnel/status",  # public during wizard

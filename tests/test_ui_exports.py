@@ -25,6 +25,13 @@ _UI_PATH = Path(__file__).resolve().parent.parent / "skiff" / "static" / "ui.js"
 _EXPECTED_EXPORTS: frozenset[str] = frozenset(
     {
         "el",
+        # CSP-strict helpers: route JS-set styles through CSSOM rule mutation
+        # on /static/styles.css instead of element.style.* so a strict
+        # `style-src 'self'` (no 'unsafe-inline') CSP works. `getStyle`
+        # is the symmetric read (since `element.style.X` returns ''
+        # under strict CSP and call sites can't introspect that directly).
+        "setStyle",
+        "getStyle",
         "kvRow",
         "kvSection",
         "copy",

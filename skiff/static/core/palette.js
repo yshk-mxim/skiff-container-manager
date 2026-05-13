@@ -270,11 +270,11 @@
     bg.className = 'modal-bg shortcuts-help';
     bg.onclick = function(ev) { if (ev.target === bg) bg.remove(); };
     var box = document.createElement('div'); box.className = 'modal';
-    box.style.maxWidth = '480px';
+    UI.setStyle(box, 'maxWidth', '480px');
     var h3 = document.createElement('h3'); h3.textContent = 'Keyboard shortcuts';
     box.appendChild(h3);
     var dl = document.createElement('dl');
-    dl.style.cssText = 'display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:12px 0 8px';
+    UI.setStyle(dl, 'display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:12px 0 8px');
     [
       [formatShortcut(), 'Command palette — jump to any page or container'],
       ['?', 'This shortcut help'],
@@ -288,16 +288,16 @@
       ['Enter', 'Submit modal form or run selected palette item'],
     ].forEach(function(row) {
       var dt = document.createElement('dt');
-      dt.style.cssText = 'font-family:monospace;background:var(--card);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px;';
+      UI.setStyle(dt, 'font-family:monospace;background:var(--card);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px;');
       dt.textContent = row[0];
       var dd = document.createElement('dd');
-      dd.style.cssText = 'font-size:13px;color:var(--text);margin:0';
+      UI.setStyle(dd, 'font-size:13px;color:var(--text);margin:0');
       dd.textContent = row[1];
       dl.append(dt, dd);
     });
     box.appendChild(dl);
     var note = document.createElement('p');
-    note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:8px';
+    UI.setStyle(note, 'font-size:11px;color:var(--muted);margin-top:8px');
     note.textContent = 'The Terminal tab also honours xterm.js shortcuts (Ctrl-C, arrow-key history, Tab completion) — those run inside the PTY, not the browser.';
     box.appendChild(note);
     // Replay first-run tour. Exposed here (not in the sidebar) because
@@ -306,9 +306,9 @@
     // deliberate "help me" surface where a restart button reads as
     // discoverable help.
     var tourRow = document.createElement('div');
-    tourRow.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px';
+    UI.setStyle(tourRow, 'margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px');
     var tourLabel = document.createElement('span');
-    tourLabel.style.cssText = 'font-size:12px;color:var(--muted)';
+    UI.setStyle(tourLabel, 'font-size:12px;color:var(--muted)');
     tourLabel.textContent = 'Want to see the 4-step guided tour again?';
     var tourBtn = document.createElement('button');
     tourBtn.className = 'btn small';

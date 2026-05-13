@@ -746,12 +746,20 @@ def test_compose_deploy_invalid_yaml_shows_error(page, live_server):
     )
 
     # The UI first renders a colourless "Deploying stack…" placeholder then replaces
-    # it with the final (coloured) result div.  Wait until style.color is non-empty.
+    # it with the final (coloured) result div. Wait until the computed
+    # colour is non-default. We use `getComputedStyle` rather than reading
+    # `element.style.color` because under the strict-CSP refactor, JS-set
+    # styles route through a `_csp_N` CSSOM rule (see ui.js:setStyle) —
+    # the inline `style` attribute is empty even when the colour is applied.
     page.wait_for_function(
-        "() => { var el = document.querySelector('#compose-output .log-viewer'); return el && el.style.color !== ''; }",
+        "() => { var el = document.querySelector('#compose-output .log-viewer');"
+        "  if (!el) return false; var c = getComputedStyle(el).color;"
+        "  return c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent'; }",
         timeout=MEDIUM,
     )
-    color = page.locator("#compose-output .log-viewer").evaluate("el => el.style.color")
+    color = page.locator("#compose-output .log-viewer").evaluate(
+        "el => getComputedStyle(el).color",
+    )
     text = page.locator("#compose-output .log-viewer").text_content()
     # Red: rgb(248, 81, 73) or the hex equivalent
     assert "248" in color or "f85149" in color.replace("#", "").lower(), (
@@ -785,12 +793,19 @@ def test_compose_output_shown_on_success(page, live_server):
         ]
     )
 
-    # Wait until style.color is non-empty (interim "Deploying…" placeholder has no colour)
+    # Wait until the computed colour is non-default. `getComputedStyle`
+    # because JS-set colours under the strict-CSP refactor route through
+    # a `_csp_N` CSSOM rule rather than the inline `style` attribute
+    # (see ui.js:setStyle).
     page.wait_for_function(
-        "() => { var el = document.querySelector('#compose-output .log-viewer'); return el && el.style.color !== ''; }",
+        "() => { var el = document.querySelector('#compose-output .log-viewer');"
+        "  if (!el) return false; var c = getComputedStyle(el).color;"
+        "  return c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent'; }",
         timeout=LONG,
     )
-    color = page.locator("#compose-output .log-viewer").evaluate("el => el.style.color")
+    color = page.locator("#compose-output .log-viewer").evaluate(
+        "el => getComputedStyle(el).color",
+    )
     text = page.locator("#compose-output .log-viewer").text_content()
     # Green: rgb(63, 185, 80) or hex #3fb950
     assert "63" in color or "3fb950" in color.replace("#", "").lower(), (
