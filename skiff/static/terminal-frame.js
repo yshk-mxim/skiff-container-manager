@@ -191,8 +191,15 @@
       };
       ws.onclose = function (evt) {
         if (userClosed) {
+          // Operator clicked the SPA's Disconnect button. The cached
+          // iframe stays mounted in `#_term-host` and we surface the
+          // same in-iframe "Start new session" affordance the
+          // server-initiated close uses, so the operator has a
+          // one-click path to a fresh shell without leaving the
+          // Terminal tab.
           setStatus('disconnected', 'Session ended');
           term.write('\r\n[Session ended]\r\n');
+          _showRestartButton('Start new session');
           postToParent({ type: 'terminal-disconnected', code: evt.code, reason: evt.reason || '' });
           return;
         }

@@ -409,11 +409,10 @@ function sessionCleanup() {
   // not in the main document's WS registry. Without this, signing
   // out (or hitting the 8-hour absolute timeout) leaves N background
   // WS connections + xterm runtimes alive until the page is closed.
-  if (window._termCache) {
-    Object.keys(window._termCache).forEach(function (id) {
-      try { _termCacheClose(id); } catch (e) { /* ignore */ }
-    });
-  }
+  // Hard purge (not soft Disconnect) because the operator's session
+  // is over — we don't want a stranded "Start new session" button
+  // sitting in a logged-out tab.
+  if (typeof _termCachePurgeAll === 'function') _termCachePurgeAll();
   if (typeof _hideTermHost === 'function') _hideTermHost();
 }
 
@@ -1790,23 +1789,47 @@ function _hideTermHost() {
 }
 
 function _termCacheClose(id) {
-  // Hard-close: drop the cached iframe entirely (called when user
-  // clicks Disconnect or navigates back to the container list).
+  // Soft-close: tell the iframe to close its WS but keep the iframe
+  // mounted in `#_term-host` so terminal-frame.js can render its own
+  // "Start new session" affordance in place. Without leaving the
+  // iframe alive the operator just sees a blank panel and has no
+  // one-click recovery path — the UX bug the "huge disconnect
+  // button with no reconnect" feedback flagged.
   var c = window._termCache[id];
   if (!c) return;
   if (c.iframe) {
-    // Politely tell the iframe to close its WS before we detach.
     try {
       c.iframe.contentWindow.postMessage(
         { type: 'disconnect' },
         window.location.origin,
       );
     } catch (e) { /* iframe may have already navigated away */ }
-    if (c.iframe.parentNode) {
-      try { c.iframe.parentNode.removeChild(c.iframe); } catch (e) { /* ignore */ }
-    }
   }
-  delete window._termCache[id];
+  // Cache entry stays. A second Disconnect click after the WS is
+  // already closed is a no-op — postMessage just delivers to the
+  // already-disconnected iframe and terminal-frame.js ignores it.
+}
+
+// Hard purge used when the operator's session itself ends (sign-out
+// or absolute-timeout via sessionCleanup). Removes every cached
+// iframe from the DOM and clears the cache map.
+function _termCachePurgeAll() {
+  if (!window._termCache) return;
+  Object.keys(window._termCache).forEach(function (id) {
+    var c = window._termCache[id];
+    if (c && c.iframe) {
+      try {
+        c.iframe.contentWindow.postMessage(
+          { type: 'disconnect' },
+          window.location.origin,
+        );
+      } catch (e) { /* ignore */ }
+      if (c.iframe.parentNode) {
+        try { c.iframe.parentNode.removeChild(c.iframe); } catch (e) { /* ignore */ }
+      }
+    }
+    delete window._termCache[id];
+  });
 }
 
 function showShellContent(id) {
