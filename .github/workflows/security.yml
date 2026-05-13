@@ -195,7 +195,7 @@ jobs:
           curl -sSf http://127.0.0.1:18300/health
 
       - name: ZAP Baseline
-        uses: zaproxy/action-baseline@5b1d0b06f06e599ab23b9d7a53b2e54fb1a60b25  # pinned
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25  # v0.15.0
         with:
           target: http://127.0.0.1:18300
           rules_file_name: .zap/baseline.conf
