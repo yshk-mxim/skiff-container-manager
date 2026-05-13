@@ -1851,13 +1851,25 @@ function showShellContent(id) {
   // Overlay the host on the slot and start tracking layout changes.
   _attachTermToSlot(slot, id);
 
-  // Disconnect button — lives in the slot's layout, so it follows
-  // detail-content scrolling naturally.
+  // Disconnect button lives INSIDE `#_term-host`, on top of the iframe.
+  // Putting it in detail-content would stack it under the body-level
+  // overlay (different stacking contexts; document-order siblings stack
+  // later siblings on top), so the button would be invisible.
+  // Inside the host, both share the same context and z-index:3 keeps it
+  // above the iframe. Recreated per `showShellContent` call so the
+  // closure captures the right container id; the host is cleared of
+  // any previous detached button below before re-mount.
+  var host = _ensureTermHost();
+  // Remove any previous Disconnect button (one per active container);
+  // keep only the iframe(s) themselves.
+  Array.prototype.slice.call(host.querySelectorAll('button.btn')).forEach(function (b) {
+    if (b.parentNode === host) host.removeChild(b);
+  });
   var disconnectBtn = makeBtn('Disconnect', function() {
     _termCacheClose(id);
   }, 'btn small danger');
   UI.setStyle(disconnectBtn, 'position:absolute;top:8px;right:8px;z-index:3');
-  el.appendChild(disconnectBtn);
+  host.appendChild(disconnectBtn);
 
   // Single message listener per parent. Tracked on window so re-entry
   // doesn't stack duplicates that double-handle every event.
