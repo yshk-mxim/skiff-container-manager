@@ -1633,227 +1633,139 @@ function _surfaceWsLockout(evt) {
   });
 }
 
-// ── Terminal ──
+// ── Terminal (iframe-sandboxed xterm.js) ──
 //
-// Uses xterm.js (vendored under /static/xterm/) as the PTY renderer.
-// Pre-xterm the terminal was a `<input>` + scrolling `<div>` — that
-// limped through line-based commands but couldn't render ANSI colours,
-// readline sequences (arrow-key history, Ctrl-A/E/K/W), Tab completion,
-// or any TUI program (vim, htop, less). xterm.js is the de-facto web-
-// terminal — VS Code's integrated terminal and GitHub Codespaces use it,
-// as do other browser-based exec surfaces. The SKIFF server already
-// emits PTY-raw bytes over the WS; xterm.js just needs to render them.
-var MAX_EXEC_RECONNECTS = 5;
-// Per-container terminal-session cache. Users regularly switch between
-// Terminal → Logs → Inspect → Terminal and expect their shell + scroll
-// buffer to survive. The previous implementation blew the session away
-// on every tab switch because showDetail() does `main.innerHTML = ''`.
-// We now park the xterm DOM + WS under this cache when leaving Terminal
-// and reattach on re-entry.
+// xterm.js writes inline element.style assignments during render — a
+// pattern the SPA's strict `style-src 'self'` (no 'unsafe-inline')
+// CSP would otherwise block. To keep the rest of the SPA under the
+// strict policy without losing the terminal, xterm is confined to a
+// same-origin iframe served by `GET /api/terminal-frame/{id}`. That
+// route ships its own route-scoped CSP that DOES allow 'unsafe-inline'
+// for style-src; the relaxation never bleeds into the parent document.
+//
+// All terminal behaviour (xterm.Terminal, FitAddon, WS reconnect,
+// resize, keystroke wiring) lives in `/static/terminal-frame.js` and
+// runs inside the iframe's window. The parent just embeds the iframe
+// and exchanges intent via postMessage:
+//
+//   parent ← iframe : { type: 'terminal-ready' }
+//                     { type: 'terminal-disconnected', code, reason }
+//                     { type: 'terminal-session-expired' }
+//                     { type: 'terminal-error', message }
+//   iframe ← parent : { type: 'focus' }
+//                     { type: 'disconnect' }
+//
+// Origin checks: the iframe only honours messages from window.parent
+// at window.location.origin; the parent only handles messages whose
+// `event.origin` equals `window.location.origin`. The route also pins
+// `frame-ancestors 'self'` so the page cannot be embedded cross-site.
+//
+// Per-container session cache: the iframe element is held in
+// `_termCache[id]` so Terminal → Logs → Terminal preserves the live
+// session. The iframe is detached/re-attached rather than re-created;
+// in browsers that re-load on re-attach, terminal-frame.js's
+// reconnect-on-close path picks the session back up.
 if (!window._termCache) window._termCache = {};
-function _termCacheEntry(id) { return window._termCache[id] || null; }
+
 function _termCacheClose(id) {
-  // Hard-close: drop the cached session (called when user clicks
-  // Disconnect or navigates fully back to the list).
+  // Hard-close: drop the cached iframe entirely (called when user
+  // clicks Disconnect or navigates back to the container list).
   var c = window._termCache[id];
   if (!c) return;
-  try { if (c.ws) c.ws.close(1000, 'session closed'); } catch (e) {}
-  try { if (c.term) c.term.dispose(); } catch (e) {}
+  if (c.iframe) {
+    // Politely tell the iframe to close its WS before we detach.
+    try {
+      c.iframe.contentWindow.postMessage(
+        { type: 'disconnect' },
+        window.location.origin,
+      );
+    } catch (e) { /* iframe may have already navigated away */ }
+    if (c.iframe.parentNode) {
+      try { c.iframe.parentNode.removeChild(c.iframe); } catch (e) { /* ignore */ }
+    }
+  }
   delete window._termCache[id];
 }
+
 function showShellContent(id) {
-  var el = document.getElementById('detail-content'); el.innerHTML = '';
-  // Reattach a cached terminal if this container already has a live
-  // session from an earlier tab visit. The WS stays open across tab
-  // switches; only Disconnect or leaving the detail view closes it.
-  var cached = _termCacheEntry(id);
-  if (cached && cached.termWrap && cached.ws && cached.ws.readyState === 1) {
-    el.appendChild(cached.termWrap);
-    if (cached.fit) { try { cached.fit.fit(); } catch (e) {} }
-    if (cached.term) { try { cached.term.focus(); } catch (e) {} }
-    // Re-add the disconnect button (lives outside termWrap).
-    var reDisc = makeBtn('Disconnect', function() {
-      _termCacheClose(id);
-      if (cached.term) cached.term.write('\r\n[Disconnected]\r\n');
-    }, 'btn small danger');
-    UI.setStyle(reDisc, 'position:absolute;top:8px;right:8px;z-index:2');
-    UI.setStyle(el, 'position', 'relative');
-    el.appendChild(reDisc);
-    return;
-  }
-  // Container retains id="term-output" for test compat — many e2e
-  // assertions look up the terminal by this id. The DOM class is
-  // .terminal so the dark background + padding from styles.css still
-  // applies while xterm.js paints its own cells on top.
-  var termWrap = document.createElement('div');
-  termWrap.className = 'terminal';
-  termWrap.id = 'term-output';
-  UI.setStyle(termWrap, 'padding', '0');  // xterm.js supplies its own padding
-  el.append(termWrap);
+  var el = document.getElementById('detail-content');
+  el.innerHTML = '';
   UI.setStyle(el, 'position', 'relative');
-  var _execClosed = false;
-  var term = null;
-  if (window.Terminal) {
-    term = new window.Terminal({
-      cursorBlink: true,
-      fontFamily: '"DejaVu Sans Mono","Liberation Mono","Noto Sans Mono","Courier New",monospace',
-      fontSize: 13,
-      theme: {
-        background: '#0d1117',
-        foreground: '#e6edf3',
-        cursor: '#e6edf3',
-      },
-      scrollback: 10000,
-      convertEol: true,  // shells emit \n; without this long output lacks \r
-    });
-    var fit = null;
-    if (window.FitAddon && window.FitAddon.FitAddon) {
-      fit = new window.FitAddon.FitAddon();
-      term.loadAddon(fit);
-    }
-    term.open(termWrap);
-    if (fit) { try { fit.fit(); } catch (e) {} }
-    // Exposed so the disconnect handler + resize logic in connectExecWS
-    // can reach the live Terminal / FitAddon instances.
-    termWrap._term = term;
-    termWrap._fit = fit;
+
+  // Reattach an already-mounted iframe if this container has a live
+  // terminal session from an earlier tab visit. Browsers that re-load
+  // an iframe on re-attach simply re-execute terminal-frame.js, which
+  // reconnects via its normal startup path; users see at worst a
+  // ~100ms blip rather than a fresh PTY.
+  var cached = window._termCache[id];
+  var iframe;
+  if (cached && cached.iframe) {
+    iframe = cached.iframe;
   } else {
-    // Fallback: xterm.js script didn't load. Fall back to the legacy
-    // div+input shape so the UI still works in degraded form.
-    termWrap.className = 'terminal';
-    var input = document.createElement('input');
-    input.className = 'terminal-input';
-    input.placeholder = 'Type command... (xterm.js failed to load — degraded mode)';
-    el.appendChild(input);
-    termWrap._legacyInput = input;
+    iframe = document.createElement('iframe');
+    iframe.src = '/api/terminal-frame/' + encodeURIComponent(id);
+    iframe.title = 'Container shell';
+    // Class hooks into the existing `.terminal` rule for height +
+    // dark background, while xterm.js paints its own cells on top.
+    iframe.className = 'terminal terminal-iframe';
+    iframe.id = 'term-output';  // preserved for e2e selectors
+    // Restrictive sandbox flags. We need `allow-scripts` (xterm.js)
+    // and `allow-same-origin` (sessionStorage for the AUTH token +
+    // same-origin WebSocket to /ws/exec/), and nothing else — no
+    // popups, no top-navigation, no form submission.
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    window._termCache[id] = { iframe: iframe };
   }
+  el.appendChild(iframe);
+
   var disconnectBtn = makeBtn('Disconnect', function() {
-    _execClosed = true;
     _termCacheClose(id);
-    if (term) { term.write('\r\n[Disconnected]\r\n'); }
-    else if (termWrap._legacyInput) { termWrap.textContent += '\r\n[Disconnected]'; }
   }, 'btn small danger');
   UI.setStyle(disconnectBtn, 'position:absolute;top:8px;right:8px;z-index:2');
   el.appendChild(disconnectBtn);
-  connectExecWS(id, 0, termWrap, term, el, function() { return _execClosed; }, function(v) { _execClosed = v; });
-  // Cache the session so Terminal → Logs → Terminal re-mounts the same
-  // xterm with the same WS and scrollback. Populated AFTER the WS is
-  // constructed inside connectExecWS (where `main._ws` is set); we store
-  // a reference to the wrap here and the WS will be picked up by the
-  // cache-lookup branch on re-entry via `cached.ws`.
-  var _bindCache = function() {
-    var ws = document.getElementById('main') && document.getElementById('main')._ws;
-    window._termCache[id] = { termWrap: termWrap, ws: ws, term: term, fit: termWrap._fit };
-  };
-  // connectExecWS kicks async WS construction; register the cache after
-  // a microtask so `main._ws` is populated.
-  setTimeout(_bindCache, 0);
-  if (term) term.focus(); else if (termWrap._legacyInput) termWrap._legacyInput.focus();
+
+  // Single message listener per parent. Tracked on window so re-entry
+  // doesn't stack duplicates that double-handle every event.
+  if (!window._termFrameListenerInstalled) {
+    window._termFrameListenerInstalled = true;
+    window.addEventListener('message', _onTerminalFrameMessage);
+  }
+
+  // Defer focus so the iframe has time to attach its own message
+  // listener before we send the focus command.
+  setTimeout(function() {
+    try {
+      iframe.contentWindow.postMessage(
+        { type: 'focus' },
+        window.location.origin,
+      );
+    } catch (e) { /* iframe still loading — terminal-frame.js focuses
+                     itself on init anyway, so this is best-effort */ }
+  }, 200);
 }
 
-/**
- * Open an interactive exec WebSocket and wire it to an xterm.js
- * Terminal (or the legacy input-fallback when xterm.js failed to
- * load). Reconnects on unexpected close up to MAX_EXEC_RECONNECTS.
- * @param {string} id - Container short ID
- * @param {number} attempt - Current reconnect attempt count
- * @param {HTMLElement} termWrap - Div hosting the Terminal (has id="term-output")
- * @param {Terminal|null} term - xterm.js Terminal instance, or null (legacy mode)
- * @param {HTMLElement} el - Wrapping container (used to mount error buttons)
- * @param {Function} isClosed - Returns true if the user disconnected
- * @param {Function} setClosed - Call to mark the session closed
- */
-function connectExecWS(id, attempt, termWrap, term, el, isClosed, setClosed) {
-  if (isClosed()) return;
-  // Shorthand: write a status line to the terminal in either xterm or
-  // legacy-fallback mode without branching at every call site.
-  function writeStatus(msg) {
-    if (term) { term.write('\r\n' + msg + '\r\n'); }
-    else { termWrap.textContent += '\r\n' + msg; }
-  }
-  if (attempt >= MAX_EXEC_RECONNECTS) {
-    writeStatus('[Max reconnect attempts reached]');
-    var btn = makeBtn('Reconnect shell', function() {
-      setClosed(false);
-      connectExecWS(id, 0, termWrap, term, el, isClosed, setClosed);
-    }, 'btn primary');
-    UI.setStyle(btn, 'marginTop', '8px');
-    el.appendChild(btn);
-    return;
-  }
-  var delay = Math.min(1000 * Math.pow(2, attempt), 16000);
-  var prevWs = document.getElementById('main') && document.getElementById('main')._ws;
-  if (prevWs && prevWs.readyState < WebSocket.CLOSING) {
-    try { prevWs.close(1000, 'reconnecting'); } catch(e) {}
-  }
-  var ws = registerWS(new WebSocket(wsUrl('/ws/exec/' + id)));
-  document.getElementById('main')._ws = ws;
-  // Resize: xterm.js + FitAddon computes the exact cols/rows that fit
-  // the current container size. The server honours the
-  // {"type":"resize","cols":N,"rows":M} frame via exec_resize; without
-  // it the shell stays pinned at 80×24 and TUI apps (vim, htop, less)
-  // wrap badly. Legacy fallback keeps the old pixel-estimate shape.
-  function _sendTerminalResize() {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    var cols, rows;
-    if (term && termWrap._fit) {
-      try { termWrap._fit.fit(); } catch (e) {}
-      cols = term.cols;
-      rows = term.rows;
-    } else {
-      var rect = termWrap.getBoundingClientRect();
-      cols = Math.max(20, Math.floor((rect.width || 640) / 8));
-      rows = Math.max(6, Math.floor((rect.height || 400) / 16));
+function _onTerminalFrameMessage(e) {
+  // Origin pin: only honour messages from the same origin (the iframe).
+  // A cross-origin embedder would post an `origin` of "null" or its own
+  // host; rejecting those is the parent half of the protocol.
+  if (e.origin !== window.location.origin) return;
+  var data = e.data || {};
+  if (data.type === 'terminal-session-expired') {
+    // Reuse the existing session-expiry surface so the user sees the
+    // same banner + toast they'd see for an API call that 401s.
+    toast('Session expired — please log in again', 'error');
+    if (typeof _surfaceWsLockout === 'function') {
+      _surfaceWsLockout({ code: 4003, reason: 'session-expired' });
     }
-    try { ws.send(JSON.stringify({type: 'resize', cols: cols, rows: rows})); } catch (e) {}
+  } else if (data.type === 'terminal-error') {
+    // Most terminal-error events are transient WS hiccups that the
+    // iframe's own reconnect handles. Log to console for debug; only
+    // surface a toast when the iframe declared a fatal failure.
+    try { console.warn('terminal-frame:', data.message); } catch (err) { /* ignore */ }
   }
-  var _resizeTimer = null;
-  function _onWindowResize() {
-    if (_resizeTimer) clearTimeout(_resizeTimer);
-    _resizeTimer = setTimeout(_sendTerminalResize, 150);
-  }
-  window.addEventListener('resize', _onWindowResize);
-  ws.addEventListener('close', function() { window.removeEventListener('resize', _onWindowResize); });
-  ws.onopen = function() {
-    wsAuthOnOpen(ws);
-    if (attempt > 0) { writeStatus('[Reconnected]'); }
-    setTimeout(_sendTerminalResize, 100);
-  };
-  ws.onmessage = function(e) {
-    if (isClosed()) return;
-    if (term) { term.write(e.data); }
-    else { termWrap.textContent += e.data; termWrap.scrollTop = termWrap.scrollHeight; }
-  };
-  ws.onerror = function() { writeStatus('[Connection error]'); };
-  ws.onclose = function(evt) {
-    if (isClosed()) { writeStatus('[Session ended]'); return; }
-    if (evt.code === 1000) return;
-    if (evt.code === 4003) {
-      _surfaceWsLockout(evt);
-      writeStatus('[Session expired — please log in again]');
-      toast('Session expired — please log in again', 'error');
-      return;
-    }
-    if (document.getElementById('term-output')) {
-      writeStatus('[Reconnecting in ' + (delay / 1000) + 's...]');
-      setTimeout(function() { connectExecWS(id, attempt + 1, termWrap, term, el, isClosed, setClosed); }, delay);
-    }
-  };
-  // Keystroke wiring: xterm.js emits raw PTY bytes (arrow keys as ANSI
-  // escapes, Ctrl-C as \x03, Tab as \t, readline chords — all handled
-  // by the shell, not us). Legacy fallback ships line-at-a-time on Enter.
-  if (term) {
-    term.onData(function(data) {
-      if (ws.readyState === WebSocket.OPEN) { try { ws.send(data); } catch(e) {} }
-    });
-  } else if (termWrap._legacyInput) {
-    termWrap._legacyInput.onkeydown = function(e) {
-      if (e.key === 'Enter') {
-        if (ws.readyState === WebSocket.OPEN) { ws.send(termWrap._legacyInput.value + '\n'); }
-        termWrap._legacyInput.value = '';
-      }
-    };
-  }
+  // 'terminal-ready' and 'terminal-disconnected' are informational —
+  // the iframe shows its own status banner inside the frame, so the
+  // parent doesn't need to surface them.
 }
 
 // ── Inspect ──

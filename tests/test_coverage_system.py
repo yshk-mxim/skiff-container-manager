@@ -397,3 +397,97 @@ def test_api_docs_csp_allows_inline_style_not_inline_script(client):
     # self-hosted build should not need it — catch it here.
     assert "script-src 'self'" in csp
     assert "script-src 'self' 'unsafe-inline'" not in csp
+
+
+# ── Terminal iframe (CSP-isolated xterm.js host) ──────────────────────────────
+
+
+def test_terminal_frame_requires_auth(client):
+    """The iframe URL is auth-gated like the rest of /api/. Hitting it
+    without a bearer token (against an instance that HAS an API_TOKEN
+    configured) must 401 — never leak the embedded HTML, never reveal
+    that a container with that ID exists."""
+    resp = client.get("/api/terminal-frame/abcd1234")  # no AUTH_HEADER
+    assert resp.status_code in (401, 403)
+
+
+def test_terminal_frame_renders(client):
+    """Authenticated GET returns the minimal HTML that hosts xterm.js
+    inside the iframe — references the vendored xterm assets and the
+    terminal-frame.js module, nothing else."""
+    resp = client.get("/api/terminal-frame/abcd1234", headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    body = resp.text
+    assert "/static/xterm/xterm.js" in body
+    assert "/static/xterm/addon-fit.js" in body
+    assert "/static/xterm/xterm.css" in body
+    assert "/static/terminal-frame.js" in body
+    assert "/static/terminal-frame.css" in body
+    # The iframe page must not pull in the main SPA bundle — that would
+    # defeat the CSP isolation and re-introduce xterm into the parent
+    # document's CSP scope.
+    assert "/static/app.js" not in body
+    assert "/static/ui.js" not in body
+
+
+def test_terminal_frame_csp_isolates_unsafe_inline_to_frame(client):
+    """The route's CSP keeps `'unsafe-inline'` for style-src (xterm
+    writes inline styles), but the relaxation is route-scoped — the
+    parent SPA's CSP stays strict."""
+    resp = client.get("/api/terminal-frame/abcd1234", headers=AUTH_HEADER)
+    csp = resp.headers.get("Content-Security-Policy", "")
+    # Required relaxation for xterm.js cell rendering.
+    assert "style-src 'self' 'unsafe-inline'" in csp
+    # script-src must NOT carry 'unsafe-inline'; all scripts ship under /static/.
+    assert "script-src 'self'" in csp
+    assert "script-src 'self' 'unsafe-inline'" not in csp
+    # Embedding contract: only same-origin parents may iframe this page.
+    assert "frame-ancestors 'self'" in csp
+    # WebSocket back to /ws/exec/ requires connect-src; nothing else.
+    assert "connect-src 'self'" in csp
+    # Defence-in-depth header for old user-agents that don't honour
+    # frame-ancestors.
+    assert resp.headers.get("X-Frame-Options", "").upper() == "SAMEORIGIN"
+
+
+def test_terminal_frame_rejects_invalid_container_id(client):
+    """The container_id path component must match Docker's name/ID
+    grammar. Anything outside it returns 400, never echoes the raw
+    value into the HTML response, and never reaches /ws/exec/."""
+    resp = client.get(
+        "/api/terminal-frame/" + "../etc/passwd",
+        headers=AUTH_HEADER,
+    )
+    # FastAPI's default routing rejects path traversal as 404 because
+    # the slashes split the path component; the test still verifies
+    # nothing leaks.
+    assert resp.status_code in (400, 404, 422)
+    if resp.status_code == 400:
+        assert "Invalid container id" in resp.text
+
+
+def test_main_html_no_longer_loads_xterm(client):
+    """xterm.js was relocated into the iframe. The main index.html
+    must NOT load /static/xterm/xterm.js directly — otherwise the
+    parent document would still need `style-src 'self' 'unsafe-inline'`
+    for xterm's cell renderer."""
+    resp = client.get("/static/index.html")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "/static/xterm/xterm.js" not in body
+    assert "/static/xterm/addon-fit.js" not in body
+
+
+def test_global_csp_has_no_unsafe_inline_for_style(client):
+    """After the iframe-sandbox migration, the global CSP applied by
+    the audit middleware must not include `'unsafe-inline'` in
+    style-src. Inline-style writes have all been migrated to
+    UI.setStyle (CSSOM-rule backed). Regression here would
+    re-introduce the CSS-injection attack surface ZAP 10055 flags."""
+    resp = client.get("/api/config", headers=AUTH_HEADER)
+    csp = resp.headers.get("Content-Security-Policy", "")
+    assert "style-src 'self'" in csp
+    assert "style-src 'self' 'unsafe-inline'" not in csp
+    # frame-src 'self' is required so the iframe can load.
+    assert "frame-src 'self'" in csp

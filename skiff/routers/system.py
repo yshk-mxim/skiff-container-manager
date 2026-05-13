@@ -29,6 +29,7 @@ from skiff.auth import AUTH  # decorator arg — direct import for readability
 from skiff.contract.errors import http_error
 from skiff.rate import RATE
 from skiff.secure import secure_route
+from skiff import validators
 from skiff.validators import safe_docker_call
 
 # Used by the config-knob PUT handler that lives above the rest of the
@@ -708,6 +709,111 @@ def api_docs_landing(request: Request) -> Response:
             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'",
+        },
+    )
+
+
+# ── Terminal iframe (sandboxed xterm.js host) ──
+# xterm.js writes element.style.X assignments during cell rendering — a
+# pattern the main SPA's strict `style-src 'self'` (no 'unsafe-inline')
+# CSP would block. We confine xterm to this iframe-served HTML, which
+# carries its own route-scoped CSP that DOES allow 'unsafe-inline' for
+# style-src. The container ID lives in the URL path; the iframe's JS
+# pulls the AUTH token from sessionStorage (same-origin with the parent)
+# and connects directly to `/ws/exec/{container_id}`. The parent SPA
+# embeds this route via `<iframe src="/api/terminal-frame/{id}">` and
+# communicates via postMessage (see terminal-frame.js for the protocol).
+#
+# `frame-ancestors 'self'` permits embedding only by the same-origin
+# parent — third-party sites cannot iframe this terminal.
+
+_TERMINAL_FRAME_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKIFF Terminal</title>
+<link rel="stylesheet" href="/static/xterm/xterm.css">
+<link rel="stylesheet" href="/static/terminal-frame.css">
+</head>
+<body>
+<div id="term" aria-label="Container shell"></div>
+<div id="status" role="status" aria-live="polite"></div>
+<script src="/static/xterm/xterm.js"></script>
+<script src="/static/xterm/addon-fit.js"></script>
+<script src="/static/terminal-frame.js"></script>
+</body>
+</html>
+"""
+
+
+@router.get(
+    "/api/terminal-frame/{container_id}",
+    include_in_schema=False,
+    tags=["system"],
+    dependencies=AUTH,
+)
+@secure_route.read(RATE.READ)
+def terminal_frame_page(request: Request, container_id: str) -> Response:
+    """Serve the CSP-isolated HTML that hosts xterm.js for a container.
+
+    The main SPA embeds this route in an iframe via
+    ``<iframe src="/api/terminal-frame/{id}">``. The frame brings its
+    own route-scoped CSP so xterm's inline-style writes survive while
+    the parent document stays under strict `style-src 'self'`.
+
+    The container ID is only used as a path component for the iframe's
+    JS to pluck back; this route itself doesn't talk to Docker. The
+    actual shell is opened by the iframe's WebSocket against
+    ``/ws/exec/{container_id}``, which performs its own AUTH +
+    audit-logged exec session.
+    """
+    # Reject anything outside Docker's container-ID/name grammar so the
+    # path never carries an exotic codepoint into the URL the iframe
+    # exposes. Accept either short-ID (hex) or container-name shapes;
+    # the actual auth + Docker lookup happens inside /ws/exec/{id}.
+    if not (
+        validators.CONTAINER_ID_RE.fullmatch(container_id)
+        or validators.CONTAINER_NAME_RE.fullmatch(container_id)
+    ):
+        return Response(
+            content="Invalid container id",
+            media_type="text/plain; charset=utf-8",
+            status_code=400,
+        )
+    return Response(
+        content=_TERMINAL_FRAME_HTML,
+        media_type="text/html; charset=utf-8",
+        headers={
+            # `default-src 'none'` denies-by-default; every category is
+            # explicitly enumerated below.
+            #  - script-src 'self' — xterm.js + addon-fit + terminal-frame.js
+            #    all ship from /static/. No inline scripts, no CDNs.
+            #  - style-src 'self' 'unsafe-inline' — xterm.js writes
+            #    inline element.style during render; this exception is
+            #    what justifies sandbox-via-iframe. Scoped to this
+            #    response; the parent SPA keeps strict style-src 'self'.
+            #  - connect-src 'self' — WebSocket back to /ws/exec/.
+            #  - img-src 'self' data: — xterm's cursor cell uses data URIs.
+            #  - frame-ancestors 'self' — embeddable only by same-origin.
+            #  - form-action 'none' — no form posts from this page.
+            #  - base-uri 'none' — defence against <base> injection.
+            #  - object-src 'none' — no plugin embeds.
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "connect-src 'self'; "
+                "img-src 'self' data:; "
+                "font-src 'self'; "
+                "frame-ancestors 'self'; "
+                "form-action 'none'; "
+                "base-uri 'none'; "
+                "object-src 'none'"
+            ),
+            # Defence-in-depth on top of the in-CSP frame-ancestors
+            # directive. Some older user-agents only honour XFO.
+            "X-Frame-Options": "SAMEORIGIN",
         },
     )
 

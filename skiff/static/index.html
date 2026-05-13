@@ -10,10 +10,6 @@
      'self') both work without inline style. Theme tokens, utility
      classes, and widget rules are all in styles.css. -->
 <link rel="stylesheet" href="/static/styles.css">
-<!-- xterm.js stylesheet — ships its own CSS for cell layout + canvas
-     positioning. Loaded BEFORE the theme init so paint order is stable.
-     CSS is MIT; vendored under skiff/static/xterm/ so no CDN. -->
-<link rel="stylesheet" href="/static/xterm/xterm.css">
 <!-- Theme pre-init runs before the main scripts to avoid flash-of-wrong-
      theme. Served as a same-origin file so the strict CSP script-src
      'self' passes without an inline-script exception. -->
@@ -93,12 +89,10 @@
 <!-- Shared status-banner module. Loaded early so wizard.js + app.js can
      both call statusBanner.set() during init. No deps beyond DOM ready. -->
 <script src="/static/core/statusBanner.js"></script>
-<!-- xterm.js (vendored, pinned @5.5.0). Exposes window.Terminal and
-     window.FitAddon.FitAddon. app.js's showShellContent falls back to
-     a legacy input box if these globals are absent, so the app still
-     works if these scripts fail to load. -->
-<script src="/static/xterm/xterm.js"></script>
-<script src="/static/xterm/addon-fit.js"></script>
+<!-- xterm.js used to load here; it now lives inside the route-scoped
+     /api/terminal-frame/{id} iframe so its inline-style writes can keep
+     working without forcing the main page's CSP to allow
+     'unsafe-inline'. See skiff/static/terminal-frame.js. -->
 <!-- Wizard loads BEFORE app.js because app.js's init IIFE calls
      checkSetupState() synchronously (before any await resolves). Wizard
      module defines only functions that reference app.js globals inside

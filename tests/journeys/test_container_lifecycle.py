@@ -487,8 +487,20 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
             if term_tab.count() == 0:
                 pytest.skip("Terminal tab not surfaced (feature may be off for this image)")
             term_tab.click()
-            # Allow xterm to mount.
-            page.wait_for_selector(".xterm, #term-output", timeout=MEDIUM)
+            # xterm now lives inside a same-origin iframe at
+            # /api/terminal-frame/{id} (see the security_headers.toml /
+            # terminal-frame.js comments for the CSP rationale). The
+            # iframe element itself carries id="term-output" so the
+            # selector hook stays; the `.xterm` descendant moved into
+            # the iframe's own contentDocument.
+            page.wait_for_selector("iframe#term-output", timeout=MEDIUM)
+            # Wait for the iframe document to have xterm mounted.
+            page.wait_for_function(
+                "() => { const f = document.getElementById('term-output');"
+                "  if (!f || !f.contentDocument) return false;"
+                "  return !!f.contentDocument.querySelector('.xterm'); }",
+                timeout=MEDIUM,
+            )
 
         with step("step_4_switch_to_logs_and_back"):
             logs_tab = page.locator(".detail-tab:has-text('Logs')").first
@@ -497,13 +509,17 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
                 page.wait_for_timeout(400)
             # Switch back.
             term_tab.click()
-            # If the regression recurs, xterm is absent or the
-            # #term-output element is empty. Check both.
-            page.wait_for_selector(".xterm, #term-output", timeout=MEDIUM)
-            # Assert the cached term wasn't torn down.
+            page.wait_for_selector("iframe#term-output", timeout=MEDIUM)
+            # The iframe is held in window._termCache[id].iframe and
+            # re-attached rather than re-created, so the same
+            # contentWindow + xterm instance survive the tab swap. If
+            # the regression recurs the iframe will have a fresh
+            # contentDocument with no xterm mounted yet.
             alive = page.evaluate(
-                "() => { const el = document.getElementById('term-output');"
-                "  return !!(el && (el._term || el.querySelector('.xterm'))); }",
+                "() => { const f = document.getElementById('term-output');"
+                "  if (!f || f.tagName !== 'IFRAME' || !f.contentDocument)"
+                "    return false;"
+                "  return !!f.contentDocument.querySelector('.xterm'); }",
             )
             if not alive:
                 audit_observer.emit(

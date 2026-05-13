@@ -135,14 +135,33 @@ def term_send(page: Any, text: str) -> None:
 def term_read(page: Any) -> str:
     """Read the visible terminal text — reliable across xterm.js
     renderer backends (canvas vs DOM). Uses xterm's own active buffer
-    as the source of truth rather than inner_text on the host div,
-    which is noisy once xterm paints overlay rows.
+    as the source of truth rather than inner_text on the host element.
+
+    After the CSP-driven iframe-sandbox refactor, `#term-output` is the
+    iframe element itself; the xterm Terminal instance lives on the
+    iframe's contentWindow rather than on the host div. This helper
+    accepts both shapes:
+
+      - Legacy (pre-iframe): `el._term` on the host div
+      - Current (iframe):    `el.contentWindow._term` inside the frame
+                             (terminal-frame.js exposes the Terminal
+                             instance on its window for diagnostics)
+
+    Falls back to `inner_text` when neither is available — that path
+    is used by older tests that just look for *any* text in the panel.
     """
     return page.evaluate(
         """() => {
             const el = document.getElementById('term-output');
-            if (!el || !el._term) return (el?.innerText || '');
-            const t = el._term;
+            if (!el) return '';
+            let t = null;
+            if (el.tagName === 'IFRAME') {
+                try { t = el.contentWindow && el.contentWindow._term; }
+                catch (e) { /* same-origin iframe but cross-doc race */ }
+            } else if (el._term) {
+                t = el._term;
+            }
+            if (!t) return (el.innerText || '');
             const buf = t.buffer.active;
             const lines = [];
             for (let i = 0; i < buf.length; i++) {
