@@ -24,12 +24,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from skiff import config, docker_client
+from skiff import config, docker_client, validators
 from skiff.auth import AUTH  # decorator arg — direct import for readability
 from skiff.contract.errors import http_error
 from skiff.rate import RATE
 from skiff.secure import secure_route
-from skiff import validators
 from skiff.validators import safe_docker_call
 
 # Used by the config-knob PUT handler that lives above the rest of the
