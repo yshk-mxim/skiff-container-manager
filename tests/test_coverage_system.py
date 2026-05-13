@@ -470,17 +470,23 @@ def test_terminal_frame_csp_isolates_unsafe_inline_to_frame(client):
 def test_terminal_frame_rejects_invalid_container_id(client):
     """The container_id path component must match Docker's name/ID
     grammar. Anything outside it returns 400, never echoes the raw
-    value into the HTML response, and never reaches /ws/exec/."""
-    resp = client.get(
-        "/api/terminal-frame/" + "../etc/passwd",
-        headers=AUTH_HEADER,
-    )
-    # FastAPI's default routing rejects path traversal as 404 because
-    # the slashes split the path component; the test still verifies
-    # nothing leaks.
-    assert resp.status_code in (400, 404, 422)
-    if resp.status_code == 400:
-        assert "Invalid container id" in resp.text
+    value into the HTML response, and never reaches /ws/exec/.
+
+    Pick a value that reaches the handler (no slashes / unsafe chars
+    that FastAPI's routing would reject upstream) but trips the
+    CONTAINER_ID_RE / CONTAINER_NAME_RE check inside the handler. `!`
+    is outside both grammars: container-name allows
+    `[a-zA-Z0-9_.-]`, container-ID is hex.
+    """
+    resp = client.get("/api/terminal-frame/bad!chars")
+    assert resp.status_code == 400
+    assert "Invalid container id" in resp.text
+    # The body must not contain the offending input — anything echoed
+    # back into the HTML would reopen a reflected-XSS vector.
+    assert "bad!chars" not in resp.text
+    # Also covers the path-traversal case for completeness.
+    resp2 = client.get("/api/terminal-frame/" + "../etc/passwd")
+    assert resp2.status_code in (400, 404, 422)
 
 
 def test_main_html_no_longer_loads_xterm(client):
@@ -493,6 +499,33 @@ def test_main_html_no_longer_loads_xterm(client):
     body = resp.text
     assert "/static/xterm/xterm.js" not in body
     assert "/static/xterm/addon-fit.js" not in body
+
+
+def test_spa_index_root_serves_index_html(client):
+    """`GET /` serves the SPA shell. Existed but untested at the
+    coverage tier — coverage of the SPA index handler keeps `/` from
+    silently regressing on a refactor that touches the static-file
+    plumbing."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    # Sanity: it's the real shell, not an error page.
+    assert "<html" in resp.text.lower()
+
+
+def test_docker_host_label_empty_returns_unset():
+    """`_docker_host_label('')` short-circuits to the literal `'unset'`
+    so an empty `DOCKER_HOST` doesn't surface as the SHA-256 of an
+    empty string (which would still be a stable scrape-time identifier
+    and could mislead a Prometheus dashboard into thinking the field
+    is set). The empty-input early return was uncovered until now."""
+    from skiff.routers.system import _docker_host_label
+
+    assert _docker_host_label("") == "unset"
+    # Non-empty input takes the hash branch.
+    val = _docker_host_label("unix:///tmp/skiff-docker.sock")
+    assert val.startswith("h_")
+    assert len(val) == 14  # h_ + 12 hex chars
 
 
 def test_global_csp_has_no_unsafe_inline_for_style(client):
