@@ -404,6 +404,17 @@ function sessionCleanup() {
   if (main) main._ws = null;
   document.querySelectorAll('.modal-bg').forEach(function(m) { m.remove(); });
   _refreshInFlight = false;
+  // Tear down every cached terminal iframe. closeAllWS doesn't touch
+  // these — the WebSockets live inside each iframe's contentWindow,
+  // not in the main document's WS registry. Without this, signing
+  // out (or hitting the 8-hour absolute timeout) leaves N background
+  // WS connections + xterm runtimes alive until the page is closed.
+  if (window._termCache) {
+    Object.keys(window._termCache).forEach(function (id) {
+      try { _termCacheClose(id); } catch (e) { /* ignore */ }
+    });
+  }
+  if (typeof _hideTermHost === 'function') _hideTermHost();
 }
 
 function checkSessionExpiry() {
@@ -712,6 +723,12 @@ function showPage(page) {
   }
   clearAllIntervals();
   closeDetailWS();
+  // Hide the body-level terminal overlay so it doesn't paint over the
+  // new page. The iframe stays mounted in `#_term-host` (separate from
+  // #main), so its contentWindow + WS + scrollback survive the
+  // navigation. Returning to a container's Terminal tab will
+  // reattach the same session.
+  _hideTermHost();
   currentPage = page;
   window.currentPage = page;
   // Remember the last-viewed page so a reload keeps the user where
@@ -1457,18 +1474,20 @@ function showDetail(id, name, tab) {
   clearAllIntervals();
   var main = document.getElementById('main');
   // `main._ws` holds the CURRENT tab's WS. For logs we always close
-  // on tab-switch (a fresh tail starts on re-entry). For the terminal
-  // we DON'T close — the session is cached via `_termCache[id]` and
-  // must survive tab switches so the user's shell + scrollback stay.
-  // Detect the case by checking cache membership before closing.
+  // on tab-switch (a fresh tail starts on re-entry). The terminal WS
+  // now lives inside the iframe's window — stashing the iframe in
+  // body (below) keeps it attached so its WS doesn't die.
   if (main._ws) {
-    var keepAlive = window._termCache && window._termCache[id] &&
-                    window._termCache[id].ws === main._ws;
-    if (!keepAlive) {
-      try { main._ws.close(); } catch(e) {}
-    }
+    try { main._ws.close(); } catch(e) {}
     main._ws = null;
   }
+  // Hide the body-level terminal overlay before wiping #main so it
+  // doesn't paint over the new tab's content. The iframe itself lives
+  // in `#_term-host` (not in main), so the wipe doesn't touch it —
+  // its contentWindow, WebSocket, and xterm scrollback survive.
+  // If the new tab is Terminal again, showShellContent re-shows the
+  // overlay and reattaches to the new slot.
+  _hideTermHost();
   main.innerHTML = '';
   var header = document.createElement('div'); header.className = 'page-header';
   var h2 = document.createElement('h2'); h2.textContent = name;
@@ -1667,6 +1686,109 @@ function _surfaceWsLockout(evt) {
 // reconnect-on-close path picks the session back up.
 if (!window._termCache) window._termCache = {};
 
+// Stable parent for terminal iframes. Lives at <body> level, so tab
+// switches that wipe `#main` never touch it. Moving an <iframe>
+// element between parents via appendChild destroys its contentWindow
+// (and therefore its WebSocket + xterm scrollback); `Node.moveBefore`
+// would preserve it, but as of 2026 Safari doesn't ship moveBefore.
+// We sidestep the move entirely: the iframe lives in `#_term-host`
+// for its whole lifetime, and we use CSS positioning to overlay it
+// onto the `.terminal-slot` placeholder that showShellContent paints
+// inside the detail content area.
+function _ensureTermHost() {
+  var host = document.getElementById('_term-host');
+  if (host) return host;
+  host = document.createElement('div');
+  host.id = '_term-host';
+  // Positioned out of flow at body level. Coordinates are recomputed
+  // from the active slot's getBoundingClientRect; scroll listeners
+  // keep the overlay glued to the slot as the page moves.
+  UI.setStyle(host, 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:auto;');
+  // Hidden until showShellContent activates a specific container.
+  UI.setStyle(host, 'display', 'none');
+  document.body.appendChild(host);
+  return host;
+}
+
+// Reposition `#_term-host` to overlay `slot` exactly. Doc-relative
+// coords (left + window.scrollX, top + window.scrollY) so the host
+// scrolls with the page even though it lives at body level. Called
+// on initial mount and on every resize / scroll event while the
+// terminal is active.
+function _positionTermHost(slot) {
+  var host = _ensureTermHost();
+  if (!slot || !slot.isConnected) return;
+  var r = slot.getBoundingClientRect();
+  UI.setStyle(host, 'top', (r.top + window.scrollY) + 'px');
+  UI.setStyle(host, 'left', (r.left + window.scrollX) + 'px');
+  UI.setStyle(host, 'width', r.width + 'px');
+  UI.setStyle(host, 'height', r.height + 'px');
+}
+
+// Tracker for the current slot + observers, so we can swap targets
+// when the user moves between containers' Terminal tabs.
+window._termActive = window._termActive || { slot: null, ro: null, scrollHandler: null, resizeHandler: null };
+
+function _attachTermToSlot(slot, id) {
+  var host = _ensureTermHost();
+  UI.setStyle(host, 'display', 'block');
+  // Show the requested container's iframe; hide all others.
+  if (window._termCache) {
+    Object.keys(window._termCache).forEach(function (otherId) {
+      var entry = window._termCache[otherId];
+      if (!entry || !entry.iframe) return;
+      UI.setStyle(entry.iframe, 'display', otherId === id ? 'block' : 'none');
+      // Sized to fill the host. Set on every attach because the host
+      // dimensions are recomputed from the slot.
+      if (otherId === id) {
+        UI.setStyle(entry.iframe, 'width:100%;height:100%;border:0;display:block;');
+      }
+    });
+  }
+  // Position now, and re-position on the events that can move the slot.
+  _positionTermHost(slot);
+  // Tear down any prior listeners — we only track ONE slot at a time.
+  _detachTermSlotListeners();
+  function reposition() { _positionTermHost(slot); }
+  window._termActive.slot = slot;
+  window._termActive.resizeHandler = reposition;
+  window._termActive.scrollHandler = reposition;
+  window.addEventListener('resize', reposition);
+  window.addEventListener('scroll', reposition, true);  // capture: catch
+                                                        // scroll on inner
+                                                        // scrollable
+                                                        // ancestors too
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(reposition);
+    ro.observe(slot);
+    ro.observe(document.documentElement);
+    window._termActive.ro = ro;
+  }
+}
+
+function _detachTermSlotListeners() {
+  var a = window._termActive;
+  if (!a) return;
+  if (a.resizeHandler) window.removeEventListener('resize', a.resizeHandler);
+  if (a.scrollHandler) window.removeEventListener('scroll', a.scrollHandler, true);
+  if (a.ro) { try { a.ro.disconnect(); } catch (e) { /* ignore */ } }
+  a.slot = null;
+  a.ro = null;
+  a.resizeHandler = null;
+  a.scrollHandler = null;
+}
+
+// Called from any flow that leaves the Terminal-active state (showDetail
+// to a non-terminal tab, showPage navigating away, sign-out). Hides
+// the host overlay but DOES NOT touch the cached iframes — they keep
+// their contentWindow (and WS + scrollback) alive so a return visit
+// reattaches the same session.
+function _hideTermHost() {
+  var host = document.getElementById('_term-host');
+  if (host) UI.setStyle(host, 'display', 'none');
+  _detachTermSlotListeners();
+}
+
 function _termCacheClose(id) {
   // Hard-close: drop the cached iframe entirely (called when user
   // clicks Disconnect or navigates back to the container list).
@@ -1692,36 +1814,49 @@ function showShellContent(id) {
   el.innerHTML = '';
   UI.setStyle(el, 'position', 'relative');
 
-  // Reattach an already-mounted iframe if this container has a live
-  // terminal session from an earlier tab visit. Browsers that re-load
-  // an iframe on re-attach simply re-execute terminal-frame.js, which
-  // reconnects via its normal startup path; users see at worst a
-  // ~100ms blip rather than a fresh PTY.
+  // Plant the slot — a 380px-tall placeholder div that reserves layout
+  // space for the terminal overlay. The slot lives inside detail-content
+  // (and gets wiped along with everything else on tab switch); the
+  // iframe overlay itself lives in `#_term-host` at body level so it
+  // survives tab switches without DOM moves (Safari has no
+  // Node.moveBefore yet, and plain appendChild destroys the iframe's
+  // contentWindow). Slot id="term-output" is preserved so existing
+  // selectors keep working.
+  var slot = document.createElement('div');
+  slot.id = 'term-output';
+  slot.className = 'terminal terminal-slot';
+  el.appendChild(slot);
+
+  // First-time mount: create the iframe inside the stable host so it
+  // can be reused across every subsequent showShellContent call for
+  // this container.
   var cached = window._termCache[id];
-  var iframe;
-  if (cached && cached.iframe) {
-    iframe = cached.iframe;
-  } else {
-    iframe = document.createElement('iframe');
+  if (!cached || !cached.iframe) {
+    var host = _ensureTermHost();
+    var iframe = document.createElement('iframe');
     iframe.src = '/api/terminal-frame/' + encodeURIComponent(id);
     iframe.title = 'Container shell';
-    // Class hooks into the existing `.terminal` rule for height +
-    // dark background, while xterm.js paints its own cells on top.
-    iframe.className = 'terminal terminal-iframe';
-    iframe.id = 'term-output';  // preserved for e2e selectors
-    // Restrictive sandbox flags. We need `allow-scripts` (xterm.js)
-    // and `allow-same-origin` (sessionStorage for the AUTH token +
-    // same-origin WebSocket to /ws/exec/), and nothing else — no
-    // popups, no top-navigation, no form submission.
+    // No class — sizing is set on the host via _attachTermToSlot. The
+    // old `.terminal-iframe` rule pins a 380px height which now lives
+    // on the slot (the layout-space owner) instead.
+    // Restrictive sandbox: allow-scripts for xterm.js, allow-same-origin
+    // for sessionStorage AUTH + same-origin WS to /ws/exec/. Nothing
+    // else — no popups, no top-nav, no form submission.
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-    window._termCache[id] = { iframe: iframe };
+    host.appendChild(iframe);
+    cached = { iframe: iframe };
+    window._termCache[id] = cached;
   }
-  el.appendChild(iframe);
 
+  // Overlay the host on the slot and start tracking layout changes.
+  _attachTermToSlot(slot, id);
+
+  // Disconnect button — lives in the slot's layout, so it follows
+  // detail-content scrolling naturally.
   var disconnectBtn = makeBtn('Disconnect', function() {
     _termCacheClose(id);
   }, 'btn small danger');
-  UI.setStyle(disconnectBtn, 'position:absolute;top:8px;right:8px;z-index:2');
+  UI.setStyle(disconnectBtn, 'position:absolute;top:8px;right:8px;z-index:3');
   el.appendChild(disconnectBtn);
 
   // Single message listener per parent. Tracked on window so re-entry
@@ -1733,9 +1868,9 @@ function showShellContent(id) {
 
   // Defer focus so the iframe has time to attach its own message
   // listener before we send the focus command.
-  setTimeout(function() {
+  setTimeout(function () {
     try {
-      iframe.contentWindow.postMessage(
+      cached.iframe.contentWindow.postMessage(
         { type: 'focus' },
         window.location.origin,
       );

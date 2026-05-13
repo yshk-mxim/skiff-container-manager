@@ -136,6 +136,70 @@ def test_terminal_iframe_mouse_selection_paints(page, live_server):
     assert selection, "mouse drag produced no terminal selection"
 
 
+def test_terminal_iframe_survives_moveBefore_tab_switch(page, live_server):
+    """Regression guard for the pre-CSP-refactor behaviour: switching
+    away from the Terminal tab and back must preserve the iframe's
+    contentWindow (and therefore xterm + WebSocket + scrollback). With
+    ordinary `parent.appendChild(iframe)`, the move is spec'd as
+    remove+insert which destroys the contentDocument. The
+    `Node.moveBefore` atomic-move API (Chrome 133+) preserves it.
+
+    This test simulates the showDetail → showShellContent tab dance:
+      1. mount the iframe under a stand-in `host` div, install a
+         marker in window so we can confirm the same window survives
+      2. move the iframe to a hidden 'stash' parent (the showDetail
+         path on tab leave)
+      3. move the iframe back to the host (the showShellContent path
+         on tab re-entry)
+      4. confirm `iframe.contentWindow._marker` still matches what we
+         set in (1) — proving the contentWindow wasn't recreated."""
+    page.goto(f"{live_server}/about:blank", wait_until="domcontentloaded")
+    # Build a minimal DOM mirroring the showDetail layout: a host div
+    # for the active iframe and a stash div for the tab-leave parking.
+    page.set_content("""
+        <!DOCTYPE html><html><body>
+            <div id='host'></div>
+            <div id='stash' style='position:absolute;left:-99999px'></div>
+        </body></html>
+    """)
+    # Mount the iframe under #host. Wait for xterm to mount inside.
+    page.evaluate(
+        f"""() => {{
+            const f = document.createElement('iframe');
+            f.id = 'term';
+            f.src = '{live_server}/api/terminal-frame/abcd1234';
+            document.getElementById('host').appendChild(f);
+        }}"""
+    )
+    page.wait_for_function(
+        "() => { const f = document.getElementById('term');"
+        "  return f && f.contentDocument && f.contentDocument.querySelector('.xterm'); }",
+        timeout=10_000,
+    )
+    # Stamp a marker on the iframe's contentWindow. A surviving move
+    # keeps the same contentWindow, so the marker must still be there.
+    page.evaluate("() => { document.getElementById('term').contentWindow._marker = 'survived'; }")
+    if not page.evaluate("() => typeof Element.prototype.moveBefore === 'function'"):
+        import pytest as _pytest
+        _pytest.skip("Node.moveBefore not supported by this Chromium build")
+    # Stash → un-stash via moveBefore.
+    page.evaluate(
+        """() => {
+            const f = document.getElementById('term');
+            document.getElementById('stash').moveBefore(f, null);
+            document.getElementById('host').moveBefore(f, null);
+        }"""
+    )
+    # The marker must survive — if it doesn't, the contentWindow was
+    # recreated and we've lost the session.
+    after = page.evaluate(
+        "() => document.getElementById('term').contentWindow._marker",
+    )
+    assert after == "survived", (
+        f"iframe.contentWindow was destroyed by the move; marker={after!r}"
+    )
+
+
 def test_terminal_iframe_csp_blocks_inline_style_attempt(page, live_server):
     """The route's own CSP allows `style-src 'self' 'unsafe-inline'`
     so xterm can write inline styles. We sanity-check that the route's

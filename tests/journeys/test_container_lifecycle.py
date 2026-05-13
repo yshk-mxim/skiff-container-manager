@@ -487,19 +487,26 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
             if term_tab.count() == 0:
                 pytest.skip("Terminal tab not surfaced (feature may be off for this image)")
             term_tab.click()
-            # xterm now lives inside a same-origin iframe at
-            # /api/terminal-frame/{id} (see the security_headers.toml /
-            # terminal-frame.js comments for the CSP rationale). The
-            # iframe element itself carries id="term-output" so the
-            # selector hook stays; the `.xterm` descendant moved into
-            # the iframe's own contentDocument.
-            page.wait_for_selector("iframe#term-output", timeout=MEDIUM)
-            # Wait for the iframe document to have xterm mounted.
+            # xterm lives inside a same-origin iframe served by
+            # /api/terminal-frame/{id} (see security_headers.toml and
+            # terminal-frame.js for the CSP rationale). The iframe
+            # itself is parked in `#_term-host` at body level —
+            # NEVER inside detail-content — so tab switches that wipe
+            # `#main` cannot detach it. `#term-output` is now a layout
+            # slot div inside detail-content that the body-level
+            # overlay positions itself on top of. We stamp a marker
+            # on the iframe's contentWindow so step 4 can prove the
+            # exact same contentWindow survives the tab switch.
+            page.wait_for_selector("#_term-host iframe", timeout=MEDIUM)
             page.wait_for_function(
-                "() => { const f = document.getElementById('term-output');"
+                "() => { const f = document.querySelector('#_term-host iframe');"
                 "  if (!f || !f.contentDocument) return false;"
                 "  return !!f.contentDocument.querySelector('.xterm'); }",
                 timeout=MEDIUM,
+            )
+            page.evaluate(
+                "() => { const f = document.querySelector('#_term-host iframe');"
+                "  if (f && f.contentWindow) f.contentWindow._tabSwitchMarker = 'set-before-switch'; }",
             )
 
         with step("step_4_switch_to_logs_and_back"):
@@ -507,19 +514,17 @@ def test_journey_terminal_survives_tab_switch(audited_page, live_server, audit_o
             if logs_tab.count() > 0:
                 logs_tab.click()
                 page.wait_for_timeout(400)
-            # Switch back.
+            # Switch back. The body-level overlay re-shows + repositions
+            # onto the new slot; the iframe never moves.
             term_tab.click()
-            page.wait_for_selector("iframe#term-output", timeout=MEDIUM)
-            # The iframe is held in window._termCache[id].iframe and
-            # re-attached rather than re-created, so the same
-            # contentWindow + xterm instance survive the tab swap. If
-            # the regression recurs the iframe will have a fresh
-            # contentDocument with no xterm mounted yet.
+            page.wait_for_selector("#_term-host iframe", timeout=MEDIUM)
+            # Same contentWindow survives → our marker is still there.
             alive = page.evaluate(
-                "() => { const f = document.getElementById('term-output');"
-                "  if (!f || f.tagName !== 'IFRAME' || !f.contentDocument)"
-                "    return false;"
-                "  return !!f.contentDocument.querySelector('.xterm'); }",
+                "() => { const f = document.querySelector('#_term-host iframe');"
+                "  if (!f || !f.contentDocument) return false;"
+                "  const hasXterm = !!f.contentDocument.querySelector('.xterm');"
+                "  const marker = f.contentWindow && f.contentWindow._tabSwitchMarker;"
+                "  return hasXterm && marker === 'set-before-switch'; }",
             )
             if not alive:
                 audit_observer.emit(

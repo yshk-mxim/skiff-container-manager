@@ -143,6 +143,72 @@
     }
   }
 
+  // ── Inline-style migrator ─────────────────────────────────────────
+  // Some call sites still use `innerHTML = '<div style="…">'` with
+  // literal `style=""` attributes baked into the HTML string. Strict
+  // `style-src 'self'` (no 'unsafe-inline') blocks these from being
+  // applied. To keep those templates working without refactoring every
+  // call site, a MutationObserver watches for elements arriving with a
+  // `style` attribute — for each, the attribute is migrated to a
+  // `_csp_N` CSSOM rule (via setStyle) and removed from the element.
+  // CSP-blocked styles then become CSP-compatible class-based styles
+  // applied a microtask later.
+  //
+  // Caveats:
+  //   * The browser fires CSP violation reports synchronously at parse
+  //     time, before the observer can move the attribute. The console
+  //     surface stays noisy until each template is properly refactored
+  //     (long-form follow-up). Visually the styles DO apply.
+  //   * One-microtask FOUC: the unstyled DOM paints first, then the
+  //     migrator runs. Acceptable trade-off for keeping the existing
+  //     HTML templates functional under strict CSP.
+  function _migrateInlineStyle(node) {
+    if (!node || node.nodeType !== 1) return;  // ELEMENT_NODE
+    var attr = node.getAttribute && node.getAttribute('style');
+    if (attr) {
+      setStyle(node, attr);
+      node.removeAttribute('style');
+    }
+    // Recurse into the subtree; `innerHTML` produces an arbitrary
+    // depth of descendants in one parse.
+    if (node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        _migrateInlineStyle(node.children[i]);
+      }
+    }
+  }
+
+  var _styleObserver = new MutationObserver(function (records) {
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      if (r.type === 'childList') {
+        for (var j = 0; j < r.addedNodes.length; j++) {
+          _migrateInlineStyle(r.addedNodes[j]);
+        }
+      } else if (r.type === 'attributes' && r.attributeName === 'style') {
+        _migrateInlineStyle(r.target);
+      }
+    }
+  });
+
+  function _startStyleObserver() {
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', _startStyleObserver);
+      return;
+    }
+    // Sweep any inline styles that arrived BEFORE the observer started
+    // (e.g. on the static index.html shell or fragments already in
+    // <body> when this script runs).
+    _migrateInlineStyle(document.body);
+    _styleObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+  }
+  _startStyleObserver();
+
   /**
    * Read a style property value previously assigned via `setStyle`.
    * Under strict CSP, `element.style.X` returns `""` (we never write

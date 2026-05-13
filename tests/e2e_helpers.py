@@ -137,31 +137,35 @@ def term_read(page: Any) -> str:
     renderer backends (canvas vs DOM). Uses xterm's own active buffer
     as the source of truth rather than inner_text on the host element.
 
-    After the CSP-driven iframe-sandbox refactor, `#term-output` is the
-    iframe element itself; the xterm Terminal instance lives on the
-    iframe's contentWindow rather than on the host div. This helper
-    accepts both shapes:
+    The terminal underwent two refactors. We support all three shapes:
 
-      - Legacy (pre-iframe): `el._term` on the host div
-      - Current (iframe):    `el.contentWindow._term` inside the frame
-                             (terminal-frame.js exposes the Terminal
-                             instance on its window for diagnostics)
+      - Legacy (pre-iframe): `#term-output` is the div, `el._term` is
+        the Terminal instance attached directly to it.
+      - CSP-iframe v1 (short-lived): `#term-output` IS the iframe and
+        the Terminal lives on `iframe.contentWindow._term`.
+      - CSP-iframe v2 (current): `#term-output` is a layout slot div
+        inside detail-content; the actual iframe lives at
+        `#_term-host > iframe` at body level (so tab switches don't
+        detach it — Safari has no Node.moveBefore yet). Read the
+        Terminal from THAT iframe's contentWindow.
 
-    Falls back to `inner_text` when neither is available — that path
-    is used by older tests that just look for *any* text in the panel.
+    Falls back to `inner_text` on the slot when nothing else matches —
+    used by older tests that just look for *any* text in the panel.
     """
     return page.evaluate(
         """() => {
-            const el = document.getElementById('term-output');
-            if (!el) return '';
+            const slot = document.getElementById('term-output');
+            // Current: iframe lives at body-level #_term-host.
+            let frame = document.querySelector('#_term-host iframe');
+            // CSP-iframe v1 fallback.
+            if (!frame && slot && slot.tagName === 'IFRAME') frame = slot;
             let t = null;
-            if (el.tagName === 'IFRAME') {
-                try { t = el.contentWindow && el.contentWindow._term; }
-                catch (e) { /* same-origin iframe but cross-doc race */ }
-            } else if (el._term) {
-                t = el._term;
+            if (frame) {
+                try { t = frame.contentWindow && frame.contentWindow._term; }
+                catch (e) { /* same-origin race */ }
             }
-            if (!t) return (el.innerText || '');
+            if (!t && slot && slot._term) t = slot._term;
+            if (!t) return (slot && slot.innerText) || '';
             const buf = t.buffer.active;
             const lines = [];
             for (let i = 0; i < buf.length; i++) {
