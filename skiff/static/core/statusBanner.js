@@ -55,11 +55,12 @@
     if (!container) return;
     while (container.firstChild) container.removeChild(container.firstChild);
     if (entries.size === 0) {
+      // CSS `.status-banner` defaults to display:none; the severity class
+      // added below toggles display:block, so no inline style needed (a
+      // strict `style-src 'self'` CSP blocks `.style.display = ...`).
       container.className = 'status-banner';
-      container.style.display = 'none';
       return;
     }
-    container.style.display = 'block';
     // Stable severity-then-insertion order.
     var sorted = Array.from(entries.entries()).sort(function (a, b) {
       return SEVERITY_ORDER[a[1].severity] - SEVERITY_ORDER[b[1].severity];

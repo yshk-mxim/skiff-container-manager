@@ -25,6 +25,10 @@ _UI_PATH = Path(__file__).resolve().parent.parent / "skiff" / "static" / "ui.js"
 _EXPECTED_EXPORTS: frozenset[str] = frozenset(
     {
         "el",
+        # CSP-strict helper: routes JS-set styles through CSSOM rule mutation
+        # on /static/styles.css instead of element.style.* so a strict
+        # `style-src 'self'` (no 'unsafe-inline') CSP works.
+        "setStyle",
         "kvRow",
         "kvSection",
         "copy",

@@ -22,6 +22,101 @@
 "use strict";
 
 (function(root) {
+  // ── CSP-safe inline style helper ────────────────────────────────────
+  // Strict CSP (`style-src 'self'`, no 'unsafe-inline') blocks every form
+  // of element-level style assignment from JS: `element.style.X = "..."`,
+  // `element.style.cssText = "..."`, `element.setAttribute("style", ...)`,
+  // and inline `style=""` attributes in HTML. CSP nonces only cover
+  // `<style>` elements, not inline style attributes, so they don't help.
+  //
+  // CSSOM mutations on an already-loaded same-origin stylesheet (here
+  // `/static/styles.css`) are NOT subject to `style-src`: the sheet was
+  // permitted at load time, and `CSSStyleSheet.insertRule` /
+  // `CSSStyleRule.style.setProperty` mutate that loaded sheet in place
+  // without introducing new inline content. So we route every JS-set
+  // style through a unique `_csp_N` class whose rule lives in styles.css.
+  //
+  //   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+  //   UI.setStyle(el, "color", "red")            → set one property
+  //
+  // Each element gets one `_csp_N` class on first call; subsequent calls
+  // mutate that one rule. WeakMap'd so the element→className lookup
+  // doesn't pin the element from GC. The rule itself remains in the sheet
+  // for the page's lifetime (bounded for a SPA that periodically reloads).
+  var _cspStyleSheet = null;
+  var _cspClassMap = new WeakMap();
+  var _cspClassRules = new Map();
+  var _cspClassCounter = 0;
+
+  function _cspGetSheet() {
+    if (_cspStyleSheet) return _cspStyleSheet;
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      var s = document.styleSheets[i];
+      if (s.href && s.href.indexOf('/static/styles.css') !== -1) {
+        _cspStyleSheet = s;
+        return _cspStyleSheet;
+      }
+    }
+    // Fallback: first same-origin sheet whose cssRules we can read.
+    // Accessing cssRules throws SecurityError on cross-origin sheets.
+    for (var j = 0; j < document.styleSheets.length; j++) {
+      try {
+        void document.styleSheets[j].cssRules;
+        _cspStyleSheet = document.styleSheets[j];
+        return _cspStyleSheet;
+      } catch (e) { /* cross-origin sheet, skip */ }
+    }
+    return null;
+  }
+
+  function _cspGetOrCreateRule(node) {
+    var className = _cspClassMap.get(node);
+    if (className) {
+      var existing = _cspClassRules.get(className);
+      if (existing) return existing;
+    }
+    var sheet = _cspGetSheet();
+    if (!sheet) return null;
+    if (!className) {
+      className = '_csp_' + (++_cspClassCounter);
+      node.classList.add(className);
+      _cspClassMap.set(node, className);
+    }
+    var idx = sheet.insertRule('.' + className + ' {}', sheet.cssRules.length);
+    var rule = sheet.cssRules[idx];
+    _cspClassRules.set(className, rule);
+    return rule;
+  }
+
+  /**
+   * Apply CSS to an element under a strict `style-src 'self'` CSP (no
+   * `'unsafe-inline'`). Routes the assignment through a per-element
+   * `_csp_N` rule inserted into /static/styles.css via the CSSOM API,
+   * so it survives a CSP that would block `element.style.X = ...`.
+   *
+   * Two call shapes:
+   *
+   *   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+   *   UI.setStyle(el, "color", "red")            → set one property
+   *
+   * Passing `""` or `null` as the value removes the property. The
+   * underlying rule persists for the page lifetime (acceptable for a
+   * SPA that periodically navigates / reloads).
+   */
+  function setStyle(node, propOrCssText, value) {
+    if (!node) return;
+    var rule = _cspGetOrCreateRule(node);
+    if (!rule) return;
+    if (value === undefined) {
+      // Full cssText replacement.
+      rule.style.cssText = propOrCssText;
+    } else if (value === '' || value == null) {
+      rule.style.removeProperty(propOrCssText);
+    } else {
+      rule.style.setProperty(propOrCssText, String(value));
+    }
+  }
+
   /**
    * Build an HTML element with attributes and children in one call.
    *
@@ -30,7 +125,8 @@
    *
    * Special attribute handling:
    *   - `class`     → element.className
-   *   - `style`     → element.style.cssText (pass a plain string)
+   *   - `style`     → routed through `UI.setStyle` so a `_csp_N` rule
+   *                   is inserted into styles.css (CSP-strict safe)
    *   - `dataset`   → attrs.dataset is a dict applied to element.dataset
    *   - `on`        → {click: fn, …} attaches listeners
    *   - `text`      → element.textContent (convenient shorthand)
@@ -40,11 +136,15 @@
   function el(tag, attrs, ...children) {
     var n = document.createElement(tag);
     if (attrs) {
+      // Process `class` first so any later `_csp_N` class added by
+      // `setStyle` via the `style:` attribute uses classList.add (which
+      // it does) rather than fighting an overwriting `n.className = v`.
+      if (typeof attrs.class === 'string') { n.className = attrs.class; }
       Object.keys(attrs).forEach(function(k) {
+        if (k === 'class') return;  // already handled above
         var v = attrs[k];
         if (v == null || v === false) return;
-        if (k === 'class')    { n.className = v; return; }
-        if (k === 'style')    { n.style.cssText = v; return; }
+        if (k === 'style')    { setStyle(n, v); return; }
         if (k === 'text')     { n.textContent = v; return; }
         if (k === 'html')     { n.innerHTML = v; return; }  // deliberate opt-in
         if (k === 'dataset')  { Object.keys(v).forEach(function(dk) { n.dataset[dk] = v[dk]; }); return; }
@@ -350,7 +450,7 @@
 
     function setError(msg) {
       errorBanner.textContent = msg == null ? '' : String(msg);
-      errorBanner.style.display = msg ? 'block' : 'none';
+      setStyle(errorBanner, 'display', msg ? 'block' : 'none');
     }
     function clearError() { setError(''); }
 
@@ -682,6 +782,7 @@
 
   root.UI = {
     el: el,
+    setStyle: setStyle,
     kvRow: kvRow,
     kvSection: kvSection,
     copy: copy,
