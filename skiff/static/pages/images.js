@@ -80,19 +80,19 @@ async function loadImages() {
         bg.className = 'modal-bg';
         bg.onclick = function(ev) { if (ev.target === bg) { bg.remove(); reject(new Error('Cancelled')); } };
         var box = document.createElement('div'); box.className = 'modal';
-        box.style.maxWidth = '440px';
+        UI.setStyle(box, 'maxWidth', '440px');
         var h3 = document.createElement('h3'); h3.textContent = 'Prune all unused images?';
         var p1 = document.createElement('p');
-        p1.style.cssText = 'font-size:13px;color:var(--text);margin:8px 0';
+        UI.setStyle(p1, 'font-size:13px;color:var(--text);margin:8px 0');
         p1.textContent = 'This removes ALL images not used by a running container — including tagged images (nginx:alpine, postgres:16, etc). Pulling them later will re-download from the registry.';
         var p2 = document.createElement('p');
-        p2.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:14px';
+        UI.setStyle(p2, 'font-size:12px;color:var(--muted);margin-bottom:14px');
         p2.textContent = 'An undo toast will give you ~'
           + (window.UNDO_WINDOW_SECS || 5)
           + 's to cancel. After that, bytes are gone — Docker does not'
           + ' support un-pruning; you would have to re-pull each image.';
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+        UI.setStyle(row, 'display:flex;gap:8px;justify-content:flex-end');
         var cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = 'Cancel';
         cancel.onclick = function() { bg.remove(); reject(new Error('Cancelled')); };
         var go = document.createElement('button'); go.className = 'btn danger'; go.textContent = 'Prune all unused';
@@ -116,7 +116,7 @@ async function loadImages() {
     );
     header.append(h2, ha);
     main.appendChild(header);
-    var imgDesc = document.createElement('p'); imgDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
+    var imgDesc = document.createElement('p'); UI.setStyle(imgDesc, 'color:var(--muted);font-size:12px;margin-bottom:16px');
     imgDesc.textContent = 'Images are stored on the remote Docker engine. Only images from approved registries can be pulled or run.';
     main.appendChild(imgDesc);
     var allImages = images;
@@ -126,7 +126,7 @@ async function loadImages() {
       var tbody = document.createElement('tbody');
       if (filtered.length === 0) {
         var tr = document.createElement('tr'); var td = document.createElement('td');
-        td.colSpan = 5; td.style.cssText = 'text-align:center;color:var(--muted);padding:40px';
+        td.colSpan = 5; UI.setStyle(td, 'text-align:center;color:var(--muted);padding:40px');
         td.textContent = 'No images found'; tr.appendChild(td); tbody.appendChild(tr);
       } else {
         filtered.forEach(function(img) {
@@ -134,7 +134,7 @@ async function loadImages() {
           var displayTag = imgTags.length ? imgTags.join(', ') : '<none>';
           var runTag = imgTags[0] || img.id;
           var tr = document.createElement('tr');
-          var tdTag = document.createElement('td'); tdTag.style.cssText = 'font-size:13px;font-weight:500'; tdTag.textContent = displayTag;
+          var tdTag = document.createElement('td'); UI.setStyle(tdTag, 'font-size:13px;font-weight:500'); tdTag.textContent = displayTag;
           var tdId = document.createElement('td'); tdId.className = 'container-id'; tdId.textContent = img.id;
           var tdSize = document.createElement('td'); tdSize.textContent = img.size_mb + ' MB';
           var tdCreated = document.createElement('td'); tdCreated.className = 'created-time'; tdCreated.textContent = relTime(img.created);
@@ -170,7 +170,7 @@ async function loadImages() {
     };
   } catch (e) {
     main.innerHTML = '';
-    var p = document.createElement('p'); p.style.color = 'var(--red)'; p.textContent = 'Failed: ' + e.message;
+    var p = document.createElement('p'); UI.setStyle(p, 'color', 'var(--red)'); p.textContent = 'Failed: ' + e.message;
     main.appendChild(p);
   }
 }
@@ -276,7 +276,7 @@ function showPullModal(prefillImage) {
     // Config load failed — surface the reason in the hint instead of
     // leaving the user staring at "Loading registry configuration…".
     hint.textContent = 'Registry configuration unavailable: ' + (e && e.message ? e.message : 'fetch failed') + '. The pull may still succeed.';
-    hint.style.color = 'var(--red)';
+    UI.setStyle(hint, 'color', 'var(--red)');
   });
   var hubSearch = buildHubSearch(function(name) { inp.value = name; });
 

@@ -63,7 +63,12 @@ async function _showComposeAggregateLogs(projectName) {
     body: viewer,
     actions: [makeBtn('Close', function() { m.close(); })],
   });
-  m.box.style.cssText += 'max-width:900px;width:90vw;';
+  // `m.box` already has a `.modal` cssText from UI.modal — these two
+  // properties augment it. With UI.setStyle (CSSOM-rule backed) we
+  // simply set both properties; the rule's cssText is the union of
+  // every setStyle call on this element.
+  UI.setStyle(m.box, 'max-width', '900px');
+  UI.setStyle(m.box, 'width', '90vw');
   try {
     var data = await apiFetch(API + '/compose/' + encodeURIComponent(projectName) + '/logs?tail=500');
     viewer.textContent = (data.lines || []).join('\n') || '(no logs)';
@@ -92,13 +97,13 @@ async function showCompose() {
   var h2 = document.createElement('h2'); h2.textContent = 'Compose';
   header.appendChild(h2); main.appendChild(header);
   var compDesc = document.createElement('p');
-  compDesc.style.cssText = 'color:var(--muted);font-size:12px;margin-bottom:16px';
+  UI.setStyle(compDesc, 'color:var(--muted);font-size:12px;margin-bottom:16px');
   compDesc.textContent = 'Compose files are validated before deployment. Privileged mode, host-path mounts, build instructions, and unapproved registries are blocked.';
   main.appendChild(compDesc);
   if (stacksLoadError) {
     var errBanner = document.createElement('div');
     errBanner.className = 'field-error';
-    errBanner.style.display = 'block';
+    UI.setStyle(errBanner, 'display', 'block');
     errBanner.setAttribute('role', 'alert');
     errBanner.textContent = 'Could not load stacks: ' + stacksLoadError;
     main.appendChild(errBanner);
@@ -110,7 +115,7 @@ async function showCompose() {
   // "No running stacks yet — upload one below" line in place of cards.
   var stackHeader = document.createElement('h3');
   stackHeader.textContent = 'Running Stacks (' + stacks.length + ')';
-  stackHeader.style.cssText = 'font-size:16px;margin-bottom:12px';
+  UI.setStyle(stackHeader, 'font-size:16px;margin-bottom:12px');
   main.appendChild(stackHeader);
   var search = document.createElement('input');
   search.type = 'search';
@@ -136,7 +141,7 @@ async function showCompose() {
         (needle && filtered.length !== stacks.length ? '/' + stacks.length : '') + ')';
       if (!filtered.length) {
         var em = document.createElement('p');
-        em.style.cssText = 'color:var(--muted);font-size:13px;padding:12px 0';
+        UI.setStyle(em, 'color:var(--muted);font-size:13px;padding:12px 0');
         em.textContent = needle ? 'No matches' : '';
         cardsWrap.appendChild(em);
         return;
@@ -153,15 +158,15 @@ async function showCompose() {
       h4.append(dot, document.createTextNode(stack.name));
       card.appendChild(h4);
       var svcList = document.createElement('div'); svcList.className = 'stack-services';
-      svcList.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+      UI.setStyle(svcList, 'display:flex;flex-direction:column;gap:4px;');
       stack.services.forEach(function(s) {
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;';
+        UI.setStyle(row, 'display:flex;align-items:center;gap:8px;font-size:13px;');
         var svcDot = document.createElement('span');
         svcDot.className = 'dot ' + (s.state === 'running' ? 'ok' : 'down');
         var svcText = document.createElement('span');
         svcText.textContent = s.name + ' (' + s.state + ')';
-        svcText.style.cssText = 'flex:1;';
+        UI.setStyle(svcText, 'flex:1;');
         var svcLogs = document.createElement('button');
         svcLogs.className = 'btn small'; svcLogs.textContent = 'Logs';
         svcLogs.addEventListener('click', function() { showDetail(s.container_id, s.name, 'logs'); });
@@ -180,7 +185,7 @@ async function showCompose() {
       });
       card.appendChild(svcList);
       var btnRow = document.createElement('div');
-      btnRow.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap';
+      UI.setStyle(btnRow, 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap');
       btnRow.appendChild(makeBtn('All service logs', function() {
         _showComposeAggregateLogs(stack.name);
       }, 'btn small'));
@@ -255,23 +260,23 @@ async function showCompose() {
 
   var deployHeader = document.createElement('h3');
   deployHeader.textContent = 'Deploy Stack';
-  deployHeader.style.cssText = 'font-size:16px;margin:16px 0 12px';
+  UI.setStyle(deployHeader, 'font-size:16px;margin:16px 0 12px');
   main.appendChild(deployHeader);
   var dz = document.createElement('div'); dz.className = 'drop-zone';
-  var fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.yml,.yaml'; fi.style.display = 'none';
+  var fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.yml,.yaml'; UI.setStyle(fi, 'display', 'none');
   fi.onchange = function() { if (fi.files[0]) uploadCompose(fi.files[0]); };
   dz.onclick = function() { fi.click(); };
   var p1 = document.createElement('p');
-  p1.style.cssText = 'font-weight:500;font-size:14px;color:var(--text)';
+  UI.setStyle(p1, 'font-weight:500;font-size:14px;color:var(--text)');
   p1.textContent = 'Upload compose file (docker-compose.yml)';
   var p2 = document.createElement('p');
-  p2.style.cssText = 'font-size:12px;margin-top:8px;color:var(--muted)';
+  UI.setStyle(p2, 'font-size:12px;margin-top:8px;color:var(--muted)');
   p2.textContent = 'Click or drag and drop';
   dz.append(fi, p1, p2);
-  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; });
-  dz.addEventListener('dragleave', function() { dz.style.borderColor = 'var(--border)'; });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); UI.setStyle(dz, 'borderColor', 'var(--accent)'); });
+  dz.addEventListener('dragleave', function() { UI.setStyle(dz, 'borderColor', 'var(--border)'); });
   dz.addEventListener('drop', function(e) {
-    e.preventDefault(); dz.style.borderColor = 'var(--border)';
+    e.preventDefault(); UI.setStyle(dz, 'borderColor', 'var(--border)');
     if (e.dataTransfer.files[0]) uploadCompose(e.dataTransfer.files[0]);
   });
   main.appendChild(dz);
@@ -279,10 +284,10 @@ async function showCompose() {
   var controls = document.createElement('div'); controls.className = 'mt-16';
   var lbl = document.createElement('label');
   lbl.htmlFor = 'compose-project';
-  lbl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted)';
+  UI.setStyle(lbl, 'font-size:12px;font-weight:500;color:var(--muted)');
   lbl.textContent = 'Project Name';
   var inp = document.createElement('input'); inp.id = 'compose-project'; inp.value = 'dev';
-  inp.style.cssText = 'padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:200px;margin-top:6px';
+  UI.setStyle(inp, 'padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;width:200px;margin-top:6px');
   controls.append(lbl, document.createElement('br'), inp); main.appendChild(controls);
   var output = document.createElement('div'); output.id = 'compose-output'; output.className = 'mt-16';
   main.appendChild(output);
@@ -301,13 +306,13 @@ async function uploadCompose(file) {
     // server's own timeout fires first with its structured envelope.
     var data = await apiFetch(API + '/compose/up?project_name=' + encodeURIComponent(project),
                               { method: 'POST', body: form, _timeout: 130000 });
-    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#3fb950';
+    var lv = document.createElement('div'); lv.className = 'log-viewer'; UI.setStyle(lv, 'color', '#3fb950');
     lv.textContent = data.output || 'Stack deployed successfully.';
     out.innerHTML = ''; out.appendChild(lv);
     toast('Stack "' + project + '" deployed', 'success');
     setTimeout(function() { if (currentPage === 'compose') showCompose(); }, 500);
   } catch (e) {
-    var lv = document.createElement('div'); lv.className = 'log-viewer'; lv.style.color = '#f85149';
+    var lv = document.createElement('div'); lv.className = 'log-viewer'; UI.setStyle(lv, 'color', '#f85149');
     lv.textContent = e.message; out.innerHTML = ''; out.appendChild(lv);
   }
 }

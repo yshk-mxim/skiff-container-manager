@@ -103,6 +103,32 @@
    * underlying rule persists for the page lifetime (acceptable for a
    * SPA that periodically navigates / reloads).
    */
+  // CSSStyleDeclaration.setProperty expects the CSS property name in
+  // kebab-case (`max-width`), but JS callers naturally write the
+  // CSSStyleDeclaration camelCase form (`maxWidth`). Auto-convert so
+  // both styles work without ceremony.
+  function _toKebab(s) {
+    return String(s).replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
+  }
+
+  /**
+   * Apply CSS to an element under a strict `style-src 'self'` CSP (no
+   * `'unsafe-inline'`). Routes the assignment through a per-element
+   * `_csp_N` rule inserted into /static/styles.css via the CSSOM API,
+   * so it survives a CSP that would block `element.style.X = ...`.
+   *
+   * Two call shapes:
+   *
+   *   UI.setStyle(el, "color:red; padding:8px")  → replace cssText
+   *   UI.setStyle(el, "color", "red")            → set one property
+   *
+   * The single-property form accepts both kebab-case (`max-width`) and
+   * camelCase (`maxWidth`) — JS callers naturally write the
+   * CSSStyleDeclaration form so the helper auto-kebabs. Passing `""`
+   * or `null` as the value removes the property. The underlying rule
+   * persists for the page lifetime (acceptable for a SPA that
+   * periodically reloads).
+   */
   function setStyle(node, propOrCssText, value) {
     if (!node) return;
     var rule = _cspGetOrCreateRule(node);
@@ -111,9 +137,34 @@
       // Full cssText replacement.
       rule.style.cssText = propOrCssText;
     } else if (value === '' || value == null) {
-      rule.style.removeProperty(propOrCssText);
+      rule.style.removeProperty(_toKebab(propOrCssText));
     } else {
-      rule.style.setProperty(propOrCssText, String(value));
+      rule.style.setProperty(_toKebab(propOrCssText), String(value));
+    }
+  }
+
+  /**
+   * Read a style property value previously assigned via `setStyle`.
+   * Under strict CSP, `element.style.X` returns `""` (we never write
+   * to the inline attribute), so call sites that previously read
+   * inline styles must switch to `UI.getStyle`. Falls back to
+   * `getComputedStyle` if no `_csp_N` rule has been created yet,
+   * so CSS-stylesheet defaults remain observable.
+   */
+  function getStyle(node, prop) {
+    if (!node) return '';
+    var className = _cspClassMap.get(node);
+    if (className) {
+      var rule = _cspClassRules.get(className);
+      if (rule) {
+        var v = rule.style.getPropertyValue(_toKebab(prop));
+        if (v) return v;
+      }
+    }
+    try {
+      return window.getComputedStyle(node).getPropertyValue(_toKebab(prop));
+    } catch (e) {
+      return '';
     }
   }
 
@@ -783,6 +834,7 @@
   root.UI = {
     el: el,
     setStyle: setStyle,
+    getStyle: getStyle,
     kvRow: kvRow,
     kvSection: kvSection,
     copy: copy,
