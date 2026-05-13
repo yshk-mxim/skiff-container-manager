@@ -210,12 +210,12 @@
   _startStyleObserver();
 
   /**
-   * Read a style property value previously assigned via `setStyle`.
-   * Under strict CSP, `element.style.X` returns `""` (we never write
-   * to the inline attribute), so call sites that previously read
-   * inline styles must switch to `UI.getStyle`. Falls back to
-   * `getComputedStyle` if no `_csp_N` rule has been created yet,
-   * so CSS-stylesheet defaults remain observable.
+   * Read a style property value that was set via `UI.setStyle`. Under
+   * strict CSP, `element.style.X` returns `""` (we never write to the
+   * inline attribute), so any call site that needs to inspect a JS-set
+   * style must go through `UI.getStyle`. Falls back to
+   * `getComputedStyle` if no `_csp_N` rule has been created yet, so
+   * CSS-stylesheet defaults remain observable.
    */
   function getStyle(node, prop) {
     if (!node) return '';
