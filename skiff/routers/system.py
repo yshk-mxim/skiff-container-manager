@@ -782,10 +782,7 @@ def terminal_frame_page(request: Request, container_id: str) -> Response:
     # path never carries an exotic codepoint into the URL the iframe
     # exposes. Accept either short-ID (hex) or container-name shapes;
     # the actual auth + Docker lookup happens inside /ws/exec/{id}.
-    if not (
-        validators.CONTAINER_ID_RE.fullmatch(container_id)
-        or validators.CONTAINER_NAME_RE.fullmatch(container_id)
-    ):
+    if not (validators.CONTAINER_ID_RE.fullmatch(container_id) or validators.CONTAINER_NAME_RE.fullmatch(container_id)):
         return Response(
             content="Invalid container id",
             media_type="text/plain; charset=utf-8",

@@ -96,9 +96,7 @@ def test_terminal_iframe_accepts_keyboard_input(page, live_server):
         timeout=5_000,
     )
     typed = page.evaluate("() => window._typed")
-    assert "echo hello" in typed, (
-        f"keystrokes did not reach xterm.onData; captured={typed!r}"
-    )
+    assert "echo hello" in typed, f"keystrokes did not reach xterm.onData; captured={typed!r}"
 
 
 def test_terminal_iframe_mouse_selection_paints(page, live_server):
@@ -181,6 +179,7 @@ def test_terminal_iframe_survives_movebefore_tab_switch(page, live_server):
     page.evaluate("() => { document.getElementById('term').contentWindow._marker = 'survived'; }")
     if not page.evaluate("() => typeof Element.prototype.moveBefore === 'function'"):
         import pytest as _pytest
+
         _pytest.skip("Node.moveBefore not supported by this Chromium build")
     # Stash → un-stash via moveBefore.
     page.evaluate(
@@ -195,9 +194,7 @@ def test_terminal_iframe_survives_movebefore_tab_switch(page, live_server):
     after = page.evaluate(
         "() => document.getElementById('term').contentWindow._marker",
     )
-    assert after == "survived", (
-        f"iframe.contentWindow was destroyed by the move; marker={after!r}"
-    )
+    assert after == "survived", f"iframe.contentWindow was destroyed by the move; marker={after!r}"
 
 
 def test_terminal_iframe_csp_blocks_inline_style_attempt(page, live_server):
@@ -217,9 +214,7 @@ def test_terminal_iframe_csp_blocks_inline_style_attempt(page, live_server):
             return r.headers.get('content-security-policy') || '';
         }"""
     )
-    assert "style-src 'self' 'unsafe-inline'" in csp, (
-        f"iframe route lost its style-src relaxation; CSP={csp!r}"
-    )
+    assert "style-src 'self' 'unsafe-inline'" in csp, f"iframe route lost its style-src relaxation; CSP={csp!r}"
     assert "frame-ancestors 'self'" in csp
 
 
