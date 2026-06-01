@@ -233,6 +233,15 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
     "ignore::pytest.PytestAssertRewriteWarning",
+    # starlette>=1.2 deprecates the httpx-backed TestClient in favour of
+    # httpx2 and emits StarletteDeprecationWarning at import of
+    # starlette.testclient. It is a UserWarning subclass (so the
+    # DeprecationWarning ignore above misses it) and fires before any test
+    # runs, tripping the `error` rule. Match by message on the UserWarning
+    # base rather than the concrete class — the class only exists on
+    # starlette>=1.2, and importing a missing category aborts pytest
+    # startup. Drop this once the suite moves to httpx2.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
 ]
 
 [tool.coverage.run]
