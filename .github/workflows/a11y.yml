@@ -21,7 +21,7 @@ jobs:
     name: pa11y WCAG 2.1 AA baseline
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Setup Python + deps (runtime only — no dev extras)
         uses: ./.github/actions/setup-skiff-python
@@ -73,7 +73,7 @@ jobs:
     name: Playwright + axe-core full-SPA
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Setup Python + e2e extras
         uses: ./.github/actions/setup-skiff-python
