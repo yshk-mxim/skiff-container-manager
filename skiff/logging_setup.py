@@ -23,6 +23,7 @@ from starlette.datastructures import MutableHeaders
 
 from skiff import config
 from skiff.auth import constant_time_compare
+from skiff.routing_utils import iter_leaf_routes
 
 # ── Audit log file handler ─────────────────────────────────
 
@@ -286,7 +287,7 @@ def register_route_audit_events(app) -> None:
     still catch WS + reads that bypass `@secure_route.mutate`.
     """
     derived: list[tuple[str, re.Pattern[str], str]] = []
-    for route in getattr(app, "routes", []):
+    for route in iter_leaf_routes(getattr(app, "routes", [])):
         endpoint = getattr(route, "endpoint", None)
         marker = getattr(endpoint, "_skiff_secure", None)
         if not marker or not marker.get("audit"):

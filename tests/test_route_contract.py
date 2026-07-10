@@ -25,6 +25,7 @@ from starlette.routing import WebSocketRoute
 
 from skiff.app import app
 from skiff.auth import verify_auth, verify_auth_strict, verify_csrf
+from skiff.routing_utils import iter_leaf_routes
 
 pytestmark = pytest.mark.unit
 
@@ -71,11 +72,11 @@ _MUTATING_METHODS: frozenset[str] = frozenset({"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _api_routes() -> list[APIRoute]:
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+    return [r for r in iter_leaf_routes(app.routes) if isinstance(r, APIRoute)]
 
 
 def _ws_routes() -> list[WebSocketRoute]:
-    return [r for r in app.routes if isinstance(r, WebSocketRoute)]
+    return [r for r in iter_leaf_routes(app.routes) if isinstance(r, WebSocketRoute)]
 
 
 def _route_has_auth_dep(route: APIRoute) -> bool:
