@@ -39,8 +39,11 @@ def _route_shapes() -> list[tuple[str, str]]:
     from starlette.routing import Route
 
     from skiff.app import app
+    from skiff.routing_utils import iter_leaf_routes
 
-    shapes: list[tuple[str, str]] = [(m, r.path) for r in app.routes if isinstance(r, Route) for m in (r.methods or ())]
+    shapes: list[tuple[str, str]] = [
+        (m, r.path) for r in iter_leaf_routes(app.routes) if isinstance(r, Route) for m in (r.methods or ())
+    ]
     return shapes
 
 
@@ -150,6 +153,7 @@ def test_all_routes_have_auth_dependency():
     from starlette.routing import Route
 
     from skiff.app import app
+    from skiff.routing_utils import iter_leaf_routes
 
     # Endpoints explicitly allowed to be unauthenticated — they power
     # the sign-in flow, health probe, setup wizard, Swagger UI, and
@@ -177,7 +181,7 @@ def test_all_routes_have_auth_dependency():
         "/api/tunnel/reconnect",  # public during wizard
     }
     missing_auth: list[str] = []
-    for r in app.routes:
+    for r in iter_leaf_routes(app.routes):
         if not isinstance(r, Route):
             continue
         if not r.path.startswith("/api/"):

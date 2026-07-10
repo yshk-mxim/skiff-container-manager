@@ -54,9 +54,10 @@ def _registered_routes() -> dict[tuple[str, str], bool]:
     from starlette.routing import Route
 
     from skiff.app import app
+    from skiff.routing_utils import iter_leaf_routes
 
     out: dict[tuple[str, str], bool] = {}
-    for r in app.routes:
+    for r in iter_leaf_routes(app.routes):
         if isinstance(r, Route):
             norm = _normalise_path(r.path)
             for m in r.methods or ():

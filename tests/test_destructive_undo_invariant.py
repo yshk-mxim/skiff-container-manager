@@ -30,6 +30,7 @@ import inspect
 import pytest
 
 from app import app
+from skiff.routing_utils import iter_leaf_routes
 
 # Routes that are REMOVE/PRUNE/TEAR-DOWN but do NOT need an undo path.
 # Each entry maps (method, path) → human reason.
@@ -83,7 +84,7 @@ def _destructive_routes():
     """Yield (method, path, endpoint_fn) for every route on the app
     that is a DELETE or a verb-named POST (prune/down/kill/etc)."""
     destructive_verbs = ("prune", "down", "kill", "delete", "remove", "stop")
-    for route in app.routes:
+    for route in iter_leaf_routes(app.routes):
         if not hasattr(route, "methods"):
             continue
         path = getattr(route, "path", "")
@@ -126,6 +127,8 @@ def test_every_destructive_route_has_undo_or_exemption():
 def test_no_destructive_undo_exemption_is_a_typo():
     """Exemption table should only reference real routes — a typo would
     silently let a destructive path through the `continue` guard."""
-    real_routes = {(m, getattr(r, "path", "")) for r in app.routes if hasattr(r, "methods") for m in r.methods}
+    real_routes = {
+        (m, getattr(r, "path", "")) for r in iter_leaf_routes(app.routes) if hasattr(r, "methods") for m in r.methods
+    }
     bogus = [(m, p) for (m, p) in _UNDO_EXEMPTIONS if (m, p) not in real_routes]
     assert not bogus, f"Exemption list references non-existent routes: {bogus}"
