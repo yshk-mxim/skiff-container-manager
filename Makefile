@@ -109,6 +109,10 @@ deps:  ## Regenerate hash-pinned requirements.txt + requirements-dev.txt from py
 	# --require-hashes needs to be self-contained. CI installs from this
 	# file (see .github/actions/setup-skiff-python).
 	pip-compile --generate-hashes --strip-extras --allow-unsafe --extra dev --extra e2e -c requirements.txt -o requirements-dev.txt pyproject.toml
+	# CI-only semgrep SAST lock (.github/workflows/security.yml). Kept out
+	# of requirements-dev.txt so the heavy semgrep tree isn't pulled into
+	# every ci/e2e job; hash-pinned so its `pip install` is Scorecard-pinned.
+	pip-compile --generate-hashes --strip-extras --allow-unsafe -o .github/requirements-semgrep.txt .github/requirements-semgrep.in
 
 sbom:  ## Regenerate sbom.cdx.json (CycloneDX) from the current package metadata
 	# Uses `cyclonedx-py requirements` so the SBOM only covers SKIFF's
