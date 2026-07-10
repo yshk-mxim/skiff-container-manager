@@ -69,7 +69,11 @@
       userSelect: 'none',
       background: 'transparent',
       border: 'none',
-      color: 'inherit',
+      // Explicit sidebar text colour (matches the nav links). `inherit`
+      // pulled the dark body --text through .sidebar (which sets no
+      // colour of its own), rendering the bell + "Notifications" label
+      // dark-on-dark on the sidebar (WCAG 1.4.3 contrast fail).
+      color: 'var(--sidebar-text)',
       textAlign: 'left',
       width: '100%',
       fontFamily: 'inherit',

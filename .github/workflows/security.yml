@@ -1,6 +1,13 @@
 name: Security Review
 
 on:
+  # Re-run the SARIF-uploading scanners (Grype, Trivy, semgrep) on merge to
+  # main so the Security tab self-heals: alerts fixed in a PR are re-scanned
+  # against the new default-branch tree and auto-dismissed. Without this,
+  # dependency-CVE alerts linger until the weekly cron even after the fix
+  # lands. The ZAP job stays schedule/dispatch-only (see its `if:` below).
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   # Weekly ZAP baseline + nuclei schedule. Too slow for per-PR
@@ -18,16 +25,17 @@ jobs:
   # Claude-Code security review runs only on PRs opened from branches in
   # this repo (where CLAUDE_API_KEY is available). Forked PRs and
   # Dependabot PRs skip this job at the `if:` gate — they cannot read
-  # repo secrets. A second guard at the step level skips the review
+  # repo secrets. It is PR-only: `comment-pr: true` needs a PR to comment
+  # on, so push/schedule/workflow_dispatch runs (which have no PR) must
+  # not trigger it. A second guard at the step level skips the review
   # when CLAUDE_API_KEY is unset (e.g. before the maintainer has
   # configured the secret), so the overall check stays green instead of
   # surfacing a confusing red X with "ANTHROPIC_API_KEY is not set".
   security:
     if: |
-      github.event_name != 'pull_request' || (
-        github.event.pull_request.head.repo.full_name == github.repository
-        && github.actor != 'dependabot[bot]'
-      )
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -111,10 +119,13 @@ jobs:
   # Semgrep SAST — runs on every PR. Three rulesets chosen for SKIFF's
   # profile: p/owasp-top-ten (coverage baseline), p/python (lang-
   # specific smells), p/security-audit (general security heuristics).
-  # Local triage (docs/hardening/security-scans.md §Semgrep) already
-  # annotated the one false positive at `skiff/routers/images.py` —
-  # inline comment explains the mitigation posture so this run stays
-  # clean until a new finding appears.
+  # Invoked via the semgrep CLI (the former returntocorp/semgrep-action
+  # is archived and no longer emits semgrep.sarif, which broke the SARIF
+  # upload). `ssrf-requests` is excluded: SKIFF's only outbound request
+  # is the hard-coded, redirect-refusing hub.docker.com call in
+  # skiff/routers/images.py — a documented false positive (an inline
+  # nosemgrep doesn't take because the rule ships under a pack-prefixed
+  # check id). Exit non-zero on any other finding keeps the run honest.
   semgrep:
     runs-on: ubuntu-latest
     permissions:
@@ -122,13 +133,20 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d  # pinned
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
-          config: >-
-            p/owasp-top-ten
-            p/python
-            p/security-audit
-          generateSarif: "1"
+          python-version: "3.12"
+      - name: Install semgrep
+        run: pip install semgrep
+      - name: Run semgrep (SARIF)
+        run: |
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/python \
+            --config p/security-audit \
+            --exclude-rule python.flask.security.injection.ssrf-requests.ssrf-requests \
+            --sarif --output semgrep.sarif --error --metrics off
       - name: Upload Semgrep SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9  # v3.29.1

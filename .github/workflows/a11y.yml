@@ -50,8 +50,14 @@ jobs:
       - name: pa11y scan (login page)
         run: |
           # pa11y brings its own chromium via puppeteer.
+          # --config launches chromium with --no-sandbox: GitHub's
+          # ubuntu-24.04 runners disable unprivileged user namespaces via
+          # AppArmor, so the chromium zygote sandbox can't start and the
+          # browser aborts before any scan runs. .github/pa11y.json passes
+          # the flag through puppeteer's launch args.
           # Exit 2 = issues found → CI fails. Exit 0 = clean.
           npx --yes pa11y@latest \
+            --config .github/pa11y.json \
             --standard WCAG2AA \
             --reporter cli \
             http://127.0.0.1:18301

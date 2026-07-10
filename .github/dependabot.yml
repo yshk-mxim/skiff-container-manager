@@ -3,14 +3,23 @@ updates:
   # Security-only policy: open-pull-requests-limit: 0 disables routine version-bump
   # PRs while leaving Dependabot security updates (vulnerability fixes) enabled —
   # those are not subject to the open-PR limit.
+  #
+  # cooldown: supply-chain hardening — hold off adopting a just-published version
+  # for a few days (a freshly released package can be compromised or unstable).
+  # Security updates ignore the cooldown, so vulnerability fixes still land
+  # immediately; this only guards routine version updates if they are re-enabled.
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
