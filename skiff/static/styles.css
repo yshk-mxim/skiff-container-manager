@@ -191,7 +191,11 @@ code,pre,.mono,.log-viewer,.terminal,.terminal-input,.container-id { font-family
   padding: 1px 5px;
   font-family: inherit;
   font-size: 10px;
-  color: var(--sidebar-text-strong);
+  /* Pair with the --card background's own foreground (--text), not the
+     sidebar's white text — the keycap sits on a light --card surface, so
+     --sidebar-text-strong (#fff in light theme) rendered white-on-white
+     and the ⌘K / ? glyphs vanished (WCAG 1.4.3 contrast fail). */
+  color: var(--text);
 }
 .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--sidebar-border); color: var(--sidebar-text); font-size: 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sidebar-status { padding: 8px 16px; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--sidebar-text); }
