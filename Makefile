@@ -101,8 +101,14 @@ docs-check:  ## Fail if any auto-generated doc drifted from source
 	python3 tools/check_md_links.py --check
 
 # ── Supply chain ──────────────────────────────────────────
-deps:  ## Regenerate hash-pinned requirements.txt from pyproject.toml
+deps:  ## Regenerate hash-pinned requirements.txt + requirements-dev.txt from pyproject.toml
 	pip-compile --generate-hashes --strip-extras -o requirements.txt pyproject.toml
+	# requirements-dev.txt = runtime + dev + e2e, hash-pinned. Constrained
+	# to requirements.txt (-c) so the shared runtime pins stay identical
+	# across both files. --allow-unsafe pins pip/setuptools too, which
+	# --require-hashes needs to be self-contained. CI installs from this
+	# file (see .github/actions/setup-skiff-python).
+	pip-compile --generate-hashes --strip-extras --allow-unsafe --extra dev --extra e2e -c requirements.txt -o requirements-dev.txt pyproject.toml
 
 sbom:  ## Regenerate sbom.cdx.json (CycloneDX) from the current package metadata
 	# Uses `cyclonedx-py requirements` so the SBOM only covers SKIFF's
