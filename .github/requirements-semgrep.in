@@ -1,0 +1,4 @@
+# CI-only: semgrep SAST tool for .github/workflows/security.yml.
+# Hash-locked so the workflow 'pip install' is Scorecard-pinned.
+# Regenerate with 'make deps'.
+semgrep

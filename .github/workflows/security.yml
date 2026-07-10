@@ -138,7 +138,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install semgrep
-        run: pip install semgrep
+        # Hash-pinned install so OpenSSF Scorecard "Pinned-Dependencies"
+        # stays satisfied — a bare `pip install semgrep` is unpinned.
+        # Lock lives at .github/requirements-semgrep.txt; regenerate with
+        # `make deps`.
+        run: pip install --require-hashes -r .github/requirements-semgrep.txt
       - name: Run semgrep (SARIF)
         run: |
           semgrep scan \
