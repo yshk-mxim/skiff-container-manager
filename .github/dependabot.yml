@@ -1,13 +1,16 @@
 version: 2
 updates:
+  # Security-only policy: open-pull-requests-limit: 0 disables routine version-bump
+  # PRs while leaving Dependabot security updates (vulnerability fixes) enabled —
+  # those are not subject to the open-PR limit.
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
