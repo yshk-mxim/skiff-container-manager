@@ -5,6 +5,7 @@
 /.github/               @yshk-mxim
 /pyproject.toml         @yshk-mxim
 /requirements.txt       @yshk-mxim
+/requirements-dev.txt   @yshk-mxim
 /SECURITY.md            @yshk-mxim
 /CHANGELOG.md           @yshk-mxim
 /NOTICE                 @yshk-mxim

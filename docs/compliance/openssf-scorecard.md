@@ -20,7 +20,7 @@ SKIFF's implemented practices map to most of the Scorecard checks. The **current
 | **License** | 10 | MIT, file present |
 | **Maintained** | 10 | Regular commits |
 | **Packaging** | 10 | Published via GitHub releases + pyproject source distribution |
-| **Pinned-Dependencies** | 10 | `requirements.txt` hash-pinned; all GitHub Actions pinned to commit SHA |
+| **Pinned-Dependencies** | 10 | CI installs every dep via `pip install --require-hashes -r requirements{,-dev}.txt` (both `pip-compile --generate-hashes` locks) then `pip install --no-deps -e .`; all GitHub Actions pinned to commit SHA. A plain `pip install -e .[dev]` scores 9 — Scorecard needs `--require-hashes`/`--no-deps` to treat the command as pinned |
 | **SAST** | 10 | ruff-S + semgrep + claude-code-security-review on every PR |
 | **Security-Policy** | 10 | `SECURITY.md` present at the repo root, linked from the GitHub Security tab |
 | **Signed-Releases** | 0–3 | Tracked as a v1.0.x gap — see [`slsa.md`](slsa.md) |

